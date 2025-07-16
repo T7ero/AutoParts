@@ -14,6 +14,6 @@ class CrossReferenceSerializer(serializers.ModelSerializer):
 class ParsingTaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = ParsingTask
-        fields = ['id', 'user', 'file', 'status', 'progress', 'result_file', 
+        fields = ['id', 'user', 'file', 'status', 'progress', 'result_file', 'result_files', 'log',
                  'created_at', 'updated_at', 'error_message']
-        read_only_fields = ['user', 'status', 'progress', 'result_file', 'error_message'] 
+        read_only_fields = ['user', 'status', 'progress', 'result_file', 'result_files', 'log', 'error_message'] 

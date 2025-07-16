@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
+from django.db.models import JSONField
 
 class Part(models.Model):
     """Модель для хранения информации о запчастях"""
@@ -48,6 +49,8 @@ class ParsingTask(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     error_message = models.TextField(null=True, blank=True)
+    log = models.TextField(null=True, blank=True, verbose_name="Лог задачи")
+    result_files = JSONField(null=True, blank=True, verbose_name="Ссылки на все файлы")
 
     class Meta:
         verbose_name = "Задача парсинга"
