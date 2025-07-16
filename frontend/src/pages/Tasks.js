@@ -7,6 +7,7 @@ function Tasks() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const { taskId } = useParams();
+  const [logModal, setLogModal] = useState({ open: false, log: '', taskId: null });
 
   useEffect(() => {
     fetchTasks();
@@ -53,6 +54,20 @@ function Tasks() {
           console.error('Ошибка при обновлении статуса:', err);
         }
       }, 5000);
+    } else {
+      // Автообновление списка задач, если есть незавершённые задачи
+      interval = setInterval(async () => {
+        try {
+          const response = await axios.get('http://localhost:8000/api/parsing-tasks/', {
+            headers: {
+              'Authorization': `Token ${localStorage.getItem('token')}`
+            }
+          });
+          setTasks(response.data);
+        } catch (err) {
+          // ignore
+        }
+      }, 5000);
     }
 
     return () => {
@@ -78,6 +93,24 @@ function Tasks() {
         setError('Не удалось очистить задачи');
       }
     }
+  };
+
+  const handleShowLog = async (id) => {
+    setLogModal({ open: true, log: 'Загрузка...', taskId: id });
+    try {
+      const response = await axios.get(`http://localhost:8000/api/parsing-tasks/${id}/log/`, {
+        headers: {
+          'Authorization': `Token ${localStorage.getItem('token')}`
+        }
+      });
+      setLogModal({ open: true, log: response.data.log || 'Лог пуст', taskId: id });
+    } catch (err) {
+      setLogModal({ open: true, log: 'Ошибка при загрузке лога', taskId: id });
+    }
+  };
+
+  const handleCloseLog = () => {
+    setLogModal({ open: false, log: '', taskId: null });
   };
 
   if (loading) {
@@ -143,7 +176,7 @@ function Tasks() {
                       {task.file}
                     </p>
                   </div>
-                  {task.status === 'in_progress' && (
+                  {(task.progress > 0 && task.progress < 100) && (
                     <div className="mt-2 flex items-center text-sm text-gray-500 sm:mt-0">
                       <div className="w-full bg-gray-200 rounded-full h-2.5">
                         <div
@@ -158,6 +191,34 @@ function Tasks() {
                 {task.error_message && (
                   <div className="mt-2 text-sm text-red-600">
                     {task.error_message}
+                  </div>
+                )}
+                {/* Кнопка для показа лога */}
+                <div className="mt-2">
+                  <button
+                    className="text-xs text-gray-500 underline hover:text-blue-600"
+                    onClick={() => handleShowLog(task.id)}
+                  >
+                    Показать лог задачи
+                  </button>
+                </div>
+                {/* Ссылки на все выгруженные файлы */}
+                {task.status === 'completed' && task.result_files && (
+                  <div className="mt-2 flex flex-col gap-1">
+                    <span className="text-xs text-gray-500">Файлы результатов:</span>
+                    {Object.entries(task.result_files).map(([site, path]) => (
+                      <a
+                        key={site}
+                        href={`/${path.replace(/\\/g, '/')}`}
+                        className="text-sm font-medium text-blue-600 hover:text-blue-500"
+                        download
+                      >
+                        {site === 'autopiter' && 'Autopiter'}
+                        {site === 'emex' && 'Emex'}
+                        {site === 'armtek' && 'Armtek'}
+                        {!['autopiter','emex','armtek'].includes(site) && site}
+                      </a>
+                    ))}
                   </div>
                 )}
                 {task.status === 'completed' && task.result_file && (
@@ -176,6 +237,23 @@ function Tasks() {
           ))}
         </ul>
       </div>
+     {/* Модальное окно для лога */}
+     {logModal.open && (
+       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40">
+         <div className="bg-white rounded-lg shadow-lg max-w-2xl w-full p-6 relative">
+           <button
+             className="absolute top-2 right-2 text-gray-400 hover:text-gray-700"
+             onClick={handleCloseLog}
+           >
+             ×
+           </button>
+           <h2 className="text-lg font-bold mb-2">Лог задачи #{logModal.taskId}</h2>
+           <pre className="bg-gray-100 p-2 rounded text-xs max-h-96 overflow-auto whitespace-pre-wrap">
+             {logModal.log}
+           </pre>
+         </div>
+       </div>
+     )}
     </div>
   );
 }

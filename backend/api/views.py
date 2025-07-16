@@ -11,6 +11,8 @@ import os
 from rest_framework import serializers
 from rest_framework.views import APIView
 from .autopiter_parser import get_brands_by_artikul
+import pandas as pd
+from django.utils.dateparse import parse_datetime
 
 # Create your views here.
 
@@ -71,8 +73,47 @@ class ParsingTaskViewSet(viewsets.ModelViewSet):
         return Response({
             'status': task.status,
             'progress': task.progress,
-            'error_message': task.error_message
+            'error_message': task.error_message,
+            'result_files': task.result_files,
         })
+
+    @action(detail=True, methods=['get'])
+    def log(self, request, pk=None):
+        task = get_object_or_404(ParsingTask, pk=pk)
+        return Response({'log': task.log or ''})
+
+    @action(detail=True, methods=['get'])
+    def preview(self, request, pk=None):
+        """Возвращает первые 10 строк Excel-файла задачи для предпросмотра"""
+        task = get_object_or_404(ParsingTask, pk=pk)
+        try:
+            df = pd.read_excel(task.file.path)
+            preview = df.head(10).fillna('').to_dict(orient='records')
+            columns = list(df.columns)
+            return Response({'columns': columns, 'rows': preview})
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        status = request.query_params.get('status')
+        user_id = request.query_params.get('user_id')
+        created_after = request.query_params.get('created_after')
+        created_before = request.query_params.get('created_before')
+        if status:
+            queryset = queryset.filter(status=status)
+        if user_id:
+            queryset = queryset.filter(user_id=user_id)
+        if created_after:
+            queryset = queryset.filter(created_at__gte=parse_datetime(created_after))
+        if created_before:
+            queryset = queryset.filter(created_at__lte=parse_datetime(created_before))
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
 class AutopiterParseView(APIView):
     permission_classes = [IsInAllowedGroup]
