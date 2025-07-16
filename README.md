@@ -41,6 +41,10 @@ pip install -r requirements.txt
 5. Применить миграции:
 ```bash
 python manage.py migrate
+ cd frontend - npm install - npm start
+ cd backend - celery -A backend worker --loglevel=info // celery -A backend worker -l info --pool=solo
+redis-server
+
 ```
 
 6. Запустить сервер разработки:

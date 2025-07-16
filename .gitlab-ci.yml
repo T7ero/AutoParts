@@ -1,0 +1,47 @@
+stages:
+  - build
+  - test
+  - deploy
+
+variables:
+  DOCKER_DRIVER: overlay2
+  POSTGRES_DB: autoparts
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: postgres
+  POSTGRES_HOST: db
+  POSTGRES_PORT: 5432
+  REDIS_URL: redis://redis:6379/0
+
+services:
+  - docker:dind
+
+before_script:
+  - docker info
+
+build_backend:
+  stage: build
+  script:
+    - docker build -t $CI_REGISTRY_IMAGE/backend:latest ./backend
+  only:
+    - main
+
+build_frontend:
+  stage: build
+  script:
+    - docker build -t $CI_REGISTRY_IMAGE/frontend:latest ./frontend
+  only:
+    - main
+
+test_backend:
+  stage: test
+  script:
+    - docker-compose -f docker-compose.yml run --rm backend python manage.py test
+  only:
+    - main
+
+deploy:
+  stage: deploy
+  script:
+    - docker-compose -f docker-compose.yml up -d --build
+  only:
+    - main 
