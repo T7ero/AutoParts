@@ -16,9 +16,14 @@ services:
     retries: 10
 
   redis:
-    image: redis:7
-    ports:
-      - "6379:6379"
+  image: redis:7
+  ports:
+    - "6379:6379"
+  healthcheck:  # Добавьте этот блок
+    test: ["CMD", "redis-cli", "ping"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
 
   backend:
     build: ./backend
