@@ -59,4 +59,6 @@ services:
 
 volumes:
   db_data:
+    driver: local
   media_data: 
+    driver: local
