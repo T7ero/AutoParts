@@ -7,8 +7,6 @@ services:
       POSTGRES_DB: autoparts
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-    volumes:
-      - db_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
 
@@ -20,9 +18,6 @@ services:
   backend:
     build: ./backend
     command: daphne -b 0.0.0.0 -p 8000 backend.asgi:application
-    volumes:
-      - ./backend:/app
-      - media_data:/app/media
     ports:
       - "8000:8000"
     depends_on:
@@ -37,9 +32,6 @@ services:
   celery:
     build: ./backend
     command: celery -A backend worker -l info
-    volumes:
-      - ./backend:/app
-      - media_data:/app/media
     depends_on:
       - backend
       - redis
@@ -56,9 +48,3 @@ services:
       - "3000:80"
     depends_on:
       - backend
-
-volumes:
-  db_data:
-    driver: local
-  media_data: 
-    driver: local
