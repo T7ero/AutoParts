@@ -7,60 +7,65 @@ services:
       POSTGRES_DB: autoparts
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d autoparts"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+    volumes:
+      - ./pg_data:/var/lib/postgresql/data
+    restart: always
 
   redis:
     image: redis:7
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+    restart: always
 
   backend:
     build: ./backend
     command: daphne -b 0.0.0.0 -p 8000 backend.asgi:application
-    ports:
-      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./backend/media:/app/media
+      - ./backend/static:/app/static
     depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      - db
+      - redis
     environment:
       - DJANGO_SETTINGS_MODULE=backend.settings
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DATABASE_URL=postgres://postgres:postgres@db:5432/autoparts
+    restart: always
 
   celery:
     build: ./backend
     command: celery -A backend worker -l info
+    volumes:
+      - ./backend:/app
+      - ./backend/media:/app/media
     depends_on:
-      backend:
-        condition: service_started
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      - backend
+      - redis
+      - db
     environment:
       - DJANGO_SETTINGS_MODULE=backend.settings
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DATABASE_URL=postgres://postgres:postgres@db:5432/autoparts
+    restart: always
 
   frontend:
     build: ./frontend
-    ports:
-      - "3000:80"
     depends_on:
-      backend:
-        condition: service_started
+      - backend
+    restart: always
+
+  nginx:
+    image: nginx:1.25
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./backend/static:/static
+      - ./backend/media:/media
+      # - ./nginx/certs:/etc/nginx/certs:ro  # если нужен HTTPS
+    depends_on:
+      - backend
+      - frontend
+    restart: always
