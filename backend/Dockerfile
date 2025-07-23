@@ -2,21 +2,21 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-COPY requirements.txt ./
-RUN python3 -m pip install --upgrade pip setuptools wheel
-RUN pip install --upgrade pip && pip install -r requirements.txt
-
-# Установка Chromium и chromedriver
+# Установка системных зависимостей
 RUN apt-get update && \
-    apt-get install -y chromium-driver chromium && \
+    apt-get install -y chromium-driver chromium gcc python3-dev && \
     rm -rf /var/lib/apt/lists/*
 
+# Копируем и устанавливаем Python-зависимости
+COPY requirements.txt ./
+RUN python -m pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Копируем остальные файлы
 COPY . .
 
 # Собираем статику
 RUN python manage.py collectstatic --noinput
 
-# Открываем порт для ASGI
 EXPOSE 8000
-
-CMD ["daphne", "-b", "0.0.0.0", "-p", "8000", "backend.asgi:application"] 
+CMD ["daphne", "-b", "0.0.0.0", "-p", "8000", "backend.asgi:application"]
