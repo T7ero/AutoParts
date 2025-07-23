@@ -15,6 +15,9 @@ RUN python -m pip install --upgrade pip && \
 # Копируем остальные файлы
 COPY . .
 
+# Добавьте эту строку для установки Daphne
+RUN pip install daphne
+
 # Собираем статику
 RUN python manage.py collectstatic --noinput
 
