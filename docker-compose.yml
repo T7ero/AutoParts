@@ -51,7 +51,7 @@ services:
 
   frontend:
   build:
-    context: /root/AutoParts
+    context: .
     dockerfile: frontend/Dockerfile
     depends_on:
       - backend
