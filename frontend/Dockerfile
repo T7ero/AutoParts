@@ -7,11 +7,16 @@ WORKDIR /usr/src/app
 # Копируем package.json и package-lock.json из папки frontend
 COPY frontend/package*.json ./
 
-# Устанавливаем зависимости
-RUN npm ci --silent
+# Устанавливаем зависимости и исправляем права
+RUN npm ci --silent && \
+    chmod -R 777 node_modules && \
+    chmod -R 777 /usr/src/app
 
 # Копируем ВСЕ файлы фронтенда (включая исходный код)
 COPY frontend/ ./
+
+# Исправляем права для всех файлов
+RUN chmod -R 777 .
 
 # Запускаем сборку проекта
 RUN npm run build
