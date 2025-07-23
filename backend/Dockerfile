@@ -3,9 +3,10 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # Установка системных зависимостей
-RUN apt-get update && \
-    apt-get install -y chromium-driver chromium gcc python3-dev && \
-    rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends apt-transport-https ca-certificates gnupg \
+    && apt-get install -y --allow-unauthenticated --allow-insecure-repositories chromium-driver chromium gcc python3-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Копируем и устанавливаем Python-зависимости
 COPY requirements.txt ./
