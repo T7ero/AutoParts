@@ -50,9 +50,9 @@ services:
     restart: always
 
   frontend:
-  build:
-    context: .
-    dockerfile: frontend/Dockerfile
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
     depends_on:
       - backend
     restart: always
