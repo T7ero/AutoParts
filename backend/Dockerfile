@@ -3,10 +3,22 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # Установка системных зависимостей
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends apt-transport-https ca-certificates gnupg \
-    && apt-get install -y --allow-unauthenticated --allow-insecure-repositories chromium-driver chromium gcc python3-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        gnupg && \
+    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 648ACFD622F3D138 && \
+    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 0E98404D386FA1D9 && \
+    echo "deb http://deb.debian.org/debian bookworm main" > /etc/apt/sources.list && \
+    echo "deb http://deb.debian.org/debian bookworm-updates main" >> /etc/apt/sources.list && \
+    echo "deb http://security.debian.org/debian-security bookworm-security main" >> /etc/apt/sources.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        chromium-driver \
+        chromium \
+        gcc \
+        python3-dev && \
+    rm -rf /var/lib/apt/lists/*
 
 # Копируем и устанавливаем Python-зависимости
 COPY requirements.txt ./
