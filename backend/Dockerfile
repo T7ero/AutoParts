@@ -3,7 +3,7 @@ FROM python:3.10-slim
 WORKDIR /app
 
 COPY requirements.txt ./
-RUN pip install --upgrade pip && pip install -r requirements.txt
+RUN python3 -m pip install --upgrade pip setuptools wheel
 
 # Установка Chromium и chromedriver
 RUN apt-get update && \
