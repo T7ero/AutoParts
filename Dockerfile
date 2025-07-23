@@ -1,5 +1,5 @@
 
-FROM node:18 AS frontend-builder  # Замените 'as' на 'AS' для соответствия регистру
+FROM node:18 AS frontend-builder 
 
 WORKDIR /app
 COPY frontend/package*.json ./
