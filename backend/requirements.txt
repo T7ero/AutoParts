@@ -13,3 +13,4 @@ django-cors-headers>=3.14.0
 gunicorn
 django-environ 
 requests 
+beautifulsoup4 
