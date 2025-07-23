@@ -50,7 +50,9 @@ services:
     restart: always
 
   frontend:
-    build: ./frontend
+  build:
+    context: /root/AutoParts
+    dockerfile: frontend/Dockerfile
     depends_on:
       - backend
     restart: always
