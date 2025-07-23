@@ -10,6 +10,9 @@ COPY frontend/package*.json ./
 # Устанавливаем зависимости
 RUN npm ci --silent
 
+# Исправляем права на .bin (react-scripts и др.)
+RUN find node_modules/.bin -type f -exec chmod +x {} \; || true
+
 # Копируем ВСЕ файлы фронтенда (включая исходный код)
 COPY frontend/ ./
 
