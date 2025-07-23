@@ -4,6 +4,7 @@ WORKDIR /app
 
 COPY requirements.txt ./
 RUN python3 -m pip install --upgrade pip setuptools wheel
+RUN pip install --upgrade pip && pip install -r requirements.txt
 
 # Установка Chromium и chromedriver
 RUN apt-get update && \
