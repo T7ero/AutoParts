@@ -14,3 +14,4 @@ gunicorn
 django-environ 
 requests 
 beautifulsoup4 
+selenium 
