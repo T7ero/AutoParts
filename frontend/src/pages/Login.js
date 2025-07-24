@@ -15,7 +15,7 @@ function Login() {
     setError(null);
 
     try {
-      const response = await axios.post('http://localhost:8000/api/auth/token/', {
+      const response = await axios.post('/api/auth/token/', {
         username,
         password
       });

@@ -15,7 +15,7 @@ function Tasks() {
 
   const fetchTasks = async () => {
     try {
-      const response = await axios.get('http://localhost:8000/api/parsing-tasks/', {
+      const response = await axios.get('/api/parsing-tasks/', {
         headers: {
           'Authorization': `Token ${localStorage.getItem('token')}`
         }
@@ -33,7 +33,7 @@ function Tasks() {
     if (taskId) {
       interval = setInterval(async () => {
         try {
-          const response = await axios.get(`http://localhost:8000/api/parsing-tasks/${taskId}/status/`, {
+          const response = await axios.get(`/api/parsing-tasks/${taskId}/status/`, {
             headers: {
               'Authorization': `Token ${localStorage.getItem('token')}`
             }
@@ -58,7 +58,7 @@ function Tasks() {
       // Автообновление списка задач, если есть незавершённые задачи
       interval = setInterval(async () => {
         try {
-          const response = await axios.get('http://localhost:8000/api/parsing-tasks/', {
+          const response = await axios.get('/api/parsing-tasks/', {
             headers: {
               'Authorization': `Token ${localStorage.getItem('token')}`
             }
@@ -80,7 +80,7 @@ function Tasks() {
   const clearTasks = async () => {
     if (window.confirm('Вы уверены, что хотите очистить все задачи?')) {
       try {
-        await fetch('http://localhost:8000/api/parsing-tasks/clear/', {
+        await fetch('/api/parsing-tasks/clear/', {
           method: 'DELETE',
           headers: {
             'Authorization': `Token ${localStorage.getItem('token')}`,
@@ -98,7 +98,7 @@ function Tasks() {
   const handleShowLog = async (id) => {
     setLogModal({ open: true, log: 'Загрузка...', taskId: id });
     try {
-      const response = await axios.get(`http://localhost:8000/api/parsing-tasks/${id}/log/`, {
+      const response = await axios.get(`/api/parsing-tasks/${id}/log/`, {
         headers: {
           'Authorization': `Token ${localStorage.getItem('token')}`
         }

@@ -30,7 +30,7 @@ function Upload() {
     formData.append('file', file);
 
     try {
-      const response = await axios.post('http://localhost:8000/api/parsing-tasks/', formData, {
+      const response = await axios.post('/api/parsing-tasks/', formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
           'Authorization': `Token ${localStorage.getItem('token')}`
