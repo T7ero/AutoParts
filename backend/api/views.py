@@ -28,7 +28,7 @@ class PartViewSet(viewsets.ModelViewSet):
 class CrossReferenceViewSet(viewsets.ModelViewSet):
     queryset = CrossReference.objects.all()
     serializer_class = CrossReferenceSerializer
-    permission_classes = [IsInAllowedGroup]
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         queryset = CrossReference.objects.all()
@@ -40,7 +40,7 @@ class CrossReferenceViewSet(viewsets.ModelViewSet):
 class ParsingTaskViewSet(viewsets.ModelViewSet):
     queryset = ParsingTask.objects.all()
     serializer_class = ParsingTaskSerializer
-    permission_classes = [IsInAllowedGroup]
+    permission_classes = [IsAuthenticated]
     @action(detail=False, methods=['delete'])
     def clear(self, request):
         ParsingTask.objects.all().delete()
