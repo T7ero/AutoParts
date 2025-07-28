@@ -188,3 +188,14 @@ CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
+
+# Оптимизация для ограниченных ресурсов
+CELERY_WORKER_CONCURRENCY = 1  # Один воркер для экономии памяти
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 10  # Перезапуск воркера после 10 задач
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1  # Берем только одну задачу за раз
+CELERY_TASK_ACKS_LATE = True  # Подтверждаем задачу только после выполнения
+CELERY_WORKER_DISABLE_RATE_LIMITS = True  # Отключаем ограничения скорости
+CELERY_TASK_TIME_LIMIT = 3600  # Максимальное время выполнения задачи (1 час)
+CELERY_TASK_SOFT_TIME_LIMIT = 3000  # Мягкий лимит (50 минут)
+CELERY_WORKER_SEND_TASK_EVENTS = False  # Отключаем события для экономии ресурсов
+CELERY_TASK_IGNORE_RESULT = True  # Игнорируем результаты для экономии памяти
