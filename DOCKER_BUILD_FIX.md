@@ -1,97 +1,86 @@
 # Исправление проблем с Docker Build
 
 ## Проблема
-Ошибка GPG при сборке Docker образа:
+Ошибка при установке Google Chrome:
 ```
-Err:1 http://deb.debian.org/debian bookworm InRelease
-  At least one invalid signature was encountered.
+E: gnupg, gnupg2 and gnupg1 do not seem to be installed, but one of them is required for this operation
 ```
 
 ## Решение
 
-### Вариант 1: Использовать Ubuntu-based Dockerfile (рекомендуется)
+### Вариант 1: Использовать исправленный Dockerfile (рекомендуется)
 
-Если проблемы с Debian продолжаются, используйте Ubuntu-based Dockerfile:
+Используйте обновленный `backend/Dockerfile` который уже исправлен:
 
 ```bash
-cd backend
-mv Dockerfile Dockerfile.debian
-mv Dockerfile.ubuntu Dockerfile
 docker compose down
 docker compose build --no-cache
 docker compose up -d
 ```
 
-### Вариант 2: Использовать простой Dockerfile
+### Вариант 2: Использовать Chromium-based Dockerfile
 
-Если нужен минимальный набор зависимостей:
+Если проблемы с Google Chrome продолжаются, используйте Chromium:
 
 ```bash
 cd backend
-mv Dockerfile Dockerfile.debian
+mv Dockerfile Dockerfile.google
+mv Dockerfile.chromium Dockerfile
+cd ..
+docker compose down
+docker compose build --no-cache
+docker compose up -d
+```
+
+### Вариант 3: Использовать простой Dockerfile
+
+```bash
+cd backend
+mv Dockerfile Dockerfile.google
 mv Dockerfile.simple Dockerfile
+cd ..
 docker compose down
 docker compose build --no-cache
 docker compose up -d
-```
-
-### Вариант 3: Использовать исправленный Debian Dockerfile
-
-Попробуйте обновленный основной Dockerfile:
-
-```bash
-docker compose down
-docker compose build --no-cache
-docker compose up -d
-```
-
-### Вариант 4: Ручное исправление
-
-Если проблемы продолжаются:
-
-1. Очистить Docker кеш:
-```bash
-docker system prune -a
-```
-
-2. Обновить Docker:
-```bash
-# Для Ubuntu/Debian
-sudo apt update && sudo apt upgrade docker.io
-
-# Для CentOS/RHEL
-sudo yum update docker
-```
-
-3. Перезапустить Docker:
-```bash
-sudo systemctl restart docker
-```
-
-4. Попробовать другой базовый образ:
-```bash
-# В Dockerfile заменить
-FROM python:3.10-slim
-# на
-FROM python:3.10-bullseye
 ```
 
 ## Доступные варианты Dockerfile
 
-### 1. Dockerfile.ubuntu (Ubuntu 22.04)
-- Более стабильный базовый образ
-- Меньше проблем с GPG ключами
-- Полная поддержка Chrome
+### 1. Dockerfile (Google Chrome) - РЕКОМЕНДУЕТСЯ
+- Исправлен с добавлением `gnupg`
+- Использует современный способ установки GPG ключей
+- Полная поддержка Google Chrome
 
-### 2. Dockerfile.simple (Минимальный)
+### 2. Dockerfile.chromium (Chromium)
+- Использует Chromium вместо Google Chrome
+- Меньше зависимостей
+- Более стабильная установка
+
+### 3. Dockerfile.simple (Минимальный)
 - Только необходимые зависимости
 - Установка Chrome через официальный репозиторий
 - Быстрая сборка
 
-### 3. Dockerfile (Debian slim)
-- Обновленный основной файл
-- Раздельная установка зависимостей
-- Оптимизированная структура
+## Внесенные исправления
+
+### 1. Добавлен gnupg
+```dockerfile
+RUN apt-get install -y --no-install-recommends \
+    # ... другие пакеты ...
+    gnupg \
+    # ... остальные пакеты ...
+```
+
+### 2. Современный способ установки GPG ключей
+```dockerfile
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google.list
+```
+
+### 3. Обновленный парсер
+- Поддержка как Google Chrome, так и Chromium
+- Автоматическое определение ChromeDriver
+- Улучшенная обработка ошибок
 
 ## Проверка работоспособности
 
@@ -108,7 +97,12 @@ docker compose logs
 
 ### 3. Проверка Selenium
 ```bash
+# Для Google Chrome
 docker exec -it autoparts-celery-1 google-chrome --version
+docker exec -it autoparts-celery-1 chromedriver --version
+
+# Для Chromium
+docker exec -it autoparts-celery-1 chromium-browser --version
 docker exec -it autoparts-celery-1 chromedriver --version
 ```
 
@@ -117,12 +111,12 @@ docker exec -it autoparts-celery-1 chromedriver --version
 ### После исправления
 - Успешная сборка Docker образа
 - Стабильная работа Selenium
-- Корректная установка Chrome и ChromeDriver
+- Корректная установка Chrome/Chromium и ChromeDriver
 
 ### Если проблемы продолжаются
-1. Проверьте интернет-соединение
-2. Попробуйте использовать VPN
-3. Обратитесь к системному администратору
+1. Используйте Chromium-based Dockerfile
+2. Проверьте интернет-соединение
+3. Попробуйте использовать VPN
 
 ## Дополнительные рекомендации
 
@@ -141,10 +135,11 @@ docker exec -it autoparts-celery-1 chromedriver --version
 Если нужно быстро запустить проект:
 
 ```bash
-# Использовать Ubuntu-based образ
+# Использовать Chromium-based образ
 cd backend
-mv Dockerfile Dockerfile.debian
-mv Dockerfile.ubuntu Dockerfile
+mv Dockerfile Dockerfile.google
+mv Dockerfile.chromium Dockerfile
+cd ..
 docker compose down
 docker compose build --no-cache
 docker compose up -d

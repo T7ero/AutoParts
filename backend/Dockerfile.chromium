@@ -13,7 +13,6 @@ RUN apt-get update && \
         xvfb \
         procps \
         gcc \
-        gnupg \
         fonts-liberation \
         libasound2 \
         libatk-bridge2.0-0 \
@@ -27,20 +26,16 @@ RUN apt-get update && \
         xdg-utils && \
     rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем Chrome используя современный способ
-RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg && \
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google.list && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends google-chrome-stable && \
+# Устанавливаем Chromium и ChromeDriver
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        chromium-browser \
+        chromium-chromedriver && \
     rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем ChromeDriver
-RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | awk -F'.' '{print $1}') && \
-    wget -q "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION" -O - | xargs -I {} wget -q "https://chromedriver.storage.googleapis.com/{}/chromedriver_linux64.zip" && \
-    unzip chromedriver_linux64.zip && \
-    mv chromedriver /usr/local/bin/ && \
-    chmod +x /usr/local/bin/chromedriver && \
-    rm chromedriver_linux64.zip
+# Создаем символические ссылки для совместимости
+RUN ln -sf /usr/bin/chromium-browser /usr/bin/google-chrome && \
+    ln -sf /usr/bin/chromedriver /usr/local/bin/chromedriver
 
 # Создаем пользователя для запуска Chrome
 RUN groupadd -r chrome && useradd -r -g chrome -G audio,video chrome \

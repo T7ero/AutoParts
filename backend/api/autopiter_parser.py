@@ -200,9 +200,14 @@ def parse_armtek_selenium(artikul):
         # Очищаем зависшие процессы перед запуском
         cleanup_chrome_processes()
         
-        # Используем ChromeDriver из /usr/local/bin/
-        service = Service('/usr/local/bin/chromedriver')
-        driver = webdriver.Chrome(service=service, options=options)
+        # Используем ChromeDriver из /usr/local/bin/ или системный
+        try:
+            service = Service('/usr/local/bin/chromedriver')
+            driver = webdriver.Chrome(service=service, options=options)
+        except:
+            # Если не найден в /usr/local/bin/, используем системный
+            driver = webdriver.Chrome(options=options)
+        
         driver.set_page_load_timeout(SELENIUM_TIMEOUT)
         driver.implicitly_wait(5)  # Уменьшаем неявное ожидание
         
