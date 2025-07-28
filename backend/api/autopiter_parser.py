@@ -12,6 +12,9 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.service import Service
 import logging
+import subprocess
+import signal
+import os
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -21,6 +24,16 @@ SELENIUM_TIMEOUT = 20  # Уменьшаем таймаут для Selenium
 
 def log_debug(message):
     print(f"[DEBUG] {message}")
+
+def cleanup_chrome_processes():
+    """Принудительно завершает зависшие процессы Chrome"""
+    try:
+        # Завершаем процессы chrome
+        subprocess.run(['pkill', '-f', 'chrome'], capture_output=True)
+        subprocess.run(['pkill', '-f', 'chromedriver'], capture_output=True)
+        time.sleep(1)  # Даем время на завершение
+    except Exception as e:
+        log_debug(f"Error cleaning up Chrome processes: {e}")
 
 def make_request(url, proxies=None, max_retries=2):  # Уменьшаем количество попыток
     for attempt in range(max_retries):
@@ -153,6 +166,13 @@ def parse_api_response(data):
 
 def parse_armtek_selenium(artikul):
     """Парсинг через Selenium с оптимизацией ресурсов"""
+    import tempfile
+    import os
+    import uuid
+    
+    # Создаем уникальную временную директорию для каждого запроса
+    temp_dir = tempfile.mkdtemp(prefix=f'chrome_{uuid.uuid4().hex[:8]}_')
+    
     options = webdriver.ChromeOptions()
     options.add_argument('--headless')
     options.add_argument('--no-sandbox')
@@ -163,17 +183,29 @@ def parse_armtek_selenium(artikul):
     options.add_argument('--disable-plugins')  # Отключаем плагины
     options.add_argument('--disable-images')  # Отключаем загрузку изображений
     options.add_argument('--disable-javascript')  # Отключаем JavaScript если возможно
+    options.add_argument(f'--user-data-dir={temp_dir}')  # Уникальная директория
+    options.add_argument('--remote-debugging-port=0')  # Случайный порт
+    options.add_argument('--disable-web-security')  # Отключаем CORS
+    options.add_argument('--allow-running-insecure-content')  # Разрешаем небезопасный контент
+    options.add_argument('--disable-features=VizDisplayCompositor')  # Отключаем композитор
+    options.add_argument('--disable-background-timer-throttling')  # Отключаем ограничения таймеров
+    options.add_argument('--disable-backgrounding-occluded-windows')  # Отключаем фоновую обработку
+    options.add_argument('--disable-renderer-backgrounding')  # Отключаем фоновую обработку рендерера
     
     driver = None
     try:
+        # Очищаем зависшие процессы перед запуском
+        cleanup_chrome_processes()
+        
         driver = webdriver.Chrome(options=options)
         driver.set_page_load_timeout(SELENIUM_TIMEOUT)
+        driver.implicitly_wait(5)  # Уменьшаем неявное ожидание
         
         driver.get(f"https://armtek.ru/search?text={quote(artikul)}")
         
         # Улучшенное ожидание с несколькими вариантами селекторов
         try:
-            WebDriverWait(driver, 10).until(  # Уменьшаем время ожидания
+            WebDriverWait(driver, 8).until(  # Уменьшаем время ожидания
                 EC.presence_of_element_located(
                     (By.CSS_SELECTOR, ".product-card, [data-testid='product-item'], .catalog-item")
                 )
@@ -212,6 +244,14 @@ def parse_armtek_selenium(artikul):
                 driver.quit()
             except:
                 pass
+        # Очищаем временную директорию
+        try:
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except:
+            pass
+        # Очищаем зависшие процессы после завершения
+        cleanup_chrome_processes()
 
 def get_brands_by_artikul_emex(artikul, proxies=None):
     """Парсер для Emex с оптимизацией"""

@@ -55,7 +55,19 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DATABASE_URL=postgres://postgres:postgres@db:5432/autoparts
+      - DISPLAY=:99
+      - CHROME_HEADLESS=1
+      - CHROME_NO_SANDBOX=1
+      - CHROME_DISABLE_DEV_SHM=1
     restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
 
   frontend:
     build:

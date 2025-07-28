@@ -2,7 +2,7 @@ import pandas as pd
 from celery import shared_task
 from django.core.files import File
 from core.models import ParsingTask
-from .autopiter_parser import get_brands_by_artikul, get_brands_by_artikul_armtek, get_brands_by_artikul_emex
+from .autopiter_parser import get_brands_by_artikul, get_brands_by_artikul_armtek, get_brands_by_artikul_emex, cleanup_chrome_processes
 import re
 import concurrent.futures
 import time
@@ -142,20 +142,26 @@ def process_parsing_task(task_id):
                     results = []
                     
                     def parse_one(num):
-                        try:
-                            # Добавляем задержку для Selenium
-                            time.sleep(0.2)
-                            brands = get_brands_by_artikul_armtek(num)
-                            log(f"armtek: {num} → {brands}")
-                            return [(brand, part_number, name, b, num, 'armtek') for b in brands]
-                        except Exception as e:
-                            log(f"Error parsing armtek for {num}: {str(e)}")
-                            return []
+                        max_retries = 2
+                        for attempt in range(max_retries):
+                            try:
+                                # Добавляем задержку для Selenium
+                                time.sleep(0.2)
+                                brands = get_brands_by_artikul_armtek(num)
+                                log(f"armtek: {num} → {brands}")
+                                return [(brand, part_number, name, b, num, 'armtek') for b in brands]
+                            except Exception as e:
+                                log(f"Error parsing armtek for {num} (attempt {attempt + 1}): {str(e)}")
+                                if attempt < max_retries - 1:
+                                    time.sleep(2)  # Ждем перед повторной попыткой
+                                else:
+                                    log(f"Failed to parse armtek for {num} after {max_retries} attempts")
+                                    return []
                     
                     # Уменьшаем количество потоков для Selenium
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:  # Уменьшаем до 1 потока
                         futs = {executor.submit(parse_one, num): num for num in numbers}
-                        for fut in concurrent.futures.as_completed(futs, timeout=60):
+                        for fut in concurrent.futures.as_completed(futs, timeout=120):  # Увеличиваем таймаут
                             try:
                                 for res in fut.result():
                                     results.append(res)
@@ -190,6 +196,14 @@ def process_parsing_task(task_id):
                     
                     # Принудительная очистка памяти
                     gc.collect()
+                    
+                    # Периодическая очистка процессов Chrome каждые 50 строк
+                    if (index + 1) % 50 == 0:
+                        try:
+                            cleanup_chrome_processes()
+                            log("Cleaned up Chrome processes")
+                        except Exception as e:
+                            log(f"Error cleaning up Chrome processes: {e}")
                 
             except Exception as e:
                 log(f"Error processing row {index}: {str(e)}")
@@ -246,3 +260,10 @@ def process_parsing_task(task_id):
         ws_send()
         # Финальная очистка памяти
         gc.collect()
+        
+        # Финальная очистка процессов Chrome
+        try:
+            cleanup_chrome_processes()
+            log("Final cleanup of Chrome processes completed")
+        except Exception as e:
+            log(f"Error in final Chrome cleanup: {e}")
