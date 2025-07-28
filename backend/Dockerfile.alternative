@@ -2,7 +2,7 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Установка системных зависимостей
+# Обновляем систему и устанавливаем базовые зависимости
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -12,8 +12,6 @@ RUN apt-get update && \
         unzip \
         xvfb \
         procps \
-        chromium \
-        chromium-driver \
         gcc \
         python3-dev \
         fonts-liberation \
@@ -29,6 +27,21 @@ RUN apt-get update && \
         xdg-utils && \
     rm -rf /var/lib/apt/lists/*
 
+# Устанавливаем Chrome и ChromeDriver через официальный репозиторий
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - && \
+    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends google-chrome-stable && \
+    rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем ChromeDriver
+RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | awk -F'.' '{print $1}') && \
+    wget -q "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION" -O - | xargs -I {} wget -q "https://chromedriver.storage.googleapis.com/{}/chromedriver_linux64.zip" && \
+    unzip chromedriver_linux64.zip && \
+    mv chromedriver /usr/local/bin/ && \
+    chmod +x /usr/local/bin/chromedriver && \
+    rm chromedriver_linux64.zip
+
 # Создаем пользователя для запуска Chrome
 RUN groupadd -r chrome && useradd -r -g chrome -G audio,video chrome \
     && mkdir -p /home/chrome/Downloads \
@@ -42,7 +55,7 @@ RUN python -m pip install --upgrade pip && \
 # Копируем остальные файлы
 COPY . .
 
-# Добавьте эту строку для установки Daphne
+# Добавляем Daphne
 RUN pip install daphne
 
 # Собираем статику
@@ -53,4 +66,4 @@ RUN echo '#!/bin/bash\nXvfb :99 -screen 0 1280x720x24 &\nexport DISPLAY=:99\nexe
     chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 8000
-CMD ["/usr/local/bin/entrypoint.sh", "daphne", "-b", "0.0.0.0", "-p", "8000", "backend.asgi:application"]
+CMD ["/usr/local/bin/entrypoint.sh", "daphne", "-b", "0.0.0.0", "-p", "8000", "backend.asgi:application"] 

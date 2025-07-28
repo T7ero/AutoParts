@@ -191,13 +191,18 @@ def parse_armtek_selenium(artikul):
     options.add_argument('--disable-background-timer-throttling')  # Отключаем ограничения таймеров
     options.add_argument('--disable-backgrounding-occluded-windows')  # Отключаем фоновую обработку
     options.add_argument('--disable-renderer-backgrounding')  # Отключаем фоновую обработку рендерера
+    options.add_argument('--disable-blink-features=AutomationControlled')  # Скрываем автоматизацию
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
     
     driver = None
     try:
         # Очищаем зависшие процессы перед запуском
         cleanup_chrome_processes()
         
-        driver = webdriver.Chrome(options=options)
+        # Используем ChromeDriver из /usr/local/bin/
+        service = Service('/usr/local/bin/chromedriver')
+        driver = webdriver.Chrome(service=service, options=options)
         driver.set_page_load_timeout(SELENIUM_TIMEOUT)
         driver.implicitly_wait(5)  # Уменьшаем неявное ожидание
         
