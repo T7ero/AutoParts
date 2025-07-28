@@ -9,37 +9,45 @@ Err:1 http://deb.debian.org/debian bookworm InRelease
 
 ## Решение
 
-### Вариант 1: Использовать исправленный Dockerfile (рекомендуется)
+### Вариант 1: Использовать Ubuntu-based Dockerfile (рекомендуется)
 
-Используйте обновленный `backend/Dockerfile` который уже исправлен:
+Если проблемы с Debian продолжаются, используйте Ubuntu-based Dockerfile:
 
-```bash
-docker compose down
-docker compose build --no-cache
-docker compose up -d
-```
-
-### Вариант 2: Использовать альтернативный Dockerfile
-
-Если основной Dockerfile все еще вызывает проблемы, используйте альтернативный:
-
-1. Переименуйте файлы:
 ```bash
 cd backend
-mv Dockerfile Dockerfile.backup
-mv Dockerfile.alternative Dockerfile
+mv Dockerfile Dockerfile.debian
+mv Dockerfile.ubuntu Dockerfile
+docker compose down
+docker compose build --no-cache
+docker compose up -d
 ```
 
-2. Пересоберите контейнеры:
+### Вариант 2: Использовать простой Dockerfile
+
+Если нужен минимальный набор зависимостей:
+
+```bash
+cd backend
+mv Dockerfile Dockerfile.debian
+mv Dockerfile.simple Dockerfile
+docker compose down
+docker compose build --no-cache
+docker compose up -d
+```
+
+### Вариант 3: Использовать исправленный Debian Dockerfile
+
+Попробуйте обновленный основной Dockerfile:
+
 ```bash
 docker compose down
 docker compose build --no-cache
 docker compose up -d
 ```
 
-### Вариант 3: Ручное исправление
+### Вариант 4: Ручное исправление
 
-Если проблемы продолжаются, можно попробовать:
+Если проблемы продолжаются:
 
 1. Очистить Docker кеш:
 ```bash
@@ -60,22 +68,30 @@ sudo yum update docker
 sudo systemctl restart docker
 ```
 
-## Внесенные изменения
+4. Попробовать другой базовый образ:
+```bash
+# В Dockerfile заменить
+FROM python:3.10-slim
+# на
+FROM python:3.10-bullseye
+```
 
-### 1. Упрощенный Dockerfile
-- Убраны проблемные GPG ключи
-- Упрощена установка зависимостей
-- Использование стандартных репозиториев
+## Доступные варианты Dockerfile
 
-### 2. Альтернативный Dockerfile
-- Установка Google Chrome через официальный репозиторий
-- Автоматическая установка ChromeDriver
-- Более надежная конфигурация
+### 1. Dockerfile.ubuntu (Ubuntu 22.04)
+- Более стабильный базовый образ
+- Меньше проблем с GPG ключами
+- Полная поддержка Chrome
 
-### 3. Обновленный парсер
-- Поддержка Google Chrome вместо Chromium
-- Улучшенные опции для стабильности
-- Скрытие автоматизации
+### 2. Dockerfile.simple (Минимальный)
+- Только необходимые зависимости
+- Установка Chrome через официальный репозиторий
+- Быстрая сборка
+
+### 3. Dockerfile (Debian slim)
+- Обновленный основной файл
+- Раздельная установка зависимостей
+- Оптимизированная структура
 
 ## Проверка работоспособности
 
@@ -118,4 +134,18 @@ docker exec -it autoparts-celery-1 chromedriver --version
 ### Для разработки
 1. Используйте volume mounts для быстрой разработки
 2. Настройте hot reload для изменений кода
-3. Используйте Docker Compose override для локальных настроек 
+3. Используйте Docker Compose override для локальных настроек
+
+## Быстрое решение
+
+Если нужно быстро запустить проект:
+
+```bash
+# Использовать Ubuntu-based образ
+cd backend
+mv Dockerfile Dockerfile.debian
+mv Dockerfile.ubuntu Dockerfile
+docker compose down
+docker compose build --no-cache
+docker compose up -d
+``` 

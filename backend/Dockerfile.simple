@@ -2,37 +2,33 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Обновляем ключи и устанавливаем базовые зависимости
+# Устанавливаем только необходимые зависимости
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
-        gnupg \
         wget \
         curl \
         unzip \
         xvfb \
         procps \
         gcc \
-        python3-dev \
-        fonts-liberation \
-        libasound2 \
-        libatk-bridge2.0-0 \
-        libdrm2 \
-        libgtk-3-0 \
-        libnspr4 \
-        libnss3 \
-        libxcomposite1 \
-        libxdamage1 \
-        libxrandr2 \
-        xdg-utils && \
+        python3-dev && \
     rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем Chrome через snap или альтернативный способ
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        chromium \
-        chromium-driver && \
+# Устанавливаем Chrome и ChromeDriver вручную
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - && \
+    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends google-chrome-stable && \
     rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем ChromeDriver
+RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | awk -F'.' '{print $1}') && \
+    wget -q "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION" -O - | xargs -I {} wget -q "https://chromedriver.storage.googleapis.com/{}/chromedriver_linux64.zip" && \
+    unzip chromedriver_linux64.zip && \
+    mv chromedriver /usr/local/bin/ && \
+    chmod +x /usr/local/bin/chromedriver && \
+    rm chromedriver_linux64.zip
 
 # Создаем пользователя для запуска Chrome
 RUN groupadd -r chrome && useradd -r -g chrome -G audio,video chrome \
@@ -58,4 +54,4 @@ RUN echo '#!/bin/bash\nXvfb :99 -screen 0 1280x720x24 &\nexport DISPLAY=:99\nexe
     chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 8000
-CMD ["/usr/local/bin/entrypoint.sh", "daphne", "-b", "0.0.0.0", "-p", "8000", "backend.asgi:application"]
+CMD ["/usr/local/bin/entrypoint.sh", "daphne", "-b", "0.0.0.0", "-p", "8000", "backend.asgi:application"] 
