@@ -68,8 +68,37 @@ RUN pip3 install daphne
 # Собираем статику
 RUN python3 manage.py collectstatic --noinput
 
-# Создаем скрипт для запуска Xvfb
-RUN echo '#!/bin/bash\nXvfb :99 -screen 0 1280x720x24 &\nexport DISPLAY=:99\nexec "$@"' > /usr/local/bin/entrypoint.sh && \
+# Создаем скрипт для запуска с миграциями
+RUN echo '#!/bin/bash\n\
+# Ждем готовности базы данных\n\
+echo "Waiting for database..."\n\
+while ! python3 manage.py check --database default 2>/dev/null; do\n\
+    echo "Database not ready, waiting..."\n\
+    sleep 2\n\
+done\n\
+echo "Database is ready!"\n\
+\n\
+# Выполняем миграции\n\
+echo "Running migrations..."\n\
+python3 manage.py migrate\n\
+\n\
+# Создаем суперпользователя если не существует\n\
+echo "Creating superuser..."\n\
+python3 manage.py shell -c "\n\
+from django.contrib.auth.models import User\n\
+if not User.objects.filter(username=\"admin\").exists():\n\
+    User.objects.create_superuser(\"admin\", \"admin@example.com\", \"admin\")\n\
+    print(\"Superuser created\")\n\
+else:\n\
+    print(\"Superuser already exists\")\n\
+"\n\
+\n\
+# Запускаем Xvfb\n\
+Xvfb :99 -screen 0 1280x720x24 &\n\
+export DISPLAY=:99\n\
+\n\
+# Запускаем приложение\n\
+exec "$@"' > /usr/local/bin/entrypoint.sh && \
     chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 8000

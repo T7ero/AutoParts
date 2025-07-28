@@ -10,21 +10,33 @@ services:
     volumes:
       - ./pg_data:/var/lib/postgresql/data
     restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d autoparts"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7
     restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   backend:
     build: ./backend
-    command: daphne -b 0.0.0.0 -p 8000 backend.asgi:application
+    command: /usr/local/bin/entrypoint.sh daphne -b 0.0.0.0 -p 8000 backend.asgi:application
     volumes:
       - ./backend:/app
       - ./backend/media:/app/media
       - ./backend/static:/app/static
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       - DJANGO_SETTINGS_MODULE=backend.settings
       - CELERY_BROKER_URL=redis://redis:6379/0
@@ -42,14 +54,17 @@ services:
 
   celery:
     build: ./backend
-    command: celery -A backend worker -l info --concurrency=1 --max-tasks-per-child=10 --prefetch-multiplier=1
+    command: /usr/local/bin/entrypoint.sh celery -A backend worker -l info --concurrency=1 --max-tasks-per-child=10 --prefetch-multiplier=1
     volumes:
       - ./backend:/app
       - ./backend/media:/app/media
     depends_on:
-      - backend
-      - redis
-      - db
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
     environment:
       - DJANGO_SETTINGS_MODULE=backend.settings
       - CELERY_BROKER_URL=redis://redis:6379/0
