@@ -1,9 +1,40 @@
 # Исправление проблем с Docker Build
 
 ## Проблема
-Ошибка при установке Google Chrome:
+Ошибка при установке ChromeDriver:
 ```
-E: gnupg, gnupg2 and gnupg1 do not seem to be installed, but one of them is required for this operation
+unzip: cannot find or open chromedriver_linux64.zip
+```
+
+## Быстрое решение
+
+### Вариант 1: Использовать фиксированную версию ChromeDriver
+```bash
+cd backend
+mv Dockerfile Dockerfile.google
+mv Dockerfile.fixed Dockerfile
+cd ..
+docker compose down
+docker compose build --no-cache
+docker compose up -d
+```
+
+### Вариант 2: Использовать Chromium
+```bash
+cd backend
+mv Dockerfile Dockerfile.google
+mv Dockerfile.chromium Dockerfile
+cd ..
+docker compose down
+docker compose build --no-cache
+docker compose up -d
+```
+
+### Вариант 3: Использовать исправленный основной Dockerfile
+```bash
+docker compose down
+docker compose build --no-cache
+docker compose up -d
 ```
 
 ## Решение
@@ -32,12 +63,12 @@ docker compose build --no-cache
 docker compose up -d
 ```
 
-### Вариант 3: Использовать простой Dockerfile
+### Вариант 3: Использовать фиксированную версию ChromeDriver
 
 ```bash
 cd backend
 mv Dockerfile Dockerfile.google
-mv Dockerfile.simple Dockerfile
+mv Dockerfile.fixed Dockerfile
 cd ..
 docker compose down
 docker compose build --no-cache
@@ -49,14 +80,20 @@ docker compose up -d
 ### 1. Dockerfile (Google Chrome) - РЕКОМЕНДУЕТСЯ
 - Исправлен с добавлением `gnupg`
 - Использует современный способ установки GPG ключей
+- Улучшенная установка ChromeDriver с отладкой
 - Полная поддержка Google Chrome
 
-### 2. Dockerfile.chromium (Chromium)
+### 2. Dockerfile.fixed (Фиксированная версия)
+- Использует фиксированную версию ChromeDriver (120.0.6099.109)
+- Стабильная и предсказуемая сборка
+- Не зависит от динамического определения версии
+
+### 3. Dockerfile.chromium (Chromium)
 - Использует Chromium вместо Google Chrome
 - Меньше зависимостей
 - Более стабильная установка
 
-### 3. Dockerfile.simple (Минимальный)
+### 4. Dockerfile.simple (Минимальный)
 - Только необходимые зависимости
 - Установка Chrome через официальный репозиторий
 - Быстрая сборка
@@ -77,7 +114,32 @@ RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearm
     echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google.list
 ```
 
-### 3. Обновленный парсер
+### 3. Улучшенная установка ChromeDriver
+```dockerfile
+RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | awk -F'.' '{print $1}') && \
+    echo "Chrome version: $CHROME_VERSION" && \
+    LATEST_RELEASE=$(wget -qO- "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION") && \
+    echo "Latest ChromeDriver release: $LATEST_RELEASE" && \
+    wget -q "https://chromedriver.storage.googleapis.com/$LATEST_RELEASE/chromedriver_linux64.zip" -O chromedriver.zip && \
+    ls -la chromedriver.zip && \
+    unzip chromedriver.zip && \
+    mv chromedriver /usr/local/bin/ && \
+    chmod +x /usr/local/bin/chromedriver && \
+    rm chromedriver.zip && \
+    chromedriver --version
+```
+
+### 4. Фиксированная версия ChromeDriver
+```dockerfile
+RUN wget -q "https://chromedriver.storage.googleapis.com/120.0.6099.109/chromedriver_linux64.zip" -O chromedriver.zip && \
+    unzip chromedriver.zip && \
+    mv chromedriver /usr/local/bin/ && \
+    chmod +x /usr/local/bin/chromedriver && \
+    rm chromedriver.zip && \
+    chromedriver --version
+```
+
+### 5. Обновленный парсер
 - Поддержка как Google Chrome, так и Chromium
 - Автоматическое определение ChromeDriver
 - Улучшенная обработка ошибок
@@ -114,9 +176,10 @@ docker exec -it autoparts-celery-1 chromedriver --version
 - Корректная установка Chrome/Chromium и ChromeDriver
 
 ### Если проблемы продолжаются
-1. Используйте Chromium-based Dockerfile
-2. Проверьте интернет-соединение
-3. Попробуйте использовать VPN
+1. Используйте фиксированную версию ChromeDriver
+2. Используйте Chromium-based Dockerfile
+3. Проверьте интернет-соединение
+4. Попробуйте использовать VPN
 
 ## Дополнительные рекомендации
 
@@ -135,10 +198,10 @@ docker exec -it autoparts-celery-1 chromedriver --version
 Если нужно быстро запустить проект:
 
 ```bash
-# Использовать Chromium-based образ
+# Использовать фиксированную версию ChromeDriver
 cd backend
 mv Dockerfile Dockerfile.google
-mv Dockerfile.chromium Dockerfile
+mv Dockerfile.fixed Dockerfile
 cd ..
 docker compose down
 docker compose build --no-cache
