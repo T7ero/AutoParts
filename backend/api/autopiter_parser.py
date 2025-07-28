@@ -28,10 +28,28 @@ def log_debug(message):
 def cleanup_chrome_processes():
     """Принудительно завершает зависшие процессы Chrome"""
     try:
-        # Завершаем процессы chrome
+        # Завершаем процессы chrome с разными вариантами имен
         subprocess.run(['pkill', '-f', 'chrome'], capture_output=True)
         subprocess.run(['pkill', '-f', 'chromedriver'], capture_output=True)
-        time.sleep(1)  # Даем время на завершение
+        subprocess.run(['pkill', '-f', 'google-chrome'], capture_output=True)
+        subprocess.run(['pkill', '-f', 'chromium'], capture_output=True)
+        
+        # Дополнительная очистка через ps и kill
+        try:
+            ps_output = subprocess.check_output(['ps', 'aux'], text=True)
+            for line in ps_output.split('\n'):
+                if 'chrome' in line.lower() or 'chromedriver' in line.lower():
+                    parts = line.split()
+                    if len(parts) > 1:
+                        pid = parts[1]
+                        try:
+                            subprocess.run(['kill', '-9', pid], capture_output=True)
+                        except:
+                            pass
+        except:
+            pass
+        
+        time.sleep(2)  # Увеличиваем время ожидания
     except Exception as e:
         log_debug(f"Error cleaning up Chrome processes: {e}")
 
@@ -115,7 +133,12 @@ def get_brands_by_artikul_armtek(artikul, proxies=None):
     if api_brands:
         return api_brands
     
-    # 2. Если API не сработало, используем Selenium с улучшенными селекторами
+    # 2. Пробуем простой HTTP запрос
+    http_brands = parse_armtek_http(artikul, proxies)
+    if http_brands:
+        return http_brands
+    
+    # 3. Если API и HTTP не сработали, используем Selenium с улучшенными селекторами
     return parse_armtek_selenium(artikul)
 
 def parse_armtek_api(artikul, proxies=None):
@@ -183,7 +206,6 @@ def parse_armtek_selenium(artikul):
     options.add_argument('--disable-plugins')  # Отключаем плагины
     options.add_argument('--disable-images')  # Отключаем загрузку изображений
     options.add_argument('--disable-javascript')  # Отключаем JavaScript если возможно
-    options.add_argument(f'--user-data-dir={temp_dir}')  # Уникальная директория
     options.add_argument('--remote-debugging-port=0')  # Случайный порт
     options.add_argument('--disable-web-security')  # Отключаем CORS
     options.add_argument('--allow-running-insecure-content')  # Разрешаем небезопасный контент
@@ -192,6 +214,25 @@ def parse_armtek_selenium(artikul):
     options.add_argument('--disable-backgrounding-occluded-windows')  # Отключаем фоновую обработку
     options.add_argument('--disable-renderer-backgrounding')  # Отключаем фоновую обработку рендерера
     options.add_argument('--disable-blink-features=AutomationControlled')  # Скрываем автоматизацию
+    options.add_argument('--disable-dev-shm-usage')  # Отключаем /dev/shm
+    options.add_argument('--disable-application-cache')  # Отключаем кеш приложения
+    options.add_argument('--disable-offline-load-stale-cache')  # Отключаем загрузку устаревшего кеша
+    options.add_argument('--disk-cache-size=0')  # Отключаем кеш на диске
+    options.add_argument('--media-cache-size=0')  # Отключаем кеш медиа
+    options.add_argument('--disable-background-networking')  # Отключаем фоновую сеть
+    options.add_argument('--disable-sync')  # Отключаем синхронизацию
+    options.add_argument('--disable-translate')  # Отключаем перевод
+    options.add_argument('--disable-default-apps')  # Отключаем приложения по умолчанию
+    options.add_argument('--disable-component-extensions-with-background-pages')  # Отключаем расширения с фоновыми страницами
+    options.add_argument('--disable-background-mode')  # Отключаем фоновый режим
+    options.add_argument('--disable-client-side-phishing-detection')  # Отключаем детекцию фишинга
+    options.add_argument('--disable-hang-monitor')  # Отключаем монитор зависания
+    options.add_argument('--disable-prompt-on-repost')  # Отключаем запрос при повторной отправке
+    options.add_argument('--disable-domain-reliability')  # Отключаем надежность домена
+    options.add_argument('--disable-ipc-flooding-protection')  # Отключаем защиту от IPC флуда
+    options.add_argument('--disable-renderer-backgrounding')  # Отключаем фоновую обработку рендерера
+    options.add_argument('--disable-features=TranslateUI')  # Отключаем UI перевода
+    options.add_argument('--disable-features=BlinkGenPropertyTrees')  # Отключаем генерацию деревьев свойств
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
     
@@ -262,6 +303,61 @@ def parse_armtek_selenium(artikul):
             pass
         # Очищаем зависшие процессы после завершения
         cleanup_chrome_processes()
+
+def parse_armtek_http(artikul, proxies=None):
+    """Парсинг Armtek через простой HTTP запрос"""
+    url = f"https://armtek.ru/search?text={quote(artikul)}"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3",
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, proxies=proxies, timeout=10)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            brands = set()
+            
+            # Ищем бренды в различных селекторах
+            selectors = [
+                'span.font__body2.brand--selecting',
+                '.product-card .brand-name',
+                '.product-card__brand',
+                '[itemprop="brand"]',
+                '.catalog-item__brand',
+                '.brand-name',
+                '.product-brand',
+                'span[data-brand]',
+                '.item-brand'
+            ]
+            
+            for selector in selectors:
+                for tag in soup.select(selector):
+                    brand = tag.get_text(strip=True)
+                    if brand and len(brand) > 2 and not brand.isdigit():
+                        brands.add(brand)
+            
+            # Дополнительный поиск по тексту
+            for tag in soup.find_all(['span', 'div', 'a']):
+                text = tag.get_text(strip=True)
+                if text and len(text) > 2 and len(text) < 50:
+                    # Проверяем, не является ли текст брендом
+                    if any(keyword in text.lower() for keyword in ['brand', 'бренд', 'производитель']):
+                        continue
+                    if text.isupper() or (text[0].isupper() and text[1:].islower()):
+                        brands.add(text)
+            
+            return sorted(brands) if brands else []
+            
+    except Exception as e:
+        log_debug(f"HTTP parsing error: {str(e)}")
+        return []
 
 def get_brands_by_artikul_emex(artikul, proxies=None):
     """Парсер для Emex с оптимизацией"""
