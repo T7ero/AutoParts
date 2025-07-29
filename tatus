@@ -1,0 +1,5 @@
+[33m14138791[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m fix: timeout parcing
+[33m08e74d3b[m fix: parcer
+[33m51b62920[m fix: git
+[33m951f28b7[m Fix Docker build issues and update parser - Add Python cache exclusions to .gitignore - Update Dockerfile with database initialization - Fix ChromeDriver installation - Update docker-compose.yml with healthchecks - Add init_db.sh script for database setup
+[33m1b963da8[m fix: auth db
