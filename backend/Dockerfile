@@ -4,7 +4,7 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-# Обновляем систему и устанавливаем зависимости
+# Обновляем систему и устанавливаем базовые зависимости
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -13,16 +13,17 @@ RUN apt-get update && \
         gnupg \
         software-properties-common \
         apt-transport-https \
-        lsb-release && \
+        lsb-release \
+        unzip && \
     rm -rf /var/lib/apt/lists/*
 
-# Исправляем GPG ключи Ubuntu
-RUN apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 3B4FE6ACC0B21F32 871920D1991BC93F && \
+# Исправляем GPG ключи Ubuntu - более надежный подход
+RUN apt-get update && \
+    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 3B4FE6ACC0B21F32 && \
     apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 871920D1991BC93F && \
-    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 3B4FE6ACC0B21F32
-
-# Обновляем список пакетов с исправленными ключами
-RUN apt-get update
+    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 648ACFD622F3D138 && \
+    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 0E98404D386FA1D9 && \
+    apt-get update
 
 # Устанавливаем Python и зависимости
 RUN apt-get install -y --no-install-recommends \

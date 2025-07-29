@@ -1,19 +1,20 @@
 FROM python:3.10-slim
 
-WORKDIR /app
+# Устанавливаем переменные окружения
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
 
-# Обновляем систему и устанавливаем базовые зависимости
+# Обновляем систему и устанавливаем зависимости
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
-        gnupg \
-        wget \
         curl \
+        wget \
+        gnupg \
         unzip \
         xvfb \
         procps \
         gcc \
-        python3-dev \
         fonts-liberation \
         libasound2 \
         libatk-bridge2.0-0 \
@@ -24,46 +25,87 @@ RUN apt-get update && \
         libxcomposite1 \
         libxdamage1 \
         libxrandr2 \
-        xdg-utils && \
-    rm -rf /var/lib/apt/lists/*
+        libxss1 \
+        libxtst6 \
+        xdg-utils \
+        postgresql-client \
+        libpq-dev \
+        && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем Chrome и ChromeDriver через официальный репозиторий
-RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - && \
-    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list && \
+# Устанавливаем Chrome используя современный способ
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends google-chrome-stable && \
     rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем ChromeDriver
+# Устанавливаем ChromeDriver более надежным способом
 RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | awk -F'.' '{print $1}') && \
-    wget -q "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION" -O - | xargs -I {} wget -q "https://chromedriver.storage.googleapis.com/{}/chromedriver_linux64.zip" && \
-    unzip chromedriver_linux64.zip && \
+    echo "Chrome version: $CHROME_VERSION" && \
+    LATEST_RELEASE=$(wget -qO- "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION") && \
+    echo "Latest ChromeDriver release: $LATEST_RELEASE" && \
+    wget -q "https://chromedriver.storage.googleapis.com/$LATEST_RELEASE/chromedriver_linux64.zip" -O chromedriver.zip && \
+    ls -la chromedriver.zip && \
+    unzip chromedriver.zip && \
     mv chromedriver /usr/local/bin/ && \
     chmod +x /usr/local/bin/chromedriver && \
-    rm chromedriver_linux64.zip
+    rm chromedriver.zip && \
+    chromedriver --version
 
 # Создаем пользователя для запуска Chrome
-RUN groupadd -r chrome && useradd -r -g chrome -G audio,video chrome \
-    && mkdir -p /home/chrome/Downloads \
-    && chown -R chrome:chrome /home/chrome
+RUN groupadd -r chrome && useradd -r -g chrome -G audio,video chrome && \
+    mkdir -p /home/chrome && chown -R chrome:chrome /home/chrome
 
-# Копируем и устанавливаем Python-зависимости
-COPY requirements.txt ./
-RUN python -m pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Устанавливаем рабочую директорию
+WORKDIR /app
 
-# Копируем остальные файлы
+# Копируем requirements.txt
+COPY requirements.txt .
+
+# Устанавливаем Python зависимости
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копируем код приложения
 COPY . .
 
-# Добавляем Daphne
-RUN pip install daphne
-
-# Собираем статику
-RUN python manage.py collectstatic --noinput
-
-# Создаем скрипт для запуска Xvfb
-RUN echo '#!/bin/bash\nXvfb :99 -screen 0 1280x720x24 &\nexport DISPLAY=:99\nexec "$@"' > /usr/local/bin/entrypoint.sh && \
+# Создаем скрипт для запуска с миграциями
+RUN echo '#!/bin/bash\n\
+# Ждем готовности базы данных\n\
+echo "Waiting for database..."\n\
+while ! python manage.py check --database default 2>/dev/null; do\n\
+    echo "Database not ready, waiting..."\n\
+    sleep 2\n\
+done\n\
+echo "Database is ready!"\n\
+\n\
+# Выполняем миграции\n\
+echo "Running migrations..."\n\
+python manage.py migrate\n\
+\n\
+# Создаем суперпользователя если не существует\n\
+echo "Creating superuser..."\n\
+python manage.py shell -c "\n\
+from django.contrib.auth.models import User\n\
+if not User.objects.filter(username=\"admin\").exists():\n\
+    User.objects.create_superuser(\"admin\", \"admin@example.com\", \"admin\")\n\
+    print(\"Superuser created\")\n\
+else:\n\
+    print(\"Superuser already exists\")\n\
+"\n\
+\n\
+# Запускаем Xvfb\n\
+Xvfb :99 -screen 0 1280x720x24 &\n\
+export DISPLAY=:99\n\
+\n\
+# Запускаем приложение\n\
+exec "$@"' > /usr/local/bin/entrypoint.sh && \
     chmod +x /usr/local/bin/entrypoint.sh
 
+# Собираем статические файлы
+RUN python manage.py collectstatic --noinput
+
+# Открываем порт
 EXPOSE 8000
+
+# Запускаем приложение
 CMD ["/usr/local/bin/entrypoint.sh", "daphne", "-b", "0.0.0.0", "-p", "8000", "backend.asgi:application"] 
