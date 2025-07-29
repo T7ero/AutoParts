@@ -16,7 +16,7 @@ def clean_excel_string(s):
     # Удаляем все управляющие символы, кроме табуляции и перевода строки
     return re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', '', s)
 
-@shared_task
+@shared_task(time_limit=1800, soft_time_limit=1500)  # 30 минут максимум, 25 минут мягкий лимит
 def process_parsing_task(task_id):
     task = ParsingTask.objects.get(id=task_id)
     log_messages = []
@@ -46,6 +46,9 @@ def process_parsing_task(task_id):
         # Очищаем DataFrame от пустых строк
         df.dropna(how='all', inplace=True)
         
+        # Инициализируем таймаут
+        task._timeout_check = time.time()
+        
         total_rows = len(df)
         results_autopiter = []
         results_armtek = []
@@ -55,7 +58,7 @@ def process_parsing_task(task_id):
             log_messages.append(msg)
             print(msg)
         
-        # Оптимизированная функция для параллельного парсинга
+        # Оптимизированная функция для параллельного парсинга с таймаутами
         def parse_all_parallel(numbers, brand, part_number, name):
             results = {'autopiter': [], 'emex': []}
             
@@ -73,21 +76,21 @@ def process_parsing_task(task_id):
                 return inner
             
             # Уменьшаем количество потоков для экономии ресурсов
-            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 # Autopiter
                 fut_autopiter = {executor.submit(parse_one('autopiter', get_brands_by_artikul), num): num for num in numbers}
                 # Emex
                 fut_emex = {executor.submit(parse_one('emex', get_brands_by_artikul_emex), num): num for num in numbers}
                 
                 # Обрабатываем результаты с таймаутом
-                for fut in concurrent.futures.as_completed(fut_autopiter, timeout=30):
+                for fut in concurrent.futures.as_completed(fut_autopiter, timeout=20):
                     try:
                         for res in fut.result():
                             results['autopiter'].append(res)
                     except Exception as e:
                         log(f"Error processing autopiter result: {str(e)}")
                 
-                for fut in concurrent.futures.as_completed(fut_emex, timeout=30):
+                for fut in concurrent.futures.as_completed(fut_emex, timeout=20):
                     try:
                         for res in fut.result():
                             results['emex'].append(res)
@@ -201,9 +204,15 @@ def process_parsing_task(task_id):
                     if (index + 1) % 50 == 0:
                         try:
                             cleanup_chrome_processes()
-                            log("Cleaned up Chrome processes")
+                            log("Performed periodic Chrome cleanup")
                         except Exception as e:
-                            log(f"Error cleaning up Chrome processes: {e}")
+                            log(f"Error during Chrome cleanup: {str(e)}")
+                    
+                    # Проверяем таймаут задачи
+                    if hasattr(task, '_timeout_check'):
+                        if time.time() - task._timeout_check > 1500:  # 25 минут
+                            log("Task timeout approaching, finishing up...")
+                            break
                 
             except Exception as e:
                 log(f"Error processing row {index}: {str(e)}")

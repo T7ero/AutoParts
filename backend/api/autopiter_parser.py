@@ -189,50 +189,56 @@ def parse_api_response(data):
 
 def parse_armtek_selenium(artikul):
     """Парсинг через Selenium с оптимизацией ресурсов"""
-    import tempfile
-    import os
-    import uuid
-    
-    # Создаем уникальную временную директорию для каждого запроса
-    temp_dir = tempfile.mkdtemp(prefix=f'chrome_{uuid.uuid4().hex[:8]}_')
-    
     options = webdriver.ChromeOptions()
     options.add_argument('--headless')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--window-size=1280,720')  # Уменьшаем размер окна
-    options.add_argument('--disable-gpu')  # Отключаем GPU
-    options.add_argument('--disable-extensions')  # Отключаем расширения
-    options.add_argument('--disable-plugins')  # Отключаем плагины
-    options.add_argument('--disable-images')  # Отключаем загрузку изображений
-    options.add_argument('--disable-javascript')  # Отключаем JavaScript если возможно
-    options.add_argument('--remote-debugging-port=0')  # Случайный порт
-    options.add_argument('--disable-web-security')  # Отключаем CORS
-    options.add_argument('--allow-running-insecure-content')  # Разрешаем небезопасный контент
-    options.add_argument('--disable-features=VizDisplayCompositor')  # Отключаем композитор
-    options.add_argument('--disable-background-timer-throttling')  # Отключаем ограничения таймеров
-    options.add_argument('--disable-backgrounding-occluded-windows')  # Отключаем фоновую обработку
-    options.add_argument('--disable-renderer-backgrounding')  # Отключаем фоновую обработку рендерера
-    options.add_argument('--disable-blink-features=AutomationControlled')  # Скрываем автоматизацию
-    options.add_argument('--disable-dev-shm-usage')  # Отключаем /dev/shm
-    options.add_argument('--disable-application-cache')  # Отключаем кеш приложения
-    options.add_argument('--disable-offline-load-stale-cache')  # Отключаем загрузку устаревшего кеша
-    options.add_argument('--disk-cache-size=0')  # Отключаем кеш на диске
-    options.add_argument('--media-cache-size=0')  # Отключаем кеш медиа
-    options.add_argument('--disable-background-networking')  # Отключаем фоновую сеть
-    options.add_argument('--disable-sync')  # Отключаем синхронизацию
-    options.add_argument('--disable-translate')  # Отключаем перевод
-    options.add_argument('--disable-default-apps')  # Отключаем приложения по умолчанию
-    options.add_argument('--disable-component-extensions-with-background-pages')  # Отключаем расширения с фоновыми страницами
-    options.add_argument('--disable-background-mode')  # Отключаем фоновый режим
-    options.add_argument('--disable-client-side-phishing-detection')  # Отключаем детекцию фишинга
-    options.add_argument('--disable-hang-monitor')  # Отключаем монитор зависания
-    options.add_argument('--disable-prompt-on-repost')  # Отключаем запрос при повторной отправке
-    options.add_argument('--disable-domain-reliability')  # Отключаем надежность домена
-    options.add_argument('--disable-ipc-flooding-protection')  # Отключаем защиту от IPC флуда
-    options.add_argument('--disable-renderer-backgrounding')  # Отключаем фоновую обработку рендерера
-    options.add_argument('--disable-features=TranslateUI')  # Отключаем UI перевода
-    options.add_argument('--disable-features=BlinkGenPropertyTrees')  # Отключаем генерацию деревьев свойств
+    options.add_argument('--window-size=1280,720')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--disable-extensions')
+    options.add_argument('--disable-plugins')
+    options.add_argument('--disable-images')
+    options.add_argument('--disable-javascript')
+    options.add_argument('--remote-debugging-port=0')
+    options.add_argument('--disable-web-security')
+    options.add_argument('--allow-running-insecure-content')
+    options.add_argument('--disable-features=VizDisplayCompositor')
+    options.add_argument('--disable-background-timer-throttling')
+    options.add_argument('--disable-backgrounding-occluded-windows')
+    options.add_argument('--disable-renderer-backgrounding')
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_argument('--disable-application-cache')
+    options.add_argument('--disable-offline-load-stale-cache')
+    options.add_argument('--disk-cache-size=0')
+    options.add_argument('--media-cache-size=0')
+    options.add_argument('--disable-background-networking')
+    options.add_argument('--disable-sync')
+    options.add_argument('--disable-translate')
+    options.add_argument('--disable-default-apps')
+    options.add_argument('--disable-component-extensions-with-background-pages')
+    options.add_argument('--disable-background-mode')
+    options.add_argument('--disable-client-side-phishing-detection')
+    options.add_argument('--disable-hang-monitor')
+    options.add_argument('--disable-prompt-on-repost')
+    options.add_argument('--disable-domain-reliability')
+    options.add_argument('--disable-ipc-flooding-protection')
+    options.add_argument('--disable-features=TranslateUI')
+    options.add_argument('--disable-features=BlinkGenPropertyTrees')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-shared-memory')
+    options.add_argument('--disable-software-rasterizer')
+    options.add_argument('--disable-background-timer-throttling')
+    options.add_argument('--disable-backgrounding-occluded-windows')
+    options.add_argument('--disable-renderer-backgrounding')
+    options.add_argument('--disable-features=TranslateUI')
+    options.add_argument('--disable-features=BlinkGenPropertyTrees')
+    options.add_argument('--disable-features=VizDisplayCompositor')
+    options.add_argument('--disable-features=TranslateUI')
+    options.add_argument('--disable-features=BlinkGenPropertyTrees')
+    options.add_argument('--disable-features=VizDisplayCompositor')
+    options.add_argument('--disable-features=TranslateUI')
+    options.add_argument('--disable-features=BlinkGenPropertyTrees')
+    options.add_argument('--disable-features=VizDisplayCompositor')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
     
@@ -250,13 +256,13 @@ def parse_armtek_selenium(artikul):
             driver = webdriver.Chrome(options=options)
         
         driver.set_page_load_timeout(SELENIUM_TIMEOUT)
-        driver.implicitly_wait(5)  # Уменьшаем неявное ожидание
+        driver.implicitly_wait(5)
         
         driver.get(f"https://armtek.ru/search?text={quote(artikul)}")
         
         # Улучшенное ожидание с несколькими вариантами селекторов
         try:
-            WebDriverWait(driver, 8).until(  # Уменьшаем время ожидания
+            WebDriverWait(driver, 8).until(
                 EC.presence_of_element_located(
                     (By.CSS_SELECTOR, ".product-card, [data-testid='product-item'], .catalog-item")
                 )
@@ -270,11 +276,11 @@ def parse_armtek_selenium(artikul):
         
         # Основные места расположения брендов
         brand_selectors = [
-            'span.font__body2.brand--selecting',  # Основной бренд (синий)
-            '.product-card .brand-name',          # Бренд в карточке
-            '.product-card__brand',              # Альтернативный селектор
-            '[itemprop="brand"]',                # Микроразметка
-            '.catalog-item__brand'              # Еще один вариант
+            'span.font__body2.brand--selecting',
+            '.product-card .brand-name',
+            '.product-card__brand',
+            '[itemprop="brand"]',
+            '.catalog-item__brand'
         ]
         
         brands = set()
@@ -295,12 +301,6 @@ def parse_armtek_selenium(artikul):
                 driver.quit()
             except:
                 pass
-        # Очищаем временную директорию
-        try:
-            import shutil
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        except:
-            pass
         # Очищаем зависшие процессы после завершения
         cleanup_chrome_processes()
 
