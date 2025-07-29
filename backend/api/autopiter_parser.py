@@ -15,12 +15,14 @@ import logging
 import subprocess
 import signal
 import os
+import tempfile
+import uuid
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
-TIMEOUT = 10  # Уменьшаем таймаут
-SELENIUM_TIMEOUT = 20  # Уменьшаем таймаут для Selenium
+TIMEOUT = 8  # Уменьшаем таймаут
+SELENIUM_TIMEOUT = 15  # Уменьшаем таймаут для Selenium
 
 def log_debug(message):
     print(f"[DEBUG] {message}")
@@ -49,7 +51,7 @@ def cleanup_chrome_processes():
         except:
             pass
         
-        time.sleep(2)  # Увеличиваем время ожидания
+        time.sleep(1)  # Уменьшаем время ожидания
     except Exception as e:
         log_debug(f"Error cleaning up Chrome processes: {e}")
 
@@ -65,7 +67,7 @@ def make_request(url, proxies=None, max_retries=2):  # Уменьшаем кол
             if response.status_code == 200:
                 return response
             elif response.status_code == 429:
-                wait_time = (attempt + 1) * 3  # Уменьшаем время ожидания
+                wait_time = (attempt + 1) * 2  # Уменьшаем время ожидания
                 log_debug(f"Rate limited. Waiting {wait_time} seconds...")
                 time.sleep(wait_time)
             else:
@@ -74,7 +76,7 @@ def make_request(url, proxies=None, max_retries=2):  # Уменьшаем кол
             log_debug(f"Request error (attempt {attempt + 1}): {str(e)}")
         
         if attempt < max_retries - 1:
-            time.sleep(1)  # Уменьшаем задержку
+            time.sleep(0.5)  # Уменьшаем задержку
     
     return None
 
@@ -153,7 +155,7 @@ def parse_armtek_api(artikul, proxies=None):
                 "X-Requested-With": "XMLHttpRequest"
             },
             proxies=proxies,
-            timeout=8  # Уменьшаем таймаут
+            timeout=6  # Уменьшаем таймаут
         )
         
         if response.status_code == 200:
@@ -189,10 +191,14 @@ def parse_api_response(data):
 
 def parse_armtek_selenium(artikul):
     """Парсинг через Selenium с оптимизацией ресурсов"""
+    # Создаем уникальную временную директорию для каждого запроса
+    temp_dir = tempfile.mkdtemp(prefix=f'chrome_{uuid.uuid4().hex[:8]}_')
+    
     options = webdriver.ChromeOptions()
     options.add_argument('--headless')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--user-data-dir=' + temp_dir)  # Уникальная директория
     options.add_argument('--window-size=1280,720')
     options.add_argument('--disable-gpu')
     options.add_argument('--disable-extensions')
@@ -227,18 +233,6 @@ def parse_armtek_selenium(artikul):
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-shared-memory')
     options.add_argument('--disable-software-rasterizer')
-    options.add_argument('--disable-background-timer-throttling')
-    options.add_argument('--disable-backgrounding-occluded-windows')
-    options.add_argument('--disable-renderer-backgrounding')
-    options.add_argument('--disable-features=TranslateUI')
-    options.add_argument('--disable-features=BlinkGenPropertyTrees')
-    options.add_argument('--disable-features=VizDisplayCompositor')
-    options.add_argument('--disable-features=TranslateUI')
-    options.add_argument('--disable-features=BlinkGenPropertyTrees')
-    options.add_argument('--disable-features=VizDisplayCompositor')
-    options.add_argument('--disable-features=TranslateUI')
-    options.add_argument('--disable-features=BlinkGenPropertyTrees')
-    options.add_argument('--disable-features=VizDisplayCompositor')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
     
@@ -256,13 +250,13 @@ def parse_armtek_selenium(artikul):
             driver = webdriver.Chrome(options=options)
         
         driver.set_page_load_timeout(SELENIUM_TIMEOUT)
-        driver.implicitly_wait(5)
+        driver.implicitly_wait(3)  # Уменьшаем неявное ожидание
         
         driver.get(f"https://armtek.ru/search?text={quote(artikul)}")
         
         # Улучшенное ожидание с несколькими вариантами селекторов
         try:
-            WebDriverWait(driver, 8).until(
+            WebDriverWait(driver, 6).until(
                 EC.presence_of_element_located(
                     (By.CSS_SELECTOR, ".product-card, [data-testid='product-item'], .catalog-item")
                 )
@@ -303,6 +297,12 @@ def parse_armtek_selenium(artikul):
                 pass
         # Очищаем зависшие процессы после завершения
         cleanup_chrome_processes()
+        # Удаляем временную директорию
+        try:
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except:
+            pass
 
 def parse_armtek_http(artikul, proxies=None):
     """Парсинг Armtek через простой HTTP запрос"""
@@ -318,7 +318,7 @@ def parse_armtek_http(artikul, proxies=None):
     }
     
     try:
-        response = requests.get(url, headers=headers, proxies=proxies, timeout=10)
+        response = requests.get(url, headers=headers, proxies=proxies, timeout=8)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
@@ -375,7 +375,7 @@ def get_brands_by_artikul_emex(artikul, proxies=None):
     log_debug(f"[API] Emex: запрос к {api_url}")
     
     try:
-        response = requests.get(api_url, headers=headers, proxies=proxies, timeout=8)  # Уменьшаем таймаут
+        response = requests.get(api_url, headers=headers, proxies=proxies, timeout=6)  # Уменьшаем таймаут
         if response.status_code != 200:
             log_debug(f"[API] Emex: HTTP ошибка {response.status_code}")
             return []

@@ -16,7 +16,7 @@ def clean_excel_string(s):
     # Удаляем все управляющие символы, кроме табуляции и перевода строки
     return re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', '', s)
 
-@shared_task(time_limit=1800, soft_time_limit=1500)  # 30 минут максимум, 25 минут мягкий лимит
+@shared_task(time_limit=3600, soft_time_limit=3000)  # 60 минут максимум, 50 минут мягкий лимит
 def process_parsing_task(task_id):
     task = ParsingTask.objects.get(id=task_id)
     log_messages = []
@@ -66,7 +66,7 @@ def process_parsing_task(task_id):
                 def inner(num):
                     try:
                         # Добавляем небольшую задержку между запросами
-                        time.sleep(0.1)
+                        time.sleep(0.05)  # Уменьшаем задержку
                         brands = func(num)
                         log(f"{site}: {num} → {brands}")
                         return [(brand, part_number, name, b, num, site) for b in brands]
@@ -76,21 +76,21 @@ def process_parsing_task(task_id):
                 return inner
             
             # Уменьшаем количество потоков для экономии ресурсов
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:  # Уменьшаем до 1 потока
                 # Autopiter
                 fut_autopiter = {executor.submit(parse_one('autopiter', get_brands_by_artikul), num): num for num in numbers}
                 # Emex
                 fut_emex = {executor.submit(parse_one('emex', get_brands_by_artikul_emex), num): num for num in numbers}
                 
                 # Обрабатываем результаты с таймаутом
-                for fut in concurrent.futures.as_completed(fut_autopiter, timeout=20):
+                for fut in concurrent.futures.as_completed(fut_autopiter, timeout=15):  # Уменьшаем таймаут
                     try:
                         for res in fut.result():
                             results['autopiter'].append(res)
                     except Exception as e:
                         log(f"Error processing autopiter result: {str(e)}")
                 
-                for fut in concurrent.futures.as_completed(fut_emex, timeout=20):
+                for fut in concurrent.futures.as_completed(fut_emex, timeout=15):  # Уменьшаем таймаут
                     try:
                         for res in fut.result():
                             results['emex'].append(res)
@@ -145,18 +145,18 @@ def process_parsing_task(task_id):
                     results = []
                     
                     def parse_one(num):
-                        max_retries = 2
+                        max_retries = 1  # Уменьшаем количество попыток
                         for attempt in range(max_retries):
                             try:
                                 # Добавляем задержку для Selenium
-                                time.sleep(0.2)
+                                time.sleep(0.1)  # Уменьшаем задержку
                                 brands = get_brands_by_artikul_armtek(num)
                                 log(f"armtek: {num} → {brands}")
                                 return [(brand, part_number, name, b, num, 'armtek') for b in brands]
                             except Exception as e:
                                 log(f"Error parsing armtek for {num} (attempt {attempt + 1}): {str(e)}")
                                 if attempt < max_retries - 1:
-                                    time.sleep(2)  # Ждем перед повторной попыткой
+                                    time.sleep(1)  # Уменьшаем время ожидания
                                 else:
                                     log(f"Failed to parse armtek for {num} after {max_retries} attempts")
                                     return []
@@ -164,7 +164,7 @@ def process_parsing_task(task_id):
                     # Уменьшаем количество потоков для Selenium
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:  # Уменьшаем до 1 потока
                         futs = {executor.submit(parse_one, num): num for num in numbers}
-                        for fut in concurrent.futures.as_completed(futs, timeout=120):  # Увеличиваем таймаут
+                        for fut in concurrent.futures.as_completed(futs, timeout=30):  # Уменьшаем таймаут
                             try:
                                 for res in fut.result():
                                     results.append(res)
