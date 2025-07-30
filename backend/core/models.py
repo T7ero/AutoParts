@@ -1,3 +1,5 @@
+import os
+import tempfile
 from django.db import models
 from django.contrib.auth.models import User
 from django.db.models import JSONField
@@ -32,6 +34,16 @@ class CrossReference(models.Model):
     def __str__(self):
         return f"{self.competitor_brand} - {self.competitor_number}"
 
+def get_upload_path(instance, filename):
+    """Определяет путь для загрузки файлов с fallback на временную директорию"""
+    try:
+        # Пробуем использовать стандартную директорию
+        return f'uploads/{filename}'
+    except PermissionError:
+        # Если нет прав, используем временную директорию
+        temp_dir = tempfile.gettempdir()
+        return os.path.join(temp_dir, filename)
+
 class ParsingTask(models.Model):
     """Модель для отслеживания задач парсинга"""
     STATUS_CHOICES = [
@@ -42,7 +54,7 @@ class ParsingTask(models.Model):
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)
-    file = models.FileField(upload_to='uploads/', verbose_name="Файл для парсинга")
+    file = models.FileField(upload_to=get_upload_path, verbose_name="Файл для парсинга")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     progress = models.IntegerField(default=0)
     result_file = models.FileField(upload_to='results/', null=True, blank=True)
