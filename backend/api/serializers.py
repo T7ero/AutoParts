@@ -29,4 +29,13 @@ class ParsingTaskSerializer(serializers.ModelSerializer):
         if value.size > 10 * 1024 * 1024:  # 10MB
             raise serializers.ValidationError("Размер файла не должен превышать 10MB")
         
-        return value 
+        return value
+    
+    def create(self, validated_data):
+        """Создание задачи с файлом"""
+        try:
+            task = ParsingTask.objects.create(**validated_data)
+            return task
+        except Exception as e:
+            print(f"Ошибка создания задачи: {str(e)}")
+            raise serializers.ValidationError(f"Ошибка создания задачи: {str(e)}") 

@@ -87,6 +87,9 @@ class ParsingTaskViewSet(viewsets.ModelViewSet):
             return Response(serializer.data, status=status.HTTP_201_CREATED)
             
         except Exception as e:
+            import traceback
+            print(f"Ошибка при создании задачи: {str(e)}")
+            print(f"Traceback: {traceback.format_exc()}")
             return Response(
                 {'error': f'Ошибка при создании задачи: {str(e)}'}, 
                 status=status.HTTP_400_BAD_REQUEST

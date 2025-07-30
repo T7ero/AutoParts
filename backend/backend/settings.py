@@ -156,12 +156,19 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
 DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
 FILE_UPLOAD_TEMP_DIR = os.path.join(BASE_DIR, 'media', 'temp')
 
+# Дополнительные настройки для отладки
+FILE_UPLOAD_HANDLERS = [
+    'django.core.files.uploadhandler.MemoryFileUploadHandler',
+    'django.core.files.uploadhandler.TemporaryFileUploadHandler',
+]
+
 # Создаем директории если их нет (с обработкой ошибок)
 try:
     os.makedirs(MEDIA_ROOT, exist_ok=True)
     os.makedirs(os.path.join(MEDIA_ROOT, 'uploads'), exist_ok=True)
     os.makedirs(os.path.join(MEDIA_ROOT, 'results'), exist_ok=True)
     os.makedirs(FILE_UPLOAD_TEMP_DIR, exist_ok=True)
+    print(f"✅ Директории созданы: {MEDIA_ROOT}")
 except PermissionError:
     # Если нет прав, используем временную директорию
     import tempfile
