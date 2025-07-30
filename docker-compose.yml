@@ -43,6 +43,13 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DATABASE_URL=postgres://postgres:postgres@db:5432/autoparts
+      - POSTGRES_DB=autoparts
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - DEBUG=True
+      - PYTHONUNBUFFERED=1
     restart: always
     deploy:
       resources:
@@ -71,12 +78,19 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DATABASE_URL=postgres://postgres:postgres@db:5432/autoparts
+      - POSTGRES_DB=autoparts
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
       - DISPLAY=:99
       - CHROME_HEADLESS=1
       - CHROME_NO_SANDBOX=1
       - CHROME_DISABLE_DEV_SHM=1
       - CHROME_USER_DATA_DIR=/tmp/chrome
       - CHROME_REMOTE_DEBUGGING_PORT=0
+      - DEBUG=True
+      - PYTHONUNBUFFERED=1
     restart: always
     deploy:
       resources:

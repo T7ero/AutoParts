@@ -100,11 +100,13 @@ DATABASES = {
         'HOST': 'db',
         'PORT': '5432',
         'OPTIONS': {
-            'connect_timeout': 10,
+            'connect_timeout': 30,
             'options': '-c statement_timeout=60000',
         },
         'CONN_MAX_AGE': 60,
         'CONN_HEALTH_CHECKS': True,
+        'ATOMIC_REQUESTS': False,
+        'AUTOCOMMIT': True,
     }
 }
 

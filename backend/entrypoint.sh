@@ -1,59 +1,92 @@
 #!/bin/bash
 
-# Ждем готовности базы данных
-echo "Waiting for database..."
+set -e
 
-max_attempts=60
+echo "🚀 Запуск AutoParts Backend..."
+
+# Ждем готовности базы данных
+echo "⏳ Ожидание готовности базы данных..."
+
+max_attempts=120
 attempt=0
 
 while [ $attempt -lt $max_attempts ]; do
+    echo "Попытка подключения к базе данных... (попытка $((attempt + 1))/$max_attempts)"
+    
+    # Проверяем подключение через psql
+    if command -v psql >/dev/null 2>&1; then
+        if PGPASSWORD=postgres psql -h db -U postgres -d autoparts -c "SELECT 1;" >/dev/null 2>&1; then
+            echo "✅ Подключение к PostgreSQL успешно!"
+            break
+        else
+            echo "❌ Подключение к PostgreSQL не удалось"
+        fi
+    fi
+    
+    # Проверяем через Django
     if python3 manage.py check --database default 2>/dev/null; then
-        echo "Database is ready!"
+        echo "✅ Django подключение к базе данных успешно!"
         break
     else
-        echo "Database not ready, waiting... (attempt $((attempt + 1))/$max_attempts)"
-        sleep 5
-        attempt=$((attempt + 1))
+        echo "❌ Django подключение к базе данных не удалось"
     fi
+    
+    echo "⏳ Ожидание 5 секунд..."
+    sleep 5
+    attempt=$((attempt + 1))
 done
 
 if [ $attempt -eq $max_attempts ]; then
-    echo "ERROR: Database connection failed after $max_attempts attempts"
-    echo "Trying to connect to database manually..."
+    echo "💥 ОШИБКА: Не удалось подключиться к базе данных после $max_attempts попыток"
+    echo "🔍 Диагностика:"
     
-    # Попытка подключения через psql
-    if command -v psql >/dev/null 2>&1; then
-        echo "Testing PostgreSQL connection..."
-        if PGPASSWORD=postgres psql -h db -U postgres -d autoparts -c "SELECT 1;" >/dev/null 2>&1; then
-            echo "PostgreSQL connection successful"
-        else
-            echo "PostgreSQL connection failed"
-        fi
-    fi
+    # Проверяем сеть
+    echo "📡 Проверка сети..."
+    ping -c 3 db || echo "❌ Не удается пинговать db"
+    
+    # Проверяем порт
+    echo "🔌 Проверка порта PostgreSQL..."
+    nc -z db 5432 && echo "✅ Порт 5432 доступен" || echo "❌ Порт 5432 недоступен"
+    
+    # Проверяем переменные окружения
+    echo "🔧 Переменные окружения:"
+    echo "DATABASE_URL: $DATABASE_URL"
+    echo "POSTGRES_DB: $POSTGRES_DB"
+    echo "POSTGRES_USER: $POSTGRES_USER"
     
     exit 1
 fi
 
+echo "✅ База данных готова!"
+
 # Выполняем миграции
-echo "Running migrations..."
-python3 manage.py migrate
+echo "🔄 Выполнение миграций..."
+python3 manage.py migrate --noinput
 
 # Создаем суперпользователя если не существует
-echo "Creating superuser..."
+echo "👤 Создание суперпользователя..."
 python3 manage.py shell -c "
 from django.contrib.auth.models import User
 if not User.objects.filter(username='admin').exists():
     User.objects.create_superuser('admin', 'admin@example.com', 'admin')
-    print('Superuser created')
+    print('✅ Суперпользователь создан')
 else:
-    print('Superuser already exists')
+    print('ℹ️ Суперпользователь уже существует')
 "
 
 # Запускаем Xvfb
-echo "Starting Xvfb..."
+echo "🖥️ Запуск Xvfb..."
 Xvfb :99 -screen 0 1280x720x24 &
 export DISPLAY=:99
 
+# Проверяем что Xvfb запустился
+sleep 2
+if pgrep Xvfb >/dev/null; then
+    echo "✅ Xvfb запущен"
+else
+    echo "⚠️ Xvfb не запустился, но продолжаем..."
+fi
+
 # Запускаем приложение
-echo "Starting application..."
+echo "🚀 Запуск приложения..."
 exec "$@" 
