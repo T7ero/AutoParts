@@ -99,6 +99,12 @@ DATABASES = {
         'PASSWORD': 'postgres',
         'HOST': 'db',
         'PORT': '5432',
+        'OPTIONS': {
+            'connect_timeout': 10,
+            'options': '-c statement_timeout=60000',
+        },
+        'CONN_MAX_AGE': 60,
+        'CONN_HEALTH_CHECKS': True,
     }
 }
 
