@@ -17,16 +17,8 @@ RUN apt-get update && \
         unzip && \
     rm -rf /var/lib/apt/lists/*
 
-# Исправляем GPG ключи Ubuntu - более надежный подход
-RUN apt-get update && \
-    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 3B4FE6ACC0B21F32 && \
-    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 871920D1991BC93F && \
-    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 648ACFD622F3D138 && \
-    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 0E98404D386FA1D9 && \
-    apt-get update
-
 # Устанавливаем Python и зависимости
-RUN apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
         python3-dev \
@@ -123,4 +115,4 @@ RUN python3 manage.py collectstatic --noinput
 EXPOSE 8000
 
 # Запускаем приложение
-CMD ["/usr/local/bin/entrypoint.sh", "daphne", "-b", "0.0.0.0", "-p", "8000", "backend.asgi:application"] 
+CMD ["/usr/local/bin/entrypoint.sh", "daphne", "-b", "0.0.0.0", "-p", "8000", "backend.asgi:application"]
