@@ -41,31 +41,56 @@ class ParsingTaskViewSet(viewsets.ModelViewSet):
     queryset = ParsingTask.objects.all()
     serializer_class = ParsingTaskSerializer
     permission_classes = [IsAuthenticated]
+    
     @action(detail=False, methods=['delete'])
     def clear(self, request):
         ParsingTask.objects.all().delete()
         return Response({'status': 'ok'})
 
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer)
-        headers = self.get_success_headers(serializer.data)
-        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
-
-    def perform_create(self, serializer):
         try:
-            if 'file' not in self.request.FILES:
-                raise ValueError('Файл не был загружен')
-            file = self.request.FILES['file']
+            # Проверяем наличие файла
+            if 'file' not in request.FILES:
+                return Response(
+                    {'error': 'Файл не был загружен'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            file = request.FILES['file']
+            
+            # Проверяем тип файла
             if not file.name.endswith('.xlsx'):
-                raise ValueError('Поддерживаются только файлы Excel (.xlsx)')
-            if file.size > 10 * 1024 * 1024:
-                raise ValueError('Размер файла не должен превышать 10MB')
-            task = serializer.save(user=self.request.user)
+                return Response(
+                    {'error': 'Поддерживаются только файлы Excel (.xlsx)'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Проверяем размер файла
+            if file.size > 10 * 1024 * 1024:  # 10MB
+                return Response(
+                    {'error': 'Размер файла не должен превышать 10MB'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Создаем задачу
+            task = ParsingTask.objects.create(
+                user=request.user,
+                file=file,
+                status='pending'
+            )
+            
+            # Запускаем задачу парсинга
             process_parsing_task.delay(task.id)
+            
+            # Возвращаем данные задачи
+            serializer = self.get_serializer(task)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            
         except Exception as e:
-            raise serializers.ValidationError({'error': str(e)})
+            return Response(
+                {'error': f'Ошибка при создании задачи: {str(e)}'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
     @action(detail=True, methods=['get'])
     def status(self, request, pk=None):

@@ -143,6 +143,17 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'static')
 MEDIA_URL = 'media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
+# Настройки для загрузки файлов
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
+FILE_UPLOAD_TEMP_DIR = os.path.join(BASE_DIR, 'media', 'temp')
+
+# Создаем директории если их нет
+os.makedirs(MEDIA_ROOT, exist_ok=True)
+os.makedirs(os.path.join(MEDIA_ROOT, 'uploads'), exist_ok=True)
+os.makedirs(os.path.join(MEDIA_ROOT, 'results'), exist_ok=True)
+os.makedirs(FILE_UPLOAD_TEMP_DIR, exist_ok=True)
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 

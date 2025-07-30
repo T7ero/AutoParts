@@ -16,4 +16,17 @@ class ParsingTaskSerializer(serializers.ModelSerializer):
         model = ParsingTask
         fields = ['id', 'user', 'file', 'status', 'progress', 'result_file', 'result_files', 'log',
                  'created_at', 'updated_at', 'error_message']
-        read_only_fields = ['user', 'status', 'progress', 'result_file', 'result_files', 'log', 'error_message'] 
+        read_only_fields = ['user', 'status', 'progress', 'result_file', 'result_files', 'log', 'error_message']
+    
+    def validate_file(self, value):
+        """Валидация загружаемого файла"""
+        if not value:
+            raise serializers.ValidationError("Файл не был загружен")
+        
+        if not value.name.endswith('.xlsx'):
+            raise serializers.ValidationError("Поддерживаются только файлы Excel (.xlsx)")
+        
+        if value.size > 10 * 1024 * 1024:  # 10MB
+            raise serializers.ValidationError("Размер файла не должен превышать 10MB")
+        
+        return value 
