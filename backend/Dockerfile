@@ -17,6 +17,8 @@ RUN apt-get update && \
         lsb-release \
         unzip \
         xvfb \
+        sudo \
+        gosu \
         && rm -rf /var/lib/apt/lists/*
 
 # Устанавливаем Python и зависимости
@@ -44,7 +46,8 @@ RUN ln -sf /usr/bin/chromium-browser /usr/bin/google-chrome && \
 RUN groupadd -r appuser && \
     useradd -r -g appuser -G audio,video appuser && \
     mkdir -p /home/appuser && \
-    chown -R appuser:appuser /home/appuser
+    chown -R appuser:appuser /home/appuser && \
+    echo "appuser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
 # Устанавливаем дополнительные зависимости
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -68,7 +71,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Создаем структуру директорий перед копированием файлов
+# Создаем структуру директорий с правильными правами
 RUN mkdir -p /app/media/uploads /app/media/results /app/media/temp /app/static && \
     chown -R appuser:appuser /app && \
     chmod -R 775 /app/media
@@ -76,7 +79,7 @@ RUN mkdir -p /app/media/uploads /app/media/results /app/media/temp /app/static &
 # Копируем requirements.txt
 COPY --chown=appuser:appuser requirements.txt .
 
-# Устанавливаем Python зависимости (включая daphne)
+# Устанавливаем Python зависимости
 RUN pip3 install --no-cache-dir -r requirements.txt daphne
 
 # Копируем код приложения
@@ -86,18 +89,15 @@ COPY --chown=appuser:appuser . .
 COPY --chown=appuser:appuser entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# Фиксируем права для media директорий
+RUN chown -R appuser:appuser /app/media && \
+    chmod -R 775 /app/media
+
 # Собираем статические файлы
 RUN python3 manage.py collectstatic --noinput
-
-# Фиксируем права для media директорий
-RUN chmod -R 775 /app/media && \
-    chown -R appuser:appuser /app/media
-
-# Переключаемся на непривилегированного пользователя
-USER appuser
 
 # Открываем порт
 EXPOSE 8000
 
-# Запускаем приложение
-CMD ["/usr/local/bin/entrypoint.sh", "daphne", "-b", "0.0.0.0", "-p", "8000", "backend.asgi:application"]
+# Запускаем приложение через entrypoint
+CMD ["/usr/local/bin/entrypoint.sh"]
