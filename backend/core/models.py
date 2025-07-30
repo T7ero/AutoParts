@@ -52,12 +52,12 @@ def get_upload_path(instance, filename):
             return f'uploads/{filename}'
         except (PermissionError, OSError):
             # Если нет прав, используем временную директорию
-            temp_dir = tempfile.gettempdir()
-            return os.path.join(temp_dir, filename)
+            # Возвращаем относительный путь для Django
+            return f'temp/{filename}'
     except Exception:
         # В случае любой ошибки используем временную директорию
-        temp_dir = tempfile.gettempdir()
-        return os.path.join(temp_dir, filename)
+        # Возвращаем относительный путь для Django
+        return f'temp/{filename}'
 
 class ParsingTask(models.Model):
     """Модель для отслеживания задач парсинга"""

@@ -176,6 +176,11 @@ except PermissionError:
     print(f"⚠️ Используем временную директорию: {FILE_UPLOAD_TEMP_DIR}")
 except Exception as e:
     print(f"⚠️ Ошибка создания директорий: {e}")
+    import tempfile
+    FILE_UPLOAD_TEMP_DIR = tempfile.gettempdir()
+    print(f"⚠️ Используем временную директорию: {FILE_UPLOAD_TEMP_DIR}")
+except Exception as e:
+    print(f"⚠️ Ошибка создания директорий: {e}")
     # Используем временную директорию как fallback
     import tempfile
     FILE_UPLOAD_TEMP_DIR = tempfile.gettempdir()

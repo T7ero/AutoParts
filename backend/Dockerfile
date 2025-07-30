@@ -86,7 +86,8 @@ RUN mkdir -p /app/media/uploads /app/media/results /app/media/temp /app/static &
     chown -R appuser:appuser /app && \
     chmod -R 755 /app/media && \
     chmod -R 777 /app/media/uploads /app/media/results /app/media/temp && \
-    chown -R appuser:appuser /app/media/uploads /app/media/results /app/media/temp
+    chown -R appuser:appuser /app/media/uploads /app/media/results /app/media/temp && \
+    chmod -R 777 /app/media/temp
 
 # Собираем статические файлы
 RUN python3 manage.py collectstatic --noinput
