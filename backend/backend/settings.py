@@ -156,11 +156,22 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
 DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
 FILE_UPLOAD_TEMP_DIR = os.path.join(BASE_DIR, 'media', 'temp')
 
-# Создаем директории если их нет
-os.makedirs(MEDIA_ROOT, exist_ok=True)
-os.makedirs(os.path.join(MEDIA_ROOT, 'uploads'), exist_ok=True)
-os.makedirs(os.path.join(MEDIA_ROOT, 'results'), exist_ok=True)
-os.makedirs(FILE_UPLOAD_TEMP_DIR, exist_ok=True)
+# Создаем директории если их нет (с обработкой ошибок)
+try:
+    os.makedirs(MEDIA_ROOT, exist_ok=True)
+    os.makedirs(os.path.join(MEDIA_ROOT, 'uploads'), exist_ok=True)
+    os.makedirs(os.path.join(MEDIA_ROOT, 'results'), exist_ok=True)
+    os.makedirs(FILE_UPLOAD_TEMP_DIR, exist_ok=True)
+except PermissionError:
+    # Если нет прав, используем временную директорию
+    import tempfile
+    FILE_UPLOAD_TEMP_DIR = tempfile.gettempdir()
+    print(f"⚠️ Используем временную директорию: {FILE_UPLOAD_TEMP_DIR}")
+except Exception as e:
+    print(f"⚠️ Ошибка создания директорий: {e}")
+    # Используем временную директорию как fallback
+    import tempfile
+    FILE_UPLOAD_TEMP_DIR = tempfile.gettempdir()
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field

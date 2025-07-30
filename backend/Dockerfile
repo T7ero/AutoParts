@@ -81,11 +81,12 @@ COPY . .
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# Создаем необходимые директории и устанавливаем права
+RUN mkdir -p /app/media/uploads /app/media/results /app/media/temp /app/static && \
+    chown -R appuser:appuser /app
+
 # Собираем статические файлы
 RUN python3 manage.py collectstatic --noinput
-
-# Меняем владельца файлов
-RUN chown -R appuser:appuser /app
 
 # Переключаемся на непривилегированного пользователя
 USER appuser
