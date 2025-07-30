@@ -68,29 +68,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Устанавливаем рабочую директорию
 WORKDIR /app
 
+# Создаем структуру директорий перед копированием файлов
+RUN mkdir -p /app/media/uploads /app/media/results /app/media/temp /app/static && \
+    chown -R appuser:appuser /app && \
+    chmod -R 775 /app/media
+
 # Копируем requirements.txt
-COPY requirements.txt .
+COPY --chown=appuser:appuser requirements.txt .
 
 # Устанавливаем Python зависимости (включая daphne)
 RUN pip3 install --no-cache-dir -r requirements.txt daphne
 
 # Копируем код приложения
-COPY . .
+COPY --chown=appuser:appuser . .
 
 # Копируем entrypoint скрипт
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chown=appuser:appuser entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
-
-# Создаем необходимые директории и устанавливаем права
-RUN mkdir -p /app/media/uploads /app/media/results /app/media/temp /app/static && \
-    chown -R appuser:appuser /app && \
-    chmod -R 755 /app/media && \
-    chmod -R 777 /app/media/uploads /app/media/results /app/media/temp && \
-    chown -R appuser:appuser /app/media/uploads /app/media/results /app/media/temp && \
-    chmod -R 777 /app/media/temp
 
 # Собираем статические файлы
 RUN python3 manage.py collectstatic --noinput
+
+# Фиксируем права для media директорий
+RUN chmod -R 775 /app/media && \
+    chown -R appuser:appuser /app/media
 
 # Переключаемся на непривилегированного пользователя
 USER appuser
