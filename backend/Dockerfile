@@ -35,25 +35,16 @@ RUN apt-get install -y --no-install-recommends \
         postgresql-client \
         && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем Chrome используя современный способ
-RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg && \
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google.list && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends google-chrome-stable && \
+# Устанавливаем Chromium и ChromeDriver
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        chromium-browser \
+        chromium-chromedriver && \
     rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем ChromeDriver более надежным способом
-RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | awk -F'.' '{print $1}') && \
-    echo "Chrome version: $CHROME_VERSION" && \
-    LATEST_RELEASE=$(wget -qO- "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION") && \
-    echo "Latest ChromeDriver release: $LATEST_RELEASE" && \
-    wget -q "https://chromedriver.storage.googleapis.com/$LATEST_RELEASE/chromedriver_linux64.zip" -O chromedriver.zip && \
-    ls -la chromedriver.zip && \
-    unzip chromedriver.zip && \
-    mv chromedriver /usr/local/bin/ && \
-    chmod +x /usr/local/bin/chromedriver && \
-    rm chromedriver.zip && \
-    chromedriver --version
+# Создаем символические ссылки для совместимости
+RUN ln -sf /usr/bin/chromium-browser /usr/bin/google-chrome && \
+    ln -sf /usr/bin/chromedriver /usr/local/bin/chromedriver
 
 # Создаем пользователя для запуска Chrome
 RUN groupadd -r chrome && useradd -r -g chrome -G audio,video chrome && \
