@@ -3,6 +3,7 @@ import tempfile
 from django.db import models
 from django.contrib.auth.models import User
 from django.db.models import JSONField
+from django.conf import settings
 
 class Part(models.Model):
     """Модель для хранения информации о запчастях"""
@@ -37,10 +38,24 @@ class CrossReference(models.Model):
 def get_upload_path(instance, filename):
     """Определяет путь для загрузки файлов с fallback на временную директорию"""
     try:
-        # Пробуем использовать стандартную директорию
-        return f'uploads/{filename}'
-    except PermissionError:
-        # Если нет прав, используем временную директорию
+        # Проверяем доступность стандартной директории
+        upload_dir = os.path.join(settings.MEDIA_ROOT, 'uploads')
+        if not os.path.exists(upload_dir):
+            os.makedirs(upload_dir, exist_ok=True)
+        
+        # Проверяем права на запись
+        test_file = os.path.join(upload_dir, '.test')
+        try:
+            with open(test_file, 'w') as f:
+                f.write('test')
+            os.remove(test_file)
+            return f'uploads/{filename}'
+        except (PermissionError, OSError):
+            # Если нет прав, используем временную директорию
+            temp_dir = tempfile.gettempdir()
+            return os.path.join(temp_dir, filename)
+    except Exception:
+        # В случае любой ошибки используем временную директорию
         temp_dir = tempfile.gettempdir()
         return os.path.join(temp_dir, filename)
 
