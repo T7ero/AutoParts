@@ -3,6 +3,7 @@ FROM ubuntu:22.04
 # Устанавливаем переменные окружения
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV DISPLAY=:99
 
 # Обновляем систему и устанавливаем базовые зависимости
 RUN apt-get update && \
@@ -14,8 +15,9 @@ RUN apt-get update && \
         software-properties-common \
         apt-transport-https \
         lsb-release \
-        unzip && \
-    rm -rf /var/lib/apt/lists/*
+        unzip \
+        xvfb \
+        && rm -rf /var/lib/apt/lists/*
 
 # Устанавливаем Python и зависимости
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -31,23 +33,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         chromium-browser \
-        chromium-chromedriver && \
-    rm -rf /var/lib/apt/lists/*
+        chromium-chromedriver \
+        && rm -rf /var/lib/apt/lists/*
 
 # Создаем символические ссылки для совместимости
 RUN ln -sf /usr/bin/chromium-browser /usr/bin/google-chrome && \
     ln -sf /usr/bin/chromedriver /usr/local/bin/chromedriver
 
-# Создаем пользователя для запуска Chrome
-RUN groupadd -r chrome && useradd -r -g chrome -G audio,video chrome && \
-    mkdir -p /home/chrome && chown -R chrome:chrome /home/chrome
+# Создаем пользователя для запуска приложения
+RUN groupadd -r appuser && \
+    useradd -r -g appuser -G audio,video appuser && \
+    mkdir -p /home/appuser && \
+    chown -R appuser:appuser /home/appuser
 
 # Устанавливаем дополнительные зависимости
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        xvfb \
         procps \
         gcc \
-        gnupg \
         fonts-liberation \
         libasound2 \
         libatk-bridge2.0-0 \
@@ -69,8 +71,8 @@ WORKDIR /app
 # Копируем requirements.txt
 COPY requirements.txt .
 
-# Устанавливаем Python зависимости
-RUN pip3 install --no-cache-dir -r requirements.txt
+# Устанавливаем Python зависимости (включая daphne)
+RUN pip3 install --no-cache-dir -r requirements.txt daphne
 
 # Копируем код приложения
 COPY . .
@@ -110,6 +112,12 @@ exec "$@"' > /usr/local/bin/entrypoint.sh && \
 
 # Собираем статические файлы
 RUN python3 manage.py collectstatic --noinput
+
+# Меняем владельца файлов
+RUN chown -R appuser:appuser /app
+
+# Переключаемся на непривилегированного пользователя
+USER appuser
 
 # Открываем порт
 EXPOSE 8000
