@@ -1,154 +1,116 @@
 from django.shortcuts import render
-from rest_framework import viewsets, status
-from rest_framework.decorators import action
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
+from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, BasePermission
-from django.shortcuts import get_object_or_404
-from core.models import Part, CrossReference, ParsingTask
-from .serializers import PartSerializer, CrossReferenceSerializer, ParsingTaskSerializer
+from rest_framework import status
+from .models import ParsingTask
+from .serializers import ParsingTaskSerializer
 from .tasks import process_parsing_task
+from .autopiter_parser import load_proxies_from_file, get_next_proxy
+import json
 import os
-from rest_framework import serializers
-from rest_framework.views import APIView
-from .autopiter_parser import get_brands_by_artikul
-import pandas as pd
-from django.utils.dateparse import parse_datetime
 
-# Create your views here.
+@api_view(['GET'])
+def parsing_tasks(request):
+    """Получить список задач парсинга"""
+    tasks = ParsingTask.objects.all().order_by('-created_at')
+    serializer = ParsingTaskSerializer(tasks, many=True)
+    return Response(serializer.data)
 
-class IsInAllowedGroup(BasePermission):
-    def has_permission(self, request, view):
-        return request.user and request.user.is_authenticated and request.user.groups.filter(name='allowed_users').exists()
+@api_view(['POST'])
+def create_parsing_task(request):
+    """Создать новую задачу парсинга"""
+    try:
+        if 'file' not in request.FILES:
+            return Response({'error': 'Файл не найден'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        file = request.FILES['file']
+        if not file.name.endswith('.xlsx'):
+            return Response({'error': 'Поддерживаются только файлы .xlsx'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        task = ParsingTask.objects.create(
+            file=file,
+            status='pending',
+            progress=0
+        )
+        
+        # Запускаем задачу в фоне
+        process_parsing_task.delay(task.id)
+        
+        serializer = ParsingTaskSerializer(task)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-class PartViewSet(viewsets.ModelViewSet):
-    queryset = Part.objects.all()
-    serializer_class = PartSerializer
-    permission_classes = [IsInAllowedGroup]
-
-class CrossReferenceViewSet(viewsets.ModelViewSet):
-    queryset = CrossReference.objects.all()
-    serializer_class = CrossReferenceSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        queryset = CrossReference.objects.all()
-        part_id = self.request.query_params.get('part_id', None)
-        if part_id is not None:
-            queryset = queryset.filter(part_id=part_id)
-        return queryset
-
-class ParsingTaskViewSet(viewsets.ModelViewSet):
-    queryset = ParsingTask.objects.all()
-    serializer_class = ParsingTaskSerializer
-    permission_classes = [IsAuthenticated]
-    
-    @action(detail=False, methods=['delete'])
-    def clear(self, request):
-        ParsingTask.objects.all().delete()
-        return Response({'status': 'ok'})
-
-    def create(self, request, *args, **kwargs):
-        try:
-            # Проверяем наличие файла
-            if 'file' not in request.FILES:
-                return Response(
-                    {'error': 'Файл не был загружен'}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            file = request.FILES['file']
-            
-            # Проверяем тип файла
-            if not file.name.endswith('.xlsx'):
-                return Response(
-                    {'error': 'Поддерживаются только файлы Excel (.xlsx)'}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # Проверяем размер файла
-            if file.size > 10 * 1024 * 1024:  # 10MB
-                return Response(
-                    {'error': 'Размер файла не должен превышать 10MB'}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # Создаем задачу
-            task = ParsingTask.objects.create(
-                user=request.user,
-                file=file,
-                status='pending'
-            )
-            
-            # Запускаем задачу парсинга
-            process_parsing_task.delay(task.id)
-            
-            # Возвращаем данные задачи
-            serializer = self.get_serializer(task)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-            
-        except Exception as e:
-            import traceback
-            print(f"Ошибка при создании задачи: {str(e)}")
-            print(f"Traceback: {traceback.format_exc()}")
-            return Response(
-                {'error': f'Ошибка при создании задачи: {str(e)}'}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-    @action(detail=True, methods=['get'])
-    def status(self, request, pk=None):
-        task = get_object_or_404(ParsingTask, pk=pk)
-        return Response({
-            'status': task.status,
-            'progress': task.progress,
-            'error_message': task.error_message,
-            'result_files': task.result_files,
-        })
-
-    @action(detail=True, methods=['get'])
-    def log(self, request, pk=None):
-        task = get_object_or_404(ParsingTask, pk=pk)
-        return Response({'log': task.log or ''})
-
-    @action(detail=True, methods=['get'])
-    def preview(self, request, pk=None):
-        """Возвращает первые 10 строк Excel-файла задачи для предпросмотра"""
-        task = get_object_or_404(ParsingTask, pk=pk)
-        try:
-            df = pd.read_excel(task.file.path)
-            preview = df.head(10).fillna('').to_dict(orient='records')
-            columns = list(df.columns)
-            return Response({'columns': columns, 'rows': preview})
-        except Exception as e:
-            return Response({'error': str(e)}, status=400)
-
-    def list(self, request, *args, **kwargs):
-        queryset = self.get_queryset()
-        status = request.query_params.get('status')
-        user_id = request.query_params.get('user_id')
-        created_after = request.query_params.get('created_after')
-        created_before = request.query_params.get('created_before')
-        if status:
-            queryset = queryset.filter(status=status)
-        if user_id:
-            queryset = queryset.filter(user_id=user_id)
-        if created_after:
-            queryset = queryset.filter(created_at__gte=parse_datetime(created_after))
-        if created_before:
-            queryset = queryset.filter(created_at__lte=parse_datetime(created_before))
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        serializer = self.get_serializer(queryset, many=True)
+@api_view(['GET'])
+def task_status(request, task_id):
+    """Получить статус задачи"""
+    try:
+        task = ParsingTask.objects.get(id=task_id)
+        serializer = ParsingTaskSerializer(task)
         return Response(serializer.data)
+    except ParsingTask.DoesNotExist:
+        return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
 
-class AutopiterParseView(APIView):
-    permission_classes = [IsInAllowedGroup]
+@api_view(['POST'])
+def upload_proxies(request):
+    """Загрузить новый список прокси"""
+    try:
+        if 'file' not in request.FILES:
+            return Response({'error': 'Файл прокси не найден'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        file = request.FILES['file']
+        if not file.name.endswith('.txt'):
+            return Response({'error': 'Поддерживаются только файлы .txt'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Сохраняем файл прокси
+        with open('proxies.txt', 'wb') as f:
+            for chunk in file.chunks():
+                f.write(chunk)
+        
+        # Перезагружаем прокси
+        load_proxies_from_file()
+        
+        return Response({'message': 'Прокси успешно загружены'}, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    def post(self, request):
-        artikul = request.data.get('artikul')
-        if not artikul:
-            return Response({'error': 'Не передан артикул'}, status=400)
-        brands = get_brands_by_artikul(artikul)
-        return Response({'brands': brands})
+@api_view(['GET'])
+def proxy_status(request):
+    """Получить статус прокси"""
+    try:
+        from .autopiter_parser import PROXY_LIST, PROXY_INDEX
+        
+        return Response({
+            'total_proxies': len(PROXY_LIST),
+            'current_index': PROXY_INDEX,
+            'next_proxy': get_next_proxy() if PROXY_LIST else None
+        })
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['POST'])
+def reset_proxy_index(request):
+    """Сбросить индекс прокси"""
+    try:
+        from .autopiter_parser import PROXY_INDEX
+        global PROXY_INDEX
+        PROXY_INDEX = 0
+        
+        return Response({'message': 'Индекс прокси сброшен'}, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['DELETE'])
+def delete_task(request, task_id):
+    """Удалить задачу"""
+    try:
+        task = ParsingTask.objects.get(id=task_id)
+        task.delete()
+        return Response({'message': 'Задача удалена'}, status=status.HTTP_200_OK)
+    except ParsingTask.DoesNotExist:
+        return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)

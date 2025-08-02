@@ -85,6 +85,11 @@ RUN pip3 install --no-cache-dir -r requirements.txt daphne
 # Копируем код приложения
 COPY --chown=appuser:appuser . .
 
+# Создаем пустой файл прокси
+RUN touch /app/proxies.txt && \
+    chown appuser:appuser /app/proxies.txt && \
+    chmod 644 /app/proxies.txt
+
 # Копируем entrypoint скрипт
 COPY --chown=appuser:appuser entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
@@ -93,11 +98,16 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 RUN chown -R appuser:appuser /app/media && \
     chmod -R 775 /app/media
 
+# Создаем директории для Chrome
+RUN mkdir -p /tmp/chrome_profiles && \
+    chown -R appuser:appuser /tmp/chrome_profiles && \
+    chmod -R 755 /tmp/chrome_profiles
+
 # Собираем статические файлы
 RUN python3 manage.py collectstatic --noinput
 
 # Открываем порт
 EXPOSE 8000
 
-# Запускаем приложение через entrypoint
-CMD ["/usr/local/bin/entrypoint.sh"]
+# Устанавливаем entrypoint
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

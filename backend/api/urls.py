@@ -1,16 +1,12 @@
-from django.urls import path, include
-from rest_framework.routers import DefaultRouter
-from .views import PartViewSet, CrossReferenceViewSet, ParsingTaskViewSet, AutopiterParseView
-from rest_framework.authtoken.views import obtain_auth_token
-
-router = DefaultRouter()
-router.register(r'parts', PartViewSet)
-router.register(r'cross-references', CrossReferenceViewSet)
-router.register(r'parsing-tasks', ParsingTaskViewSet)
+from django.urls import path
+from . import views
 
 urlpatterns = [
-    path('', include(router.urls)),
-    path('auth/token/', obtain_auth_token, name='api_token_auth'),
-    path('autopiter/parse/', AutopiterParseView.as_view(), name='autopiter_parse'),
-    # path('auth/register/', ...),  # Удалено/закомментировано для безопасности
+    path('parsing-tasks/', views.parsing_tasks, name='parsing_tasks'),
+    path('parsing-tasks/create/', views.create_parsing_task, name='create_parsing_task'),
+    path('parsing-tasks/<int:task_id>/', views.task_status, name='task_status'),
+    path('parsing-tasks/<int:task_id>/delete/', views.delete_task, name='delete_task'),
+    path('proxies/upload/', views.upload_proxies, name='upload_proxies'),
+    path('proxies/status/', views.proxy_status, name='proxy_status'),
+    path('proxies/reset/', views.reset_proxy_index, name='reset_proxy_index'),
 ] 

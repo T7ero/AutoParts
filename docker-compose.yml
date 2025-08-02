@@ -119,6 +119,7 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./backend/static:/static
       - ./backend/media:/media
+      - ./frontend/proxy-manager.html:/app/frontend/proxy-manager.html:ro
       # - ./nginx/certs:/etc/nginx/certs:ro  # если нужен HTTPS
     depends_on:
       - backend

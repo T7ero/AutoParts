@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Управление прокси</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .section h2 {
+            margin-top: 0;
+            color: #555;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="file"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+        .status.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        .proxy-info {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+        .proxy-info h3 {
+            margin-top: 0;
+            color: #495057;
+        }
+        .proxy-info p {
+            margin: 5px 0;
+        }
+        .example {
+            background-color: #fff3cd;
+            border: 1px solid #ffeaa7;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+        .example h4 {
+            margin-top: 0;
+            color: #856404;
+        }
+        .example pre {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 3px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Управление прокси</h1>
+        
+        <div class="section">
+            <h2>Загрузка прокси</h2>
+            <p>Загрузите файл с прокси в формате .txt. Каждый прокси должен быть на отдельной строке.</p>
+            
+            <div class="example">
+                <h4>Формат файла прокси:</h4>
+                <pre># С аутентификацией:
+192.168.1.100:8080@user1:pass1
+10.0.0.1:3128@user2:pass2
+
+# Без аутентификации:
+172.16.0.1:8080
+192.168.0.1:3128</pre>
+            </div>
+            
+            <div class="form-group">
+                <label for="proxyFile">Выберите файл с прокси (.txt):</label>
+                <input type="file" id="proxyFile" accept=".txt">
+            </div>
+            
+            <button onclick="uploadProxies()" id="uploadBtn">Загрузить прокси</button>
+            <div id="uploadStatus"></div>
+        </div>
+        
+        <div class="section">
+            <h2>Статус прокси</h2>
+            <button onclick="getProxyStatus()" id="statusBtn">Обновить статус</button>
+            <button onclick="resetProxyIndex()" id="resetBtn">Сбросить индекс</button>
+            <div id="proxyStatus"></div>
+        </div>
+        
+        <div class="section">
+            <h2>Информация</h2>
+            <div class="proxy-info">
+                <h3>Как это работает:</h3>
+                <p><strong>Автоматическая ротация:</strong> Прокси используются по очереди для каждого запроса</p>
+                <p><strong>Обработка ошибок:</strong> При ошибке прокси автоматически переключается на следующий</p>
+                <p><strong>Кеширование:</strong> Успешные запросы кешируются для экономии ресурсов</p>
+                <p><strong>Таймауты:</strong> Настроены оптимальные таймауты для каждого сайта</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/api';
+        
+        async function uploadProxies() {
+            const fileInput = document.getElementById('proxyFile');
+            const uploadBtn = document.getElementById('uploadBtn');
+            const statusDiv = document.getElementById('uploadStatus');
+            
+            if (!fileInput.files[0]) {
+                showStatus(statusDiv, 'Пожалуйста, выберите файл', 'error');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            
+            uploadBtn.disabled = true;
+            uploadBtn.textContent = 'Загрузка...';
+            
+            try {
+                const response = await fetch(`${API_BASE}/proxies/upload/`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    showStatus(statusDiv, data.message, 'success');
+                    // Обновляем статус прокси
+                    setTimeout(getProxyStatus, 1000);
+                } else {
+                    showStatus(statusDiv, data.error || 'Ошибка загрузки', 'error');
+                }
+            } catch (error) {
+                showStatus(statusDiv, 'Ошибка сети: ' + error.message, 'error');
+            } finally {
+                uploadBtn.disabled = false;
+                uploadBtn.textContent = 'Загрузить прокси';
+            }
+        }
+        
+        async function getProxyStatus() {
+            const statusBtn = document.getElementById('statusBtn');
+            const statusDiv = document.getElementById('proxyStatus');
+            
+            statusBtn.disabled = true;
+            statusBtn.textContent = 'Обновление...';
+            
+            try {
+                const response = await fetch(`${API_BASE}/proxies/status/`);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    let html = '<div class="proxy-info">';
+                    html += `<h3>Статус прокси</h3>`;
+                    html += `<p><strong>Всего прокси:</strong> ${data.total_proxies}</p>`;
+                    html += `<p><strong>Текущий индекс:</strong> ${data.current_index}</p>`;
+                    
+                    if (data.next_proxy) {
+                        html += `<p><strong>Следующий прокси:</strong> ${JSON.stringify(data.next_proxy)}</p>`;
+                    } else {
+                        html += `<p><strong>Следующий прокси:</strong> Нет доступных прокси</p>`;
+                    }
+                    
+                    if (data.total_proxies === 0) {
+                        html += '<p style="color: #856404;"><em>Прокси не загружены. Парсинг будет работать без прокси.</em></p>';
+                    }
+                    
+                    html += '</div>';
+                    statusDiv.innerHTML = html;
+                } else {
+                    showStatus(statusDiv, data.error || 'Ошибка получения статуса', 'error');
+                }
+            } catch (error) {
+                showStatus(statusDiv, 'Ошибка сети: ' + error.message, 'error');
+            } finally {
+                statusBtn.disabled = false;
+                statusBtn.textContent = 'Обновить статус';
+            }
+        }
+        
+        async function resetProxyIndex() {
+            const resetBtn = document.getElementById('resetBtn');
+            const statusDiv = document.getElementById('proxyStatus');
+            
+            resetBtn.disabled = true;
+            resetBtn.textContent = 'Сброс...';
+            
+            try {
+                const response = await fetch(`${API_BASE}/proxies/reset/`, {
+                    method: 'POST'
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    showStatus(statusDiv, data.message, 'success');
+                    // Обновляем статус
+                    setTimeout(getProxyStatus, 1000);
+                } else {
+                    showStatus(statusDiv, data.error || 'Ошибка сброса', 'error');
+                }
+            } catch (error) {
+                showStatus(statusDiv, 'Ошибка сети: ' + error.message, 'error');
+            } finally {
+                resetBtn.disabled = false;
+                resetBtn.textContent = 'Сбросить индекс';
+            }
+        }
+        
+        function showStatus(element, message, type) {
+            element.innerHTML = `<div class="status ${type}">${message}</div>`;
+        }
+        
+        // Загружаем статус при загрузке страницы
+        document.addEventListener('DOMContentLoaded', function() {
+            getProxyStatus();
+        });
+    </script>
+</body>
+</html> 
