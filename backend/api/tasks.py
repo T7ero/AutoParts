@@ -24,7 +24,7 @@ def clean_excel_string(s):
     # Удаляем все управляющие символы, кроме табуляции и перевода строки
     return re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', '', s)
 
-@shared_task(time_limit=7200, soft_time_limit=6000)  # 120 минут максимум, 100 минут мягкий лимит
+@shared_task(time_limit=3600, soft_time_limit=3000)  # 60 минут максимум, 50 минут мягкий лимит
 def process_parsing_task(task_id):
     task = ParsingTask.objects.get(id=task_id)
     log_messages = []
@@ -80,7 +80,7 @@ def process_parsing_task(task_id):
                         proxy = get_next_proxy()
                         
                         # Добавляем небольшую задержку между запросами
-                        time.sleep(0.1)
+                        time.sleep(0.2)
                         brands = func(num, proxy)
                         log(f"{site}: {num} → {brands}")
                         return [(brand, part_number, name, b, num, site) for b in brands]
@@ -89,22 +89,22 @@ def process_parsing_task(task_id):
                         return []
                 return inner
             
-            # Увеличиваем количество потоков для лучшей производительности
-            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            # Уменьшаем количество потоков для экономии ресурсов
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 # Autopiter
                 fut_autopiter = {executor.submit(parse_one('autopiter', get_brands_by_artikul), num): num for num in numbers}
                 # Emex
                 fut_emex = {executor.submit(parse_one('emex', get_brands_by_artikul_emex), num): num for num in numbers}
                 
-                # Обрабатываем результаты с увеличенным таймаутом
-                for fut in concurrent.futures.as_completed(fut_autopiter, timeout=30):
+                # Обрабатываем результаты с таймаутом
+                for fut in concurrent.futures.as_completed(fut_autopiter, timeout=20):
                     try:
                         for res in fut.result():
                             results['autopiter'].append(res)
                     except Exception as e:
                         log(f"Error processing autopiter result: {str(e)}")
                 
-                for fut in concurrent.futures.as_completed(fut_emex, timeout=30):
+                for fut in concurrent.futures.as_completed(fut_emex, timeout=20):
                     try:
                         for res in fut.result():
                             results['emex'].append(res)
@@ -116,9 +116,9 @@ def process_parsing_task(task_id):
         # Основной цикл с оптимизацией памяти
         for index, row in df.iterrows():
             try:
-                # Проверка таймаута каждые 10 строк
-                if index % 10 == 0:
-                    if time.time() - task._timeout_check > 5400:  # 90 минут
+                # Проверка таймаута каждые 20 строк
+                if index % 20 == 0:
+                    if time.time() - task._timeout_check > 2700:  # 45 минут
                         log("Task timeout approaching, finishing up...")
                         break
                 
@@ -165,21 +165,21 @@ def process_parsing_task(task_id):
                     results = []
                     
                     def parse_one(num):
-                        max_retries = 2  # Увеличиваем количество попыток
+                        max_retries = 1  # Уменьшаем количество попыток
                         for attempt in range(max_retries):
                             try:
                                 # Получаем прокси для Armtek
                                 proxy = get_next_proxy()
                                 
                                 # Добавляем задержку для Selenium
-                                time.sleep(0.3)
+                                time.sleep(0.5)
                                 brands = get_brands_by_artikul_armtek(num, proxy)
                                 log(f"armtek: {num} → {brands}")
                                 return [(brand, part_number, name, b, num, 'armtek') for b in brands]
                             except Exception as e:
                                 log(f"Error parsing armtek for {num} (attempt {attempt + 1}): {str(e)}")
                                 if attempt < max_retries - 1:
-                                    time.sleep(3)  # Увеличиваем время ожидания
+                                    time.sleep(2)  # Уменьшаем время ожидания
                                 else:
                                     log(f"Failed to parse armtek for {num} after {max_retries} attempts")
                                     return []
@@ -187,7 +187,7 @@ def process_parsing_task(task_id):
                     # Используем 1 поток для Selenium
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                         futs = {executor.submit(parse_one, num): num for num in numbers}
-                        for fut in concurrent.futures.as_completed(futs, timeout=120):  # Увеличиваем таймаут
+                        for fut in concurrent.futures.as_completed(futs, timeout=60):  # Уменьшаем таймаут
                             try:
                                 for res in fut.result():
                                     results.append(res)
@@ -211,8 +211,8 @@ def process_parsing_task(task_id):
                         })
                         used_pairs.add(key)
                 
-                # Обновляем прогресс каждые 5 строк для более частого обновления
-                if (index + 1) % 5 == 0 or index == total_rows - 1:
+                # Обновляем прогресс каждые 10 строк для экономии ресурсов
+                if (index + 1) % 10 == 0 or index == total_rows - 1:
                     progress = int((index + 1) / total_rows * 100)
                     task.progress = progress
                     task.log = '\n'.join(log_messages[-100:])  # Ограничиваем лог
@@ -223,8 +223,8 @@ def process_parsing_task(task_id):
                     # Принудительная очистка памяти
                     gc.collect()
                     
-                    # Периодическая очистка процессов Chrome каждые 20 строк
-                    if (index + 1) % 20 == 0:
+                    # Периодическая очистка процессов Chrome каждые 30 строк
+                    if (index + 1) % 30 == 0:
                         try:
                             cleanup_chrome_processes()
                             log("Performed periodic Chrome cleanup")
