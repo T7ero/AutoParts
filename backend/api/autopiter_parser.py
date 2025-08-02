@@ -46,7 +46,7 @@ def load_proxies_from_file(file_path: str = "proxies.txt") -> List[str]:
     try:
         if os.path.exists(file_path):
             with open(file_path, 'r', encoding='utf-8') as f:
-                PROXY_LIST = [line.strip() for line in f if line.strip()]
+                PROXY_LIST = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
             log_debug(f"Загружено {len(PROXY_LIST)} прокси")
         else:
             log_debug(f"Файл прокси {file_path} не найден")
@@ -268,14 +268,47 @@ def get_brands_by_artikul(artikul: str, proxies: Optional[Dict] = None) -> List[
         'все категории', 'долгопрудный', 'москва', 'россия', 'китай',
         'запчасть', 'запчасти', 'оригинальные', 'неоригинальные',
         'восстановление пароля', 'конфиденциальность', 'оферта',
-        'оплата заказа', 'доставка заказа', 'возврат товара'
+        'оплата заказа', 'доставка заказа', 'возврат товара',
+        'to content', 'zapros@autopiter.ru', '© ооо «автопитер»',
+        'ваз, газ, камаз', 'запчасти ваз, газ, камаз', 'запчасти для то',
+        'или выбрать другой удобный для вас способ', 'каталоги запчастей',
+        'неоригинальные запчасти', 'оплатить все товары можно',
+        'оптовым клиентам', 'оригинальные каталоги по vin',
+        'перейти в версию для смартфонов', 'помощь по сайту',
+        'россия, москва, ул. скотопрогонная, 35 стр. 3', 'спецтехника',
+        'фильтры hebel kraft', 'герметик силиконовый mannol',
+        'кнопка 2114-15, евро кнопка', 'кнопка ваз-2115, евро кнопка',
+        'кольцо уплотнительное ступицы toyota', 'лист сзап l1 1,2 задний',
+        'масло для компрессоров vdl 100 fubag', 'мотор омывателя 24v',
+        'мотор омывателя камаз 24v', 'насос омывателя маз,камаз евро',
+        'переключатель стеклоочистителя', 'профи-75 белак',
+        'ремкомплект гидроцилиндра', 'рессора чмзап',
+        'русский мастер ps-10 рм', 'русский мастер рмм',
+        'стопорное кольцо чмзап'
     }
     
     for brand in brands:
         brand_lower = brand.lower()
         if (len(brand) > 2 and len(brand) < 50 and 
             brand_lower not in exclude_words and
-            not any(word in brand_lower for word in exclude_words)):
+            not any(word in brand_lower for word in exclude_words) and
+            not brand_lower.startswith('99') and  # Исключаем артикулы
+            not brand_lower.startswith('zapros') and
+            not brand_lower.startswith('©') and
+            not brand_lower.startswith('mannol') and
+            not brand_lower.startswith('герметик') and
+            not brand_lower.startswith('кнопка') and
+            not brand_lower.startswith('кольцо') and
+            not brand_lower.startswith('лист') and
+            not brand_lower.startswith('масло') and
+            not brand_lower.startswith('мотор') and
+            not brand_lower.startswith('насос') and
+            not brand_lower.startswith('переключатель') and
+            not brand_lower.startswith('профи') and
+            not brand_lower.startswith('ремкомплект') and
+            not brand_lower.startswith('рессора') and
+            not brand_lower.startswith('русский мастер') and
+            not brand_lower.startswith('стопорное')):
             filtered_brands.add(brand)
     
     return sorted(filtered_brands)
@@ -371,6 +404,8 @@ def parse_armtek_selenium(artikul: str) -> List[str]:
     options.add_argument('--disable-background-timer-throttling')
     options.add_argument('--disable-backgrounding-occluded-windows')
     options.add_argument('--disable-renderer-backgrounding')
+    options.add_argument('--disable-features=VizDisplayCompositor')
+    options.add_argument('--disable-ipc-flooding-protection')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
     

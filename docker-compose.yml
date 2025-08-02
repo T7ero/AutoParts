@@ -62,7 +62,7 @@ services:
 
   celery:
     build: ./backend
-    command: /usr/local/bin/entrypoint.sh celery -A backend worker -l info --concurrency=1 --max-tasks-per-child=5 --prefetch-multiplier=1
+    command: /usr/local/bin/entrypoint.sh celery -A backend worker -l info --concurrency=1 --max-tasks-per-child=10 --prefetch-multiplier=1
     volumes:
       - ./backend:/app
       - ./backend/media:/app/media
@@ -95,12 +95,12 @@ services:
     deploy:
       resources:
         limits:
+          memory: 4G
+          cpus: '2.0'
+        reservations:
           memory: 2G
           cpus: '1.0'
-        reservations:
-          memory: 1G
-          cpus: '0.5'
-    shm_size: '256mb'
+    shm_size: '512mb'
 
   frontend:
     build:
