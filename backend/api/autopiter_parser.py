@@ -23,12 +23,13 @@ HEADERS = {
     "Connection": "keep-alive",
     "Cache-Control": "max-age=0",
 }
-TIMEOUT = 15  # Увеличили общий таймаут
-SELENIUM_TIMEOUT = 25  # Увеличили таймаут для Selenium
+TIMEOUT = 20  # Увеличенный таймаут
+SELENIUM_TIMEOUT = 30  # Увеличенный таймаут для Selenium
 
-# Кеш для хранения результатов запросов
+# Кеширование
 REQUEST_CACHE = {}
 CACHE_EXPIRATION = 600  # 10 минут
+FAILED_REQUESTS_CACHE = {}  # Для хранения неудачных запросов
 
 def log_debug(message):
     print(f"[DEBUG] {message}")
@@ -37,10 +38,10 @@ def cleanup_chrome_processes():
     """Принудительно завершает зависшие процессы Chrome"""
     try:
         kill_commands = [
-            ['pkill', '-f', 'chrome'],
-            ['pkill', '-f', 'chromedriver'],
-            ['pkill', '-f', 'google-chrome'],
-            ['pkill', '-f', 'chromium'],
+            ['pkill', '-9', '-f', 'chrome'],
+            ['pkill', '-9', '-f', 'chromedriver'],
+            ['pkill', '-9', '-f', 'google-chrome'],
+            ['pkill', '-9', '-f', 'chromium'],
             ['killall', '-9', 'chrome'],
             ['killall', '-9', 'chromedriver']
         ]
@@ -54,33 +55,36 @@ def cleanup_chrome_processes():
             except:
                 pass
         
-        try:
-            ps_output = subprocess.check_output(['ps', 'aux'], text=True, timeout=3)
-            for line in ps_output.split('\n'):
-                if 'chrome' in line.lower() or 'chromedriver' in line.lower():
-                    parts = line.split()
-                    if len(parts) > 1:
-                        pid = parts[1]
-                        try:
-                            subprocess.run(['kill', '-9', pid], 
-                                          stdout=subprocess.DEVNULL,
-                                          stderr=subprocess.DEVNULL,
-                                          timeout=1)
-                        except:
-                            pass
-            time.sleep(0.5)
-        except:
-            pass
+        time.sleep(1)
     except Exception as e:
         log_debug(f"Error cleaning up Chrome processes: {e}")
 
+def is_site_available(url):
+    """Проверяет доступность сайта"""
+    try:
+        response = requests.head(url, timeout=5)
+        return response.status_code < 500
+    except:
+        return False
+
 def make_request(url, proxies=None, max_retries=3, cache_key=None):
-    """Улучшенный запрос с кешированием и повторными попытками"""
-    # Проверка кеша
+    """Улучшенный запрос с кешированием, проверкой доступности и обработкой ошибок"""
+    # Проверка кеша ошибок
+    if url in FAILED_REQUESTS_CACHE and FAILED_REQUESTS_CACHE[url] > time.time() - 3600:
+        log_debug(f"Запрос к {url} пропущен из-за предыдущих ошибок")
+        return None
+        
+    # Проверка кеша успешных запросов
     if cache_key and cache_key in REQUEST_CACHE:
         cached_time, response = REQUEST_CACHE[cache_key]
         if time.time() - cached_time < CACHE_EXPIRATION:
             return response
+    
+    # Проверка доступности сайта
+    if not is_site_available(url):
+        log_debug(f"Сайт {url} недоступен")
+        FAILED_REQUESTS_CACHE[url] = time.time()
+        return None
     
     for attempt in range(max_retries):
         try:
@@ -90,27 +94,36 @@ def make_request(url, proxies=None, max_retries=3, cache_key=None):
                 proxies=proxies,
                 timeout=TIMEOUT
             )
+            
+            # Проверка на CAPTCHA
+            if "captcha" in response.text.lower():
+                log_debug(f"Обнаружена CAPTCHA на {url}")
+                FAILED_REQUESTS_CACHE[url] = time.time()
+                return None
+                
             if response.status_code == 200:
                 # Сохраняем в кеш
                 if cache_key:
                     REQUEST_CACHE[cache_key] = (time.time(), response)
                 return response
             elif response.status_code == 429:
-                wait_time = (attempt + 1) * 3
+                wait_time = (attempt + 1) * 5  # Увеличенное время ожидания
                 log_debug(f"Rate limited. Waiting {wait_time} seconds...")
                 time.sleep(wait_time)
             else:
                 log_debug(f"Request failed (attempt {attempt + 1}): HTTP {response.status_code}")
+                FAILED_REQUESTS_CACHE[url] = time.time()
         except Exception as e:
             log_debug(f"Request error (attempt {attempt + 1}): {str(e)}")
+            FAILED_REQUESTS_CACHE[url] = time.time()
         
         if attempt < max_retries - 1:
-            time.sleep(1)
+            time.sleep(2)  # Увеличенное время между попытками
     
     return None
 
 def get_brands_by_artikul(artikul, proxies=None):
-    """Парсер для Autopiter.ru"""
+    """Парсер для Autopiter.ru с улучшенной обработкой ошибок"""
     url = f"https://autopiter.ru/goods/{artikul}"
     log_debug(f"Autopiter: запрос к {url}")
     
@@ -169,23 +182,31 @@ def get_brands_by_artikul(artikul, proxies=None):
     return sorted(brands)
 
 def get_brands_by_artikul_armtek(artikul, proxies=None):
-    """Улучшенный парсер Armtek"""
+    """Улучшенный парсер Armtek с полным логированием"""
+    log_debug(f"Armtek: начало обработки артикула {artikul}")
+    
     # 1. Пробуем API
     api_brands = parse_armtek_api(artikul, proxies)
     if api_brands:
+        log_debug(f"Armtek API: найдены бренды {api_brands}")
         return api_brands
     
     # 2. Пробуем HTTP запрос
     http_brands = parse_armtek_http(artikul, proxies)
     if http_brands:
+        log_debug(f"Armtek HTTP: найдены бренды {http_brands}")
         return http_brands
     
     # 3. Если API и HTTP не сработали, используем Selenium
-    return parse_armtek_selenium(artikul)
+    selenium_brands = parse_armtek_selenium(artikul)
+    log_debug(f"Armtek Selenium: найдены бренды {selenium_brands}")
+    return selenium_brands
 
 def parse_armtek_api(artikul, proxies=None):
-    """Попытка получить данные через API"""
+    """Попытка получить данные через API Armtek"""
     url = f"https://armtek.ru/api/search?query={quote(artikul)}&limit=50"
+    log_debug(f"Armtek API: запрос к {url}")
+    
     try:
         response = requests.get(
             url,
@@ -195,7 +216,7 @@ def parse_armtek_api(artikul, proxies=None):
                 "X-Requested-With": "XMLHttpRequest"
             },
             proxies=proxies,
-            timeout=8
+            timeout=15  # Увеличенный таймаут
         )
         
         if response.status_code == 200:
@@ -203,7 +224,6 @@ def parse_armtek_api(artikul, proxies=None):
                 data = response.json()
                 brands = set()
                 
-                # Обработка различных форматов ответа
                 items = data.get('products', []) or data.get('items', []) or data.get('results', [])
                 
                 for item in items:
@@ -218,13 +238,19 @@ def parse_armtek_api(artikul, proxies=None):
                 
                 return sorted(brands) if brands else None
             except json.JSONDecodeError:
-                pass
+                log_debug("Armtek API: ошибка декодирования JSON")
+                return None
+        else:
+            log_debug(f"Armtek API: HTTP ошибка {response.status_code}")
+            return None
     except Exception as e:
         log_debug(f"Armtek API error: {str(e)}")
-    return None
+        return None
 
 def parse_armtek_selenium(artikul):
-    """Парсинг через Selenium с оптимизацией"""
+    """Парсинг Armtek через Selenium с улучшенной обработкой ошибок"""
+    log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
+    
     options = Options()
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
@@ -258,18 +284,19 @@ def parse_armtek_selenium(artikul):
         driver.set_script_timeout(SELENIUM_TIMEOUT)
         driver.implicitly_wait(5)
         
-        driver.get(f"https://armtek.ru/search?text={quote(artikul)}")
+        url = f"https://armtek.ru/search?text={quote(artikul)}"
+        log_debug(f"Armtek Selenium: загрузка страницы {url}")
+        driver.get(url)
         
         try:
-            # Ожидаем появления результатов
-            WebDriverWait(driver, 10).until(
+            WebDriverWait(driver, 15).until(
                 EC.presence_of_element_located(
                     (By.CSS_SELECTOR, ".product-card, .catalog-item, [data-testid='product-item']")
                 )
             )
-            time.sleep(1)  # Дополнительное время для стабилизации
-        except Exception:
-            pass
+            time.sleep(2)  # Дополнительное время для стабилизации
+        except Exception as e:
+            log_debug(f"Armtek Selenium: не дождались результатов: {str(e)}")
         
         # Извлекаем бренды из HTML
         page_source = driver.page_source
@@ -308,7 +335,7 @@ def parse_armtek_selenium(artikul):
         return sorted(brands) if brands else []
         
     except Exception as e:
-        log_debug(f"Selenium error: {str(e)}")
+        log_debug(f"Armtek Selenium error: {str(e)}")
         return []
     finally:
         if driver:
@@ -317,11 +344,12 @@ def parse_armtek_selenium(artikul):
             except:
                 pass
         cleanup_chrome_processes()
-        time.sleep(0.5)
+        time.sleep(1)
 
 def parse_armtek_http(artikul, proxies=None):
-    """Парсинг Armtek через HTTP запрос"""
+    """Парсинг Armtek через HTTP запрос с улучшенной обработкой"""
     url = f"https://armtek.ru/search?text={quote(artikul)}"
+    log_debug(f"Armtek HTTP: запрос к {url}")
     
     response = make_request(url, proxies, cache_key=f"armtek_{artikul}")
     if not response:
@@ -381,7 +409,11 @@ def parse_armtek_http(artikul, proxies=None):
     return sorted(brands) if brands else []
 
 def get_brands_by_artikul_emex(artikul, proxies=None):
-    """Улучшенный парсер для Emex с повторными попытками"""
+    """Улучшенный парсер для Emex с обработкой таймаутов"""
+    if not is_site_available("https://emex.ru"):
+        log_debug("Emex недоступен, пропускаем")
+        return []
+    
     encoded_artikul = quote(artikul)
     api_url = f"https://emex.ru/api/search/search?detailNum={encoded_artikul}&locationId=263&showAll=false&isHeaderSearch=true"
     
@@ -400,48 +432,52 @@ def get_brands_by_artikul_emex(artikul, proxies=None):
                 api_url,
                 headers=headers,
                 proxies=proxies,
-                timeout=10  # Увеличили таймаут
+                timeout=15  # Увеличенный таймаут
             )
             
             if response.status_code == 200:
-                data = response.json()
-                brands = set()
-                
-                # Обработка различных форматов ответа
-                makes_list = data.get("searchResult", {}).get("makes", {}).get("list", [])
-                for item in makes_list:
-                    if "make" in item:
-                        brand = item["make"]
-                        if brand:
-                            brands.add(brand)
-                
-                if not brands:
-                    details_list = data.get("searchResult", {}).get("details", [])
-                    for item in details_list:
-                        if "make" in item and "name" in item["make"]:
-                            brand = item["make"]["name"]
+                try:
+                    data = response.json()
+                    brands = set()
+                    
+                    # Обработка различных форматов ответа
+                    makes_list = data.get("searchResult", {}).get("makes", {}).get("list", [])
+                    for item in makes_list:
+                        if "make" in item:
+                            brand = item["make"]
                             if brand:
                                 brands.add(brand)
-                
-                if not brands:
-                    brands_list = data.get("brands", [])
-                    for brand in brands_list:
-                        if isinstance(brand, str):
-                            brands.add(brand)
-                
-                return sorted(brands)
-            
+                    
+                    if not brands:
+                        details_list = data.get("searchResult", {}).get("details", [])
+                        for item in details_list:
+                            if "make" in item and "name" in item["make"]:
+                                brand = item["make"]["name"]
+                                if brand:
+                                    brands.add(brand)
+                    
+                    if not brands:
+                        brands_list = data.get("brands", [])
+                        for brand in brands_list:
+                            if isinstance(brand, str):
+                                brands.add(brand)
+                    
+                    return sorted(brands)
+                except json.JSONDecodeError:
+                    log_debug("Emex API: ошибка декодирования JSON")
             elif response.status_code == 429:
-                wait_time = (attempt + 1) * 3
+                wait_time = (attempt + 1) * 5  # Увеличенное время ожидания
                 log_debug(f"Emex rate limited. Waiting {wait_time} seconds...")
                 time.sleep(wait_time)
             else:
                 log_debug(f"[API] Emex: HTTP ошибка {response.status_code}")
-        
+        except requests.exceptions.Timeout:
+            log_debug(f"[API] Emex: таймаут подключения (попытка {attempt+1})")
         except Exception as e:
             log_debug(f"[API] Emex: ошибка: {str(e)}")
         
         if attempt < max_retries - 1:
-            time.sleep(2)
+            time.sleep(3)  # Увеличенное время между попытками
     
+    log_debug(f"Emex: все попытки для {artikul} завершились ошибкой")
     return []  # Возвращаем пустой список после всех попыток
