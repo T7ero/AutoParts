@@ -1,18 +1,44 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 # Устанавливаем переменные окружения
-ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV DISPLAY=:99
 
-# Обновляем систему и устанавливаем зависимости
+# Обновляем систему и устанавливаем базовые зависимости
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         wget \
         gnupg \
+        software-properties-common \
+        apt-transport-https \
+        lsb-release \
         unzip \
         xvfb \
+        sudo \
+        && rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем Chromium и ChromeDriver
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        chromium \
+        chromium-driver \
+        && rm -rf /var/lib/apt/lists/*
+
+# Создаем символические ссылки для совместимости
+RUN ln -sf /usr/bin/chromium /usr/bin/google-chrome && \
+    ln -sf /usr/bin/chromedriver /usr/local/bin/chromedriver
+
+# Создаем пользователя для запуска приложения
+RUN groupadd -r appuser && \
+    useradd -r -g appuser -G audio,video appuser && \
+    mkdir -p /home/appuser && \
+    chown -R appuser:appuser /home/appuser && \
+    echo "appuser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+# Устанавливаем дополнительные зависимости
+RUN apt-get update && apt-get install -y --no-install-recommends \
         procps \
         gcc \
         fonts-liberation \
@@ -28,78 +54,44 @@ RUN apt-get update && \
         libxss1 \
         libxtst6 \
         xdg-utils \
-        postgresql-client \
         libpq-dev \
+        postgresql-client \
         && rm -rf /var/lib/apt/lists/*
-
-# Устанавливаем Chrome используя современный способ
-RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg && \
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google.list && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends google-chrome-stable && \
-    rm -rf /var/lib/apt/lists/*
-
-# Устанавливаем ChromeDriver более надежным способом
-RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | awk -F'.' '{print $1}') && \
-    echo "Chrome version: $CHROME_VERSION" && \
-    LATEST_RELEASE=$(wget -qO- "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION") && \
-    echo "Latest ChromeDriver release: $LATEST_RELEASE" && \
-    wget -q "https://chromedriver.storage.googleapis.com/$LATEST_RELEASE/chromedriver_linux64.zip" -O chromedriver.zip && \
-    ls -la chromedriver.zip && \
-    unzip chromedriver.zip && \
-    mv chromedriver /usr/local/bin/ && \
-    chmod +x /usr/local/bin/chromedriver && \
-    rm chromedriver.zip && \
-    chromedriver --version
-
-# Создаем пользователя для запуска Chrome
-RUN groupadd -r chrome && useradd -r -g chrome -G audio,video chrome && \
-    mkdir -p /home/chrome && chown -R chrome:chrome /home/chrome
 
 # Устанавливаем рабочую директорию
 WORKDIR /app
 
+# Создаем структуру директорий с правильными правами
+RUN mkdir -p /app/media/uploads /app/media/results /app/media/temp /app/static && \
+    chown -R appuser:appuser /app && \
+    chmod -R 775 /app/media
+
 # Копируем requirements.txt
-COPY requirements.txt .
+COPY --chown=appuser:appuser requirements.txt .
 
 # Устанавливаем Python зависимости
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt daphne
 
 # Копируем код приложения
-COPY . .
+COPY --chown=appuser:appuser . .
 
-# Создаем скрипт для запуска с миграциями
-RUN echo '#!/bin/bash\n\
-# Ждем готовности базы данных\n\
-echo "Waiting for database..."\n\
-while ! python manage.py check --database default 2>/dev/null; do\n\
-    echo "Database not ready, waiting..."\n\
-    sleep 2\n\
-done\n\
-echo "Database is ready!"\n\
-\n\
-# Выполняем миграции\n\
-echo "Running migrations..."\n\
-python manage.py migrate\n\
-\n\
-# Создаем суперпользователя если не существует\n\
-echo "Creating superuser..."\n\
-python manage.py shell -c "\n\
-from django.contrib.auth.models import User\n\
-if not User.objects.filter(username=\"admin\").exists():\n\
-    User.objects.create_superuser(\"admin\", \"admin@example.com\", \"admin\")\n\
-    print(\"Superuser created\")\n\
-else:\n\
-    print(\"Superuser already exists\")\n\
-"\n\
-\n\
-# Запускаем Xvfb\n\
-Xvfb :99 -screen 0 1280x720x24 &\n\
-export DISPLAY=:99\n\
-\n\
-# Запускаем приложение\n\
-exec "$@"' > /usr/local/bin/entrypoint.sh && \
-    chmod +x /usr/local/bin/entrypoint.sh
+# Создаем пустой файл прокси
+RUN touch /app/proxies.txt && \
+    chown appuser:appuser /app/proxies.txt && \
+    chmod 644 /app/proxies.txt
+
+# Копируем entrypoint скрипт
+COPY --chown=appuser:appuser entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Фиксируем права для media директорий
+RUN chown -R appuser:appuser /app/media && \
+    chmod -R 775 /app/media
+
+# Создаем директории для Chrome
+RUN mkdir -p /tmp/chrome_profiles && \
+    chown -R appuser:appuser /tmp/chrome_profiles && \
+    chmod -R 755 /tmp/chrome_profiles
 
 # Собираем статические файлы
 RUN python manage.py collectstatic --noinput
@@ -107,5 +99,5 @@ RUN python manage.py collectstatic --noinput
 # Открываем порт
 EXPOSE 8000
 
-# Запускаем приложение
-CMD ["/usr/local/bin/entrypoint.sh", "daphne", "-b", "0.0.0.0", "-p", "8000", "backend.asgi:application"] 
+# Устанавливаем entrypoint
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"] 

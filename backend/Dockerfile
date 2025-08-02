@@ -21,6 +21,20 @@ RUN apt-get update && \
         gosu \
         && rm -rf /var/lib/apt/lists/*
 
+# Обновляем ключи GPG и источники пакетов
+RUN apt-get update && \
+    apt-get install -y ca-certificates && \
+    update-ca-certificates && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Обновляем ключи репозиториев
+RUN apt-get update && \
+    apt-get install -y ubuntu-keyring && \
+    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 3B4FE6ACC0B21F32 871920D1991BC93F && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
 # Устанавливаем Python и зависимости
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
