@@ -10,7 +10,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 import logging
 import subprocess
 import os
@@ -24,8 +23,8 @@ HEADERS = {
     "Connection": "keep-alive",
     "Cache-Control": "max-age=0",
 }
-TIMEOUT = 30  # Увеличенный таймаут
-SELENIUM_TIMEOUT = 40  # Увеличенный таймаут для Selenium
+TIMEOUT = 20  # Увеличенный таймаут
+SELENIUM_TIMEOUT = 30  # Увеличенный таймаут для Selenium
 
 # Кеширование
 REQUEST_CACHE = {}
@@ -38,20 +37,32 @@ def log_debug(message):
 def cleanup_chrome_processes():
     """Принудительно завершает зависшие процессы Chrome"""
     try:
-        subprocess.run(['pkill', '-9', '-f', 'chrome'], 
-                      stdout=subprocess.DEVNULL, 
-                      stderr=subprocess.DEVNULL)
-        subprocess.run(['pkill', '-9', '-f', 'chromedriver'],
-                      stdout=subprocess.DEVNULL,
-                      stderr=subprocess.DEVNULL)
-        time.sleep(2)
-    except:
-        pass
+        kill_commands = [
+            ['pkill', '-9', '-f', 'chrome'],
+            ['pkill', '-9', '-f', 'chromedriver'],
+            ['pkill', '-9', '-f', 'google-chrome'],
+            ['pkill', '-9', '-f', 'chromium'],
+            ['killall', '-9', 'chrome'],
+            ['killall', '-9', 'chromedriver']
+        ]
+        
+        for cmd in kill_commands:
+            try:
+                subprocess.run(cmd, 
+                              stdout=subprocess.DEVNULL, 
+                              stderr=subprocess.DEVNULL,
+                              timeout=2)
+            except:
+                pass
+        
+        time.sleep(1)
+    except Exception as e:
+        log_debug(f"Error cleaning up Chrome processes: {e}")
 
 def is_site_available(url):
     """Проверяет доступность сайта"""
     try:
-        response = requests.head(url, timeout=10, headers=HEADERS)
+        response = requests.head(url, timeout=5)
         return response.status_code < 500
     except:
         return False
@@ -96,7 +107,7 @@ def make_request(url, proxies=None, max_retries=3, cache_key=None):
                     REQUEST_CACHE[cache_key] = (time.time(), response)
                 return response
             elif response.status_code == 429:
-                wait_time = (attempt + 1) * 10  # Увеличенное время ожидания
+                wait_time = (attempt + 1) * 5  # Увеличенное время ожидания
                 log_debug(f"Rate limited. Waiting {wait_time} seconds...")
                 time.sleep(wait_time)
             else:
@@ -107,7 +118,7 @@ def make_request(url, proxies=None, max_retries=3, cache_key=None):
             FAILED_REQUESTS_CACHE[url] = time.time()
         
         if attempt < max_retries - 1:
-            time.sleep(5)  # Увеличенное время между попытками
+            time.sleep(2)  # Увеличенное время между попытками
     
     return None
 
@@ -152,7 +163,23 @@ def get_brands_by_artikul(artikul, proxies=None):
             except Exception as e:
                 log_debug(f"Autopiter JSON error: {str(e)}")
     
-    return sorted(brands) if brands else []
+    # Попытка 3: Парсинг атрибутов title
+    if not brands:
+        for tag in soup.select('span[title]'):
+            txt = tag.get('title', '').strip()
+            if txt and txt.lower() not in ['показать все', 'все']:
+                brands.add(txt)
+    
+    # Попытка 4: Поиск по тексту
+    if not brands:
+        brand_pattern = re.compile(r'(бренд|производитель|brand|manufacturer)', re.IGNORECASE)
+        for tag in soup.find_all(['span', 'div', 'a']):
+            text = tag.get_text(strip=True)
+            if text and len(text) > 2 and len(text) < 50:
+                if not brand_pattern.search(text):
+                    brands.add(text)
+    
+    return sorted(brands)
 
 def get_brands_by_artikul_armtek(artikul, proxies=None):
     """Улучшенный парсер Armtek с полным логированием"""
@@ -189,16 +216,11 @@ def parse_armtek_api(artikul, proxies=None):
                 "X-Requested-With": "XMLHttpRequest"
             },
             proxies=proxies,
-            timeout=20
+            timeout=15  # Увеличенный таймаут
         )
         
         if response.status_code == 200:
             try:
-                # Проверка на валидный JSON
-                if not response.text.strip():
-                    log_debug("Armtek API: пустой ответ")
-                    return None
-                    
                 data = response.json()
                 brands = set()
                 
@@ -215,9 +237,8 @@ def parse_armtek_api(artikul, proxies=None):
                         brands.add(brand.strip())
                 
                 return sorted(brands) if brands else None
-            except json.JSONDecodeError as e:
-                log_debug(f"Armtek API: ошибка декодирования JSON: {str(e)}")
-                log_debug(f"Response text: {response.text[:200]}...")
+            except json.JSONDecodeError:
+                log_debug("Armtek API: ошибка декодирования JSON")
                 return None
         else:
             log_debug(f"Armtek API: HTTP ошибка {response.status_code}")
@@ -244,49 +265,38 @@ def parse_armtek_selenium(artikul):
     options.add_argument('--disable-logging')
     options.add_argument('--log-level=3')
     options.add_argument('--user-agent=' + HEADERS["User-Agent"])
-    
-    # Уникальный user-data-dir для каждой сессии
-    user_data_dir = os.path.join(tempfile.gettempdir(), f"chrome_{uuid.uuid4().hex}")
-    options.add_argument(f"--user-data-dir={user_data_dir}")
-    
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
     
     driver = None
     try:
         cleanup_chrome_processes()
-        time.sleep(2)
+        time.sleep(1)
         
         try:
-            # Используем webdriver-manager для автоматического управления драйвером
-            service = Service(ChromeDriverManager().install())
+            service = Service('/usr/local/bin/chromedriver')
             driver = webdriver.Chrome(service=service, options=options)
         except Exception as e:
             log_debug(f"Chrome driver init error: {str(e)}")
-            try:
-                driver = webdriver.Chrome(options=options)
-            except Exception as e:
-                log_debug(f"Fallback Chrome init error: {str(e)}")
-                return []
+            driver = webdriver.Chrome(options=options)
         
         driver.set_page_load_timeout(SELENIUM_TIMEOUT)
         driver.set_script_timeout(SELENIUM_TIMEOUT)
-        driver.implicitly_wait(10)
+        driver.implicitly_wait(5)
         
         url = f"https://armtek.ru/search?text={quote(artikul)}"
         log_debug(f"Armtek Selenium: загрузка страницы {url}")
         driver.get(url)
         
         try:
-            WebDriverWait(driver, 20).until(
+            WebDriverWait(driver, 15).until(
                 EC.presence_of_element_located(
                     (By.CSS_SELECTOR, ".product-card, .catalog-item, [data-testid='product-item']")
                 )
             )
-            time.sleep(3)  # Дополнительное время для стабилизации
+            time.sleep(2)  # Дополнительное время для стабилизации
         except Exception as e:
             log_debug(f"Armtek Selenium: не дождались результатов: {str(e)}")
-            # Пробуем продолжить даже если не дождались элементов
         
         # Извлекаем бренды из HTML
         page_source = driver.page_source
@@ -313,6 +323,15 @@ def parse_armtek_selenium(artikul):
                 if brand and len(brand) > 2 and not brand.isdigit():
                     brands.add(brand)
         
+        # Дополнительный поиск по тексту
+        if not brands:
+            brand_pattern = re.compile(r'(бренд|производитель|brand|manufacturer)', re.IGNORECASE)
+            for tag in soup.find_all(['span', 'div', 'a', 'h3']):
+                text = tag.get_text(strip=True)
+                if text and len(text) > 2 and len(text) < 50:
+                    if not brand_pattern.search(text) and not any(char.isdigit() for char in text):
+                        brands.add(text)
+        
         return sorted(brands) if brands else []
         
     except Exception as e:
@@ -325,13 +344,7 @@ def parse_armtek_selenium(artikul):
             except:
                 pass
         cleanup_chrome_processes()
-        time.sleep(2)
-        # Удаляем временный user-data-dir
-        try:
-            if os.path.exists(user_data_dir):
-                os.system(f"rm -rf {user_data_dir}")
-        except:
-            pass
+        time.sleep(1)
 
 def parse_armtek_http(artikul, proxies=None):
     """Парсинг Armtek через HTTP запрос с улучшенной обработкой"""
@@ -366,10 +379,37 @@ def parse_armtek_http(artikul, proxies=None):
             if brand and len(brand) > 2 and not brand.isdigit():
                 brands.add(brand)
     
+    # Поиск в JSON данных
+    script_tags = soup.find_all('script', type='application/ld+json')
+    for script in script_tags:
+        try:
+            data = json.loads(script.string)
+            if isinstance(data, list):
+                for item in data:
+                    if item.get("@type") == "Product":
+                        brand = item.get("brand", {}).get("name")
+                        if brand:
+                            brands.add(brand)
+            elif isinstance(data, dict) and data.get("@type") == "Product":
+                brand = data.get("brand", {}).get("name")
+                if brand:
+                    brands.add(brand)
+        except:
+            pass
+    
+    # Поиск по тексту
+    if not brands:
+        brand_pattern = re.compile(r'(бренд|производитель|brand|manufacturer)', re.IGNORECASE)
+        for tag in soup.find_all(['span', 'div', 'a', 'h3']):
+            text = tag.get_text(strip=True)
+            if text and len(text) > 2 and len(text) < 50:
+                if not brand_pattern.search(text) and not any(char.isdigit() for char in text):
+                    brands.add(text)
+    
     return sorted(brands) if brands else []
 
 def get_brands_by_artikul_emex(artikul, proxies=None):
-    """Улучшенный парсер для Emex с обработкой таймаутов и прокси"""
+    """Улучшенный парсер для Emex с обработкой таймаутов"""
     if not is_site_available("https://emex.ru"):
         log_debug("Emex недоступен, пропускаем")
         return []
@@ -384,7 +424,7 @@ def get_brands_by_artikul_emex(artikul, proxies=None):
         "x-requested-with": "XMLHttpRequest",
     }
     
-    max_retries = 2  # Уменьшено количество попыток
+    max_retries = 3
     for attempt in range(max_retries):
         log_debug(f"[API] Emex: попытка {attempt+1} для {artikul}")
         try:
@@ -392,16 +432,11 @@ def get_brands_by_artikul_emex(artikul, proxies=None):
                 api_url,
                 headers=headers,
                 proxies=proxies,
-                timeout=20
+                timeout=15  # Увеличенный таймаут
             )
             
             if response.status_code == 200:
                 try:
-                    # Проверка на валидный JSON
-                    if not response.text.strip():
-                        log_debug("Emex API: пустой ответ")
-                        return []
-                        
                     data = response.json()
                     brands = set()
                     
@@ -421,24 +456,28 @@ def get_brands_by_artikul_emex(artikul, proxies=None):
                                 if brand:
                                     brands.add(brand)
                     
-                    return sorted(brands) if brands else []
-                except json.JSONDecodeError as e:
-                    log_debug(f"Emex API: ошибка декодирования JSON: {str(e)}")
-                    log_debug(f"Response text: {response.text[:200]}...")
-                    return []
+                    if not brands:
+                        brands_list = data.get("brands", [])
+                        for brand in brands_list:
+                            if isinstance(brand, str):
+                                brands.add(brand)
+                    
+                    return sorted(brands)
+                except json.JSONDecodeError:
+                    log_debug("Emex API: ошибка декодирования JSON")
             elif response.status_code == 429:
-                log_debug("Emex API: Rate limited, пропускаем")
-                return []
+                wait_time = (attempt + 1) * 5  # Увеличенное время ожидания
+                log_debug(f"Emex rate limited. Waiting {wait_time} seconds...")
+                time.sleep(wait_time)
             else:
                 log_debug(f"[API] Emex: HTTP ошибка {response.status_code}")
-                return []
         except requests.exceptions.Timeout:
             log_debug(f"[API] Emex: таймаут подключения (попытка {attempt+1})")
         except Exception as e:
             log_debug(f"[API] Emex: ошибка: {str(e)}")
         
         if attempt < max_retries - 1:
-            time.sleep(5)
+            time.sleep(3)  # Увеличенное время между попытками
     
     log_debug(f"Emex: все попытки для {artikul} завершились ошибкой")
-    return []
+    return []  # Возвращаем пустой список после всех попыток
