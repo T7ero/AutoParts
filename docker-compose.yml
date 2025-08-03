@@ -64,7 +64,7 @@ services:
     build: 
       context: ./backend
       dockerfile: Dockerfile.alternative
-    command: /usr/local/bin/entrypoint_simple.sh celery -A backend worker -l info --concurrency=1 --max-tasks-per-child=10 --prefetch-multiplier=1 --uid=1000
+    command: /usr/local/bin/entrypoint_simple.sh celery -A backend worker -l info --concurrency=1 --max-tasks-per-child=10 --prefetch-multiplier=1
     volumes:
       - ./backend:/app
       - ./backend/media:/app/media
