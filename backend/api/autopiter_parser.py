@@ -20,10 +20,19 @@ from typing import List, Dict, Optional, Tuple
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
     "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
     "Cache-Control": "max-age=0",
+    "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
 }
 TIMEOUT = 20
 SELENIUM_TIMEOUT = 30
@@ -162,9 +171,23 @@ def make_request(url: str, proxies: Optional[Dict] = None, max_retries: int = 3,
                     continue
                 return None
             
-            # Проверка на блокировку
-            if response.status_code == 403 or "blocked" in response.text.lower():
-                log_debug(f"Запрос заблокирован на {url}")
+            # Проверка на блокировку - улучшенная логика
+            if response.status_code == 403:
+                log_debug(f"Запрос заблокирован (403) на {url}")
+                if attempt < max_retries - 1:
+                    time.sleep(3)
+                    continue
+                return None
+            
+            # Проверка на другие признаки блокировки
+            blocking_indicators = [
+                "blocked", "access denied", "forbidden", "cloudflare", 
+                "captcha", "security check", "ddos protection"
+            ]
+            
+            response_text_lower = response.text.lower()
+            if any(indicator in response_text_lower for indicator in blocking_indicators):
+                log_debug(f"Запрос заблокирован (индикаторы) на {url}")
                 if attempt < max_retries - 1:
                     time.sleep(3)
                     continue
@@ -177,6 +200,13 @@ def make_request(url: str, proxies: Optional[Dict] = None, max_retries: int = 3,
                 return response
             else:
                 log_debug(f"HTTP {response.status_code} для {url}")
+                if response.status_code in [429, 503, 502]:
+                    # Rate limiting или временная недоступность
+                    wait_time = (attempt + 1) * 5
+                    log_debug(f"Rate limiting, ждем {wait_time} секунд")
+                    time.sleep(wait_time)
+                    if attempt < max_retries - 1:
+                        continue
                 
         except requests.exceptions.Timeout:
             log_debug(f"Таймаут для {url} (попытка {attempt+1})")
@@ -219,113 +249,41 @@ def get_brands_by_artikul(artikul: str, proxies: Optional[Dict] = None) -> List[
     soup = BeautifulSoup(response.text, "html.parser")
     brands = set()
     
-    # Попытка 1: Парсинг таблицы с товарами
-    for row in soup.select('tr[data-qa-id="offer-row"]'):
-        brand_tag = row.select_one('span[data-qa-id="brand-name"]')
-        if brand_tag:
-            brand = brand_tag.get_text(strip=True)
-            if brand and brand.lower() not in ['показать все', 'все', 'автомасла', 'автопитер']:
+    # Ищем бренды в различных элементах
+    brand_selectors = [
+        '.product-card .brand-name',
+        '.product-card__brand',
+        '[itemprop="brand"]',
+        '.catalog-item__brand',
+        '.brand-name',
+        '.product-brand',
+        'span[data-brand]',
+        '.item-brand',
+        '.brand__name',
+        '.manufacturer-name',
+        '.vendor-title',
+        '.product-item .brand',
+        '.item .brand',
+        '.product-info .brand',
+        '.goods-info .brand'
+    ]
+    
+    for selector in brand_selectors:
+        for tag in soup.select(selector):
+            brand = tag.get_text(strip=True)
+            if brand and len(brand) > 2 and not brand.isdigit():
                 brands.add(brand)
     
-    # Попытка 2: Парсинг JSON в скрипте
+    # Поиск по тексту
     if not brands:
-        script_tags = soup.find_all('script')
-        for script in script_tags:
-            if script.string and 'window.__NUXT__' in script.string:
-                try:
-                    script_text = script.string
-                    json_match = re.search(r'window\.__NUXT__\s*=\s*(.*?});', script_text, re.DOTALL)
-                    if json_match:
-                        json_str = json_match.group(1)
-                        data = json.loads(json_str)
-                        
-                        # Ищем бренды в структуре данных
-                        if 'data' in data and isinstance(data['data'], list) and len(data['data']) > 0:
-                            offers = data['data'][0].get('offers', {}).get('items', [])
-                            for offer in offers:
-                                if isinstance(offer, dict):
-                                    brand_info = offer.get('brand', {})
-                                    if isinstance(brand_info, dict):
-                                        brand = brand_info.get('name')
-                                        if brand and brand.lower() not in ['показать все', 'все']:
-                                            brands.add(brand)
-                except Exception as e:
-                    log_debug(f"Autopiter JSON error: {str(e)}")
-    
-    # Попытка 3: Парсинг атрибутов title и data-атрибутов
-    if not brands:
-        for tag in soup.select('span[title], div[title], a[title]'):
-            txt = tag.get('title', '').strip()
-            if txt and txt.lower() not in ['показать все', 'все', 'автомасла', 'автопитер']:
-                brands.add(txt)
-    
-    # Попытка 4: Поиск по data-атрибутам
-    if not brands:
-        for tag in soup.select('[data-brand], [data-vendor], [data-manufacturer]'):
-            brand = tag.get('data-brand') or tag.get('data-vendor') or tag.get('data-manufacturer')
-            if brand and brand.lower() not in ['показать все', 'все']:
-                brands.add(brand)
-    
-    # Попытка 5: Поиск по классам, содержащим "brand"
-    if not brands:
-        for tag in soup.select('.brand, .vendor, .manufacturer, [class*="brand"], [class*="vendor"]'):
+        brand_pattern = re.compile(r'(бренд|производитель|brand|manufacturer)', re.IGNORECASE)
+        for tag in soup.find_all(['span', 'div', 'a', 'h3']):
             text = tag.get_text(strip=True)
             if text and len(text) > 2 and len(text) < 50:
-                if text.lower() not in ['показать все', 'все', 'автомасла', 'автопитер', 'вход', 'корзина']:
+                if not brand_pattern.search(text) and not any(char.isdigit() for char in text):
                     brands.add(text)
     
-    # Фильтрация результатов - убираем нерелевантные бренды
-    filtered_brands = set()
-    exclude_words = {
-        'автомасла', 'автопитер', 'вход', 'корзина', 'каталоги', 'контакты', 
-        'новости', 'помощь', 'оптовикам', 'поставщикам', 'вакансии',
-        'все категории', 'долгопрудный', 'москва', 'россия', 'китай',
-        'запчасть', 'запчасти', 'оригинальные', 'неоригинальные',
-        'восстановление пароля', 'конфиденциальность', 'оферта',
-        'оплата заказа', 'доставка заказа', 'возврат товара',
-        'to content', 'zapros@autopiter.ru', '© ооо «автопитер»',
-        'ваз, газ, камаз', 'запчасти ваз, газ, камаз', 'запчасти для то',
-        'или выбрать другой удобный для вас способ', 'каталоги запчастей',
-        'неоригинальные запчасти', 'оплатить все товары можно',
-        'оптовым клиентам', 'оригинальные каталоги по vin',
-        'перейти в версию для смартфонов', 'помощь по сайту',
-        'россия, москва, ул. скотопрогонная, 35 стр. 3', 'спецтехника',
-        'фильтры hebel kraft', 'герметик силиконовый mannol',
-        'кнопка 2114-15, евро кнопка', 'кнопка ваз-2115, евро кнопка',
-        'кольцо уплотнительное ступицы toyota', 'лист сзап l1 1,2 задний',
-        'масло для компрессоров vdl 100 fubag', 'мотор омывателя 24v',
-        'мотор омывателя камаз 24v', 'насос омывателя маз,камаз евро',
-        'переключатель стеклоочистителя', 'профи-75 белак',
-        'ремкомплект гидроцилиндра', 'рессора чмзап',
-        'русский мастер ps-10 рм', 'русский мастер рмм',
-        'стопорное кольцо чмзап'
-    }
-    
-    for brand in brands:
-        brand_lower = brand.lower()
-        if (len(brand) > 2 and len(brand) < 50 and 
-            brand_lower not in exclude_words and
-            not any(word in brand_lower for word in exclude_words) and
-            not brand_lower.startswith('99') and  # Исключаем артикулы
-            not brand_lower.startswith('zapros') and
-            not brand_lower.startswith('©') and
-            not brand_lower.startswith('mannol') and
-            not brand_lower.startswith('герметик') and
-            not brand_lower.startswith('кнопка') and
-            not brand_lower.startswith('кольцо') and
-            not brand_lower.startswith('лист') and
-            not brand_lower.startswith('масло') and
-            not brand_lower.startswith('мотор') and
-            not brand_lower.startswith('насос') and
-            not brand_lower.startswith('переключатель') and
-            not brand_lower.startswith('профи') and
-            not brand_lower.startswith('ремкомплект') and
-            not brand_lower.startswith('рессора') and
-            not brand_lower.startswith('русский мастер') and
-            not brand_lower.startswith('стопорное')):
-            filtered_brands.add(brand)
-    
-    return sorted(filtered_brands)
+    return sorted(brands) if brands else []
 
 def get_brands_by_artikul_armtek(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
     """Улучшенный парсер Armtek с полным логированием"""
@@ -489,13 +447,59 @@ def parse_armtek_selenium(artikul: str) -> List[str]:
                     if not brand_pattern.search(text) and not any(char.isdigit() for char in text):
                         brands.add(text)
         
-        # Фильтрация брендов - только разрешенные бренды
-        allowed_brands = {'PAZ', 'PRC', 'РФ'}
+        # Фильтрация брендов - убираем "мусор", но оставляем все бренды
         filtered_brands = set()
+        exclude_words = {
+            'telegram', 'whatsapp', 'аккумуляторы', 'масла', 'фильтры', 'тормозные колодки',
+            'амортизаторы', 'подшипники', 'ремни', 'свечи', 'лампы', 'стеклоочистители',
+            'дворники', 'зеркала', 'фары', 'фонари', 'сигналы', 'датчики', 'насосы',
+            'компрессоры', 'радиаторы', 'вентиляторы', 'термостаты', 'терморегуляторы',
+            'датчики температуры', 'датчики давления', 'датчики кислорода', 'датчики детонации',
+            'датчики скорости', 'датчики положения', 'датчики уровня', 'датчики расхода',
+            'датчики вибрации', 'датчики шума', 'вход', 'корзина', 'каталоги', 'контакты', 
+            'новости', 'помощь', 'оптовикам', 'поставщикам', 'вакансии', 'все категории', 
+            'долгопрудный', 'москва', 'россия', 'китай', 'запчасть', 'запчасти', 
+            'оригинальные', 'неоригинальные', 'восстановление пароля', 'конфиденциальность', 
+            'оферта', 'оплата заказа', 'доставка заказа', 'возврат товара', 'to content', 
+            'zapros@autopiter.ru', '© ооо «автопитер»', 'ваз, газ, камаз', 
+            'запчасти ваз, газ, камаз', 'запчасти для то', 'или выбрать другой удобный для вас способ',
+            'каталоги запчастей', 'неоригинальные запчасти', 'оплатить все товары можно',
+            'оптовым клиентам', 'оригинальные каталоги по vin', 'перейти в версию для смартфонов',
+            'помощь по сайту', 'россия, москва, ул. скотопрогонная, 35 стр. 3', 'спецтехника',
+            'фильтры hebel kraft', 'герметик силиконовый mannol', 'кнопка 2114-15, евро кнопка',
+            'кнопка ваз-2115, евро кнопка', 'кольцо уплотнительное ступицы toyota',
+            'лист сзап l1 1,2 задний', 'масло для компрессоров vdl 100 fubag',
+            'мотор омывателя 24v', 'мотор омывателя камаз 24v', 'насос омывателя маз,камаз евро',
+            'переключатель стеклоочистителя', 'профи-75 белак', 'ремкомплект гидроцилиндра',
+            'рессора чмзап', 'русский мастер ps-10 рм', 'русский мастер рмм',
+            'стопорное кольцо чмзап', 'показать все', 'все', 'автомасла', 'автопитер'
+        }
         
         for brand in brands:
             brand_clean = brand.strip()
-            if brand_clean in allowed_brands:
+            brand_lower = brand_clean.lower()
+            
+            # Проверяем, что бренд не является "мусором"
+            if (len(brand_clean) > 2 and len(brand_clean) < 50 and
+                brand_lower not in exclude_words and
+                not any(word in brand_lower for word in exclude_words) and
+                not brand_lower.startswith('99') and  # Исключаем артикулы
+                not brand_lower.startswith('zapros') and
+                not brand_lower.startswith('©') and
+                not brand_lower.startswith('mannol') and
+                not brand_lower.startswith('герметик') and
+                not brand_lower.startswith('кнопка') and
+                not brand_lower.startswith('кольцо') and
+                not brand_lower.startswith('лист') and
+                not brand_lower.startswith('масло') and
+                not brand_lower.startswith('мотор') and
+                not brand_lower.startswith('насос') and
+                not brand_lower.startswith('переключатель') and
+                not brand_lower.startswith('профи') and
+                not brand_lower.startswith('ремкомплект') and
+                not brand_lower.startswith('рессора') and
+                not brand_lower.startswith('русский мастер') and
+                not brand_lower.startswith('стопорное')):
                 filtered_brands.add(brand_clean)
         
         return sorted(filtered_brands) if filtered_brands else []

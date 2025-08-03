@@ -163,9 +163,10 @@ def process_parsing_task(task_id):
                 # Armtek (Selenium) - с прокси
                 def parse_armtek_parallel(numbers, brand, part_number, name):
                     results = []
+                    log(f"Armtek: начало обработки {len(numbers)} артикулов")
                     
                     def parse_one(num):
-                        max_retries = 1  # Уменьшаем количество попыток
+                        max_retries = 3  # Увеличиваем количество попыток
                         for attempt in range(max_retries):
                             try:
                                 # Сначала пробуем без прокси, потом с прокси
@@ -192,13 +193,14 @@ def process_parsing_task(task_id):
                     # Используем 1 поток для Selenium
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                         futs = {executor.submit(parse_one, num): num for num in numbers}
-                        for fut in concurrent.futures.as_completed(futs, timeout=60):  # Уменьшаем таймаут
+                        for fut in concurrent.futures.as_completed(futs, timeout=120):  # Увеличиваем таймаут
                             try:
                                 for res in fut.result():
                                     results.append(res)
                             except Exception as e:
                                 log(f"Error processing armtek result: {str(e)}")
                     
+                    log(f"Armtek: завершена обработка, найдено {len(results)} результатов")
                     return results
                 
                 armtek_results = parse_armtek_parallel(numbers, brand, part_number, name)
