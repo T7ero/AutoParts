@@ -283,7 +283,102 @@ def get_brands_by_artikul(artikul: str, proxies: Optional[Dict] = None) -> List[
                 if not brand_pattern.search(text) and not any(char.isdigit() for char in text):
                     brands.add(text)
     
-    return sorted(brands) if brands else []
+    # Фильтрация брендов - убираем весь мусор
+    filtered_brands = set()
+    exclude_words = {
+        'to content', 'zapros@autopiter.ru', 'автомасла', 'автопитер', 'ваз, газ, камаз', 
+        'вакансии', 'возврат товара', 'восстановление пароля', 'все категории', 'вход', 
+        'долгопрудный', 'доставка заказа', 'запчасти ваз, газ, камаз', 'запчасти для то', 
+        'или выбрать другой удобный для вас способ', 'каталоги', 'каталоги запчастей', 
+        'контакты', 'конфиденциальность', 'корзина', 'неоригинальные', 'неоригинальные запчасти', 
+        'новости', 'о компании', 'оплата заказа', 'оплатить все товары можно', 'оптовикам', 
+        'оптовым клиентам', 'оригинальные', 'оригинальные каталоги по vin', 'оферта', 
+        'перейти в версию для смартфонов', 'помощь', 'помощь по сайту', 'поставщикам', 
+        'производители:', 'реквизиты', 'рекомендуем', 'спецтехника', 'фильтры hebel kraft',
+        'долгопрудныйвходкорзина', 'все категориикаталоги запчастей', 'офертаконфиденциальность',
+        'производители:дизель', 'производители:jacjashisollersзапчастькитайрааз', 'jacjashisollersзапчастькитайрааз',
+        'выбор armtekсортировать по:выбор armtek', 'мы используем cookies, чтобы сайт был лучше',
+        'мы используем cookies, чтобы сайт был лучшехорошо', 'мы принимаем к оплате:', 'о компании',
+        'оптовым покупателям', 'планировщик выгрузки', 'подбор', 'поиск по результату', 'покупателям',
+        'правовая информация', 'программа лояльности', 'работа в компании', 'реклама на сайте',
+        'сортировать по:выбор armtek', 'срок отгрузки', 'срок отгрузкидней', 'хорошо', 'цена',
+        'ценаотдо', 'этна', 'отдо', 'заявку на подбор', 'vin или марке авто', 'аксессуары',
+        'акции', 'в корзину', 'возврат', 'возможные замены', 'войти', 'выбор armtek', 'гараж',
+        'гарантийная политика', 'главная', 'дней', 'доставка', 'инструмент', 'искомый товар',
+        'как сделать заказ', 'каталог', 'лучшее предложение', 'магазины', 'мы в социальных сетях',
+        'кислородный датчик', 'кислородный датчик, шт', 'датчик кислорода jac', 'запчасть', 'китай', 'рааз'
+    }
+    
+    for brand in brands:
+        brand_clean = brand.strip()
+        brand_lower = brand_clean.lower()
+        
+        # Проверяем, что бренд не является "мусором"
+        if (len(brand_clean) > 2 and len(brand_clean) < 50 and
+            brand_lower not in exclude_words and
+            not any(word in brand_lower for word in exclude_words) and
+            not brand_lower.startswith('©') and
+            not brand_lower.startswith('zapros') and
+            not brand_lower.startswith('to content') and
+            not brand_lower.startswith('автомасла') and
+            not brand_lower.startswith('автопитер') and
+            not brand_lower.startswith('ваз, газ, камаз') and
+            not brand_lower.startswith('запчасти') and
+            not brand_lower.startswith('каталоги') and
+            not brand_lower.startswith('контакты') and
+            not brand_lower.startswith('корзина') and
+            not brand_lower.startswith('новости') and
+            not brand_lower.startswith('о компании') and
+            not brand_lower.startswith('оплата') and
+            not brand_lower.startswith('помощь') and
+            not brand_lower.startswith('производители:') and
+            not brand_lower.startswith('реквизиты') and
+            not brand_lower.startswith('спецтехника') and
+            not brand_lower.startswith('фильтры') and
+            not brand_lower.startswith('аксессуары') and
+            not brand_lower.startswith('акции') and
+            not brand_lower.startswith('в корзину') and
+            not brand_lower.startswith('возврат') and
+            not brand_lower.startswith('войти') and
+            not brand_lower.startswith('выбор') and
+            not brand_lower.startswith('гараж') and
+            not brand_lower.startswith('главная') and
+            not brand_lower.startswith('доставка') and
+            not brand_lower.startswith('инструмент') and
+            not brand_lower.startswith('как сделать') and
+            not brand_lower.startswith('каталог') and
+            not brand_lower.startswith('лучшее') and
+            not brand_lower.startswith('магазины') and
+            not brand_lower.startswith('мы в') and
+            not brand_lower.startswith('мы используем') and
+            not brand_lower.startswith('мы принимаем') and
+            not brand_lower.startswith('оптовым') and
+            not brand_lower.startswith('партнерам') and
+            not brand_lower.startswith('планировщик') and
+            not brand_lower.startswith('подбор') and
+            not brand_lower.startswith('поиск') and
+            not brand_lower.startswith('покупателям') and
+            not brand_lower.startswith('правовая') and
+            not brand_lower.startswith('программа') and
+            not brand_lower.startswith('работа в') and
+            not brand_lower.startswith('реклама') and
+            not brand_lower.startswith('сортировать') and
+            not brand_lower.startswith('срок') and
+            not brand_lower.startswith('хорошо') and
+            not brand_lower.startswith('цена') and
+            not brand_lower.startswith('этна') and
+            not brand_lower.startswith('отдо') and
+            not brand_lower.startswith('заявку') and
+            not brand_lower.startswith('vin или') and
+            not brand_lower.startswith('искомый') and
+            not brand_lower.startswith('кислородный') and
+            not brand_lower.startswith('датчик') and
+            not brand_lower.startswith('запчасть') and
+            not brand_lower.startswith('китай') and
+            not brand_lower.startswith('рааз')):
+            filtered_brands.add(brand_clean)
+    
+    return sorted(filtered_brands) if filtered_brands else []
 
 def get_brands_by_artikul_armtek(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
     """Улучшенный парсер Armtek с полным логированием"""
@@ -472,7 +567,21 @@ def parse_armtek_selenium(artikul: str) -> List[str]:
             'мотор омывателя 24v', 'мотор омывателя камаз 24v', 'насос омывателя маз,камаз евро',
             'переключатель стеклоочистителя', 'профи-75 белак', 'ремкомплект гидроцилиндра',
             'рессора чмзап', 'русский мастер ps-10 рм', 'русский мастер рмм',
-            'стопорное кольцо чмзап', 'показать все', 'все', 'автомасла', 'автопитер'
+            'стопорное кольцо чмзап', 'показать все', 'все', 'автомасла', 'автопитер',
+            'armtek', 'new', 'аксессуары', 'акции', 'в корзину', 'возврат', 'возможные замены',
+            'войти', 'выбор armtek', 'гараж', 'гарантийная политика', 'главная', 'дней',
+            'доставка', 'инструмент', 'искомый товар', 'как сделать заказ', 'каталог',
+            'лучшее предложение', 'магазины', 'мы в социальных сетях', 'мы используем cookies',
+            'мы принимаем к оплате:', 'о компании', 'оптовым покупателям', 'партнерам',
+            'планировщик выгрузки', 'подбор', 'поиск по результату', 'покупателям',
+            'правовая информация', 'программа лояльности', 'работа в компании', 'реклама на сайте',
+            'сортировать по:выбор armtek', 'срок отгрузки', 'хорошо', 'цена', 'этна', 'отдо',
+            'заявку на подбор', 'vin или марке авто', 'кислородный датчик', 'датчик кислорода jac',
+            'запчасть', 'китай', 'рааз', 'jacjashisollersзапчастькитайрааз', 'производители:дизель',
+            'производители:jacjashisollersзапчастькитайрааз', 'долгопрудныйвходкорзина',
+            'все категориикаталоги запчастей', 'офертаконфиденциальность', 'выбор armtekсортировать по:выбор armtek',
+            'мы используем cookies, чтобы сайт был лучше', 'мы используем cookies, чтобы сайт был лучшехорошо',
+            'срок отгрузкидней', 'ценаотдо', 'кислородный датчик, шт'
         }
         
         for brand in brands:
@@ -499,7 +608,53 @@ def parse_armtek_selenium(artikul: str) -> List[str]:
                 not brand_lower.startswith('ремкомплект') and
                 not brand_lower.startswith('рессора') and
                 not brand_lower.startswith('русский мастер') and
-                not brand_lower.startswith('стопорное')):
+                not brand_lower.startswith('стопорное') and
+                not brand_lower.startswith('armtek') and
+                not brand_lower.startswith('new') and
+                not brand_lower.startswith('аксессуары') and
+                not brand_lower.startswith('акции') and
+                not brand_lower.startswith('в корзину') and
+                not brand_lower.startswith('возврат') and
+                not brand_lower.startswith('возможные') and
+                not brand_lower.startswith('войти') and
+                not brand_lower.startswith('выбор') and
+                not brand_lower.startswith('гараж') and
+                not brand_lower.startswith('гарантийная') and
+                not brand_lower.startswith('главная') and
+                not brand_lower.startswith('дней') and
+                not brand_lower.startswith('доставка') and
+                not brand_lower.startswith('инструмент') and
+                not brand_lower.startswith('искомый') and
+                not brand_lower.startswith('как сделать') and
+                not brand_lower.startswith('каталог') and
+                not brand_lower.startswith('лучшее') and
+                not brand_lower.startswith('магазины') and
+                not brand_lower.startswith('мы в') and
+                not brand_lower.startswith('мы используем') and
+                not brand_lower.startswith('мы принимаем') and
+                not brand_lower.startswith('оптовым') and
+                not brand_lower.startswith('партнерам') and
+                not brand_lower.startswith('планировщик') and
+                not brand_lower.startswith('подбор') and
+                not brand_lower.startswith('поиск') and
+                not brand_lower.startswith('покупателям') and
+                not brand_lower.startswith('правовая') and
+                not brand_lower.startswith('программа') and
+                not brand_lower.startswith('работа в') and
+                not brand_lower.startswith('реклама') and
+                not brand_lower.startswith('сортировать') and
+                not brand_lower.startswith('срок') and
+                not brand_lower.startswith('хорошо') and
+                not brand_lower.startswith('цена') and
+                not brand_lower.startswith('этна') and
+                not brand_lower.startswith('отдо') and
+                not brand_lower.startswith('заявку') and
+                not brand_lower.startswith('vin или') and
+                not brand_lower.startswith('кислородный') and
+                not brand_lower.startswith('датчик') and
+                not brand_lower.startswith('запчасть') and
+                not brand_lower.startswith('китай') and
+                not brand_lower.startswith('рааз')):
                 filtered_brands.add(brand_clean)
         
         return sorted(filtered_brands) if filtered_brands else []
