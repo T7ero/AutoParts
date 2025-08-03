@@ -76,10 +76,9 @@ RUN pip install --no-cache-dir -r requirements.txt daphne
 # Копируем код приложения
 COPY --chown=appuser:appuser . .
 
-# Создаем пустой файл прокси
-RUN touch /app/proxies.txt && \
-    chown appuser:appuser /app/proxies.txt && \
-    chmod 644 /app/proxies.txt
+# Копируем файл прокси с примерами
+COPY --chown=appuser:appuser proxies.txt /app/proxies.txt
+RUN chmod 644 /app/proxies.txt
 
 # Копируем entrypoint скрипты
 COPY --chown=appuser:appuser entrypoint.sh /usr/local/bin/entrypoint.sh

@@ -2,7 +2,8 @@ from django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 from core.models import ParsingTask
@@ -56,6 +57,7 @@ def task_status(request, task_id):
         return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
 
 @api_view(['POST'])
+@permission_classes([AllowAny])
 def upload_proxies(request):
     """Загрузить новый список прокси"""
     try:
@@ -80,6 +82,7 @@ def upload_proxies(request):
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['GET'])
+@permission_classes([AllowAny])
 def proxy_status(request):
     """Получить статус прокси"""
     try:
@@ -94,6 +97,7 @@ def proxy_status(request):
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['POST'])
+@permission_classes([AllowAny])
 def reset_proxy_index(request):
     """Сбросить индекс прокси"""
     try:
