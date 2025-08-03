@@ -307,7 +307,26 @@ def get_brands_by_artikul(artikul: str, proxies: Optional[Dict] = None) -> List[
         'гарантийная политика', 'главная', 'дней', 'доставка', 'инструмент', 'искомый товар',
         'как сделать заказ', 'каталог', 'лучшее предложение', 'магазины', 'мы в социальных сетях',
         'кислородный датчик', 'кислородный датчик, шт', 'датчик кислорода jac', 'запчасть', 'китай', 'рааз',
-        'или выбрать другой удобный для\xa0вас способ', 'ка\x00талоги', 'оплата'
+        'или выбрать другой удобный для\xa0вас способ', 'ка\x00талоги', 'оплата',
+        # Новые исключения для Autopiter
+        'ки\x00тай', 'к\x00итай', 'товары на autopiter market', 'переключатели подрулевые, в сборе',
+        'переключатели подрулевые в сборе', 'переключатели подрулевые', 'подрулевые', 'в сборе',
+        'рессорный палец', 'палец', 'рессорный', 'автокомпонент', 'россия', 'камаз', 'автокомпонент плюс',
+        'автодеталь', 'четырнадцать', 'автокомпонент плюс', 'автодеталь', 'четырнадцать',
+        'motul.', 'motul', 'faw', 'foton', 'hande axle', 'leo trade', 'onashi', 'prc', 'shaanxi/shacman',
+        'sinotruk', 'sitrak', 'weichai', 'zg.link', 'автокомпонент', 'камаз', 'рессорный палец', 'россия',
+        'ast', 'ast silver', 'ast smart', 'autotech', 'avto-tech', 'component', 'createk', 'howo',
+        'kolbenschmidt', 'leo', 'peugeot-citroen', 'prc', 'shaanxi/shacman', 'sinotruk', 'sitrak',
+        'автокомпонент', 'камаз', 'рессорный палец', 'россия', 'bosch', 'jac', 'автокомпонент', 'камаз',
+        'переключатели подрулевые, в сборе', 'россия', 'autocomponent', 'component', 'howo', 'prc',
+        'shaanxi', 'shacman', 'sinotruk', 'sitrak', 'автодеталь', 'автокомпонент плюс', 'камаз',
+        'четырнадцать', 'autocomponent', 'component', 'createk', 'shacman', 'автодеталь', 'автокомпонент плюс',
+        'четырнадцать', 'autocomponent', 'component', 'leo trade', 'prc', 'автодеталь', 'автокомпонент плюс',
+        'четырнадцать', 'autocomponent', 'component', 'howo', 'prc', 'sinotruk', 'sitrak', 'автодеталь',
+        'автокомпонент плюс', 'четырнадцать', 'autocomponent', 'component', 'howo', 'prc', 'sinotruk',
+        'sitrak', 'автодеталь', 'автокомпонент плюс', 'четырнадцать', 'autocomponent', 'component', 'howo',
+        'prc', 'sinotruk', 'sitrak', 'автодеталь', 'автокомпонент плюс', 'четырнадцать', 'jac', 'prc',
+        'автокомпонент', 'камаз'
     }
     
     for brand in brands:
@@ -378,7 +397,43 @@ def get_brands_by_artikul(artikul: str, proxies: Optional[Dict] = None) -> List[
             not brand_lower.startswith('китай') and
             not brand_lower.startswith('рааз') and
             not brand_lower.startswith('или выбрать') and
-            not brand_lower.startswith('каталоги')):
+            not brand_lower.startswith('каталоги') and
+            not brand_lower.startswith('ки\x00тай') and
+            not brand_lower.startswith('к\x00итай') and
+            not brand_lower.startswith('товары на') and
+            not brand_lower.startswith('переключатели') and
+            not brand_lower.startswith('подрулевые') and
+            not brand_lower.startswith('в сборе') and
+            not brand_lower.startswith('рессорный') and
+            not brand_lower.startswith('палец') and
+            not brand_lower.startswith('автокомпонент') and
+            not brand_lower.startswith('россия') and
+            not brand_lower.startswith('камаз') and
+            not brand_lower.startswith('автодеталь') and
+            not brand_lower.startswith('четырнадцать') and
+            not brand_lower.startswith('motul') and
+            not brand_lower.startswith('faw') and
+            not brand_lower.startswith('foton') and
+            not brand_lower.startswith('hande') and
+            not brand_lower.startswith('leo') and
+            not brand_lower.startswith('onashi') and
+            not brand_lower.startswith('prc') and
+            not brand_lower.startswith('shaanxi') and
+            not brand_lower.startswith('sinotruk') and
+            not brand_lower.startswith('sitrak') and
+            not brand_lower.startswith('weichai') and
+            not brand_lower.startswith('zg.') and
+            not brand_lower.startswith('ast') and
+            not brand_lower.startswith('autotech') and
+            not brand_lower.startswith('avto-') and
+            not brand_lower.startswith('component') and
+            not brand_lower.startswith('createk') and
+            not brand_lower.startswith('howo') and
+            not brand_lower.startswith('kolbenschmidt') and
+            not brand_lower.startswith('peugeot') and
+            not brand_lower.startswith('bosch') and
+            not brand_lower.startswith('jac') and
+            not brand_lower.startswith('autocomponent')):
             filtered_brands.add(brand_clean)
     
     return sorted(filtered_brands) if filtered_brands else []
@@ -584,7 +639,25 @@ def parse_armtek_selenium(artikul: str) -> List[str]:
             'производители:jacjashisollersзапчастькитайрааз', 'долгопрудныйвходкорзина',
             'все категориикаталоги запчастей', 'офертаконфиденциальность', 'выбор armtekсортировать по:выбор armtek',
             'мы используем cookies, чтобы сайт был лучше', 'мы используем cookies, чтобы сайт был лучшехорошо',
-            'срок отгрузкидней', 'ценаотдо', 'кислородный датчик, шт', 'оплата'
+            'срок отгрузкидней', 'ценаотдо', 'кислородный датчик, шт', 'оплата',
+            # Новые исключения для Armtek
+            'корпус межосевого дифференциала', 'нет в наличии', 'популярные категории',
+            'строительство и ремонт', 'электрика и свет', 'палец sitrak', 'переключатели подрулевые в сборе',
+            'палец рессорный', 'дизель', 'мтз', 'сад и огород', 'создание и ремонт',
+            'электрика и свет', 'популярные категории', 'строительство и ремонт',
+            'fmsi', 'fmsi-verband', 'fmsifmsi-verband', 'популярные категории',
+            'ac delco', 'achim', 'achr', 'b-tech', 'beru', 'champion', 'chery', 'dragonzap',
+            'ford', 'hot-parts', 'lucas', 'mobis', 'ngk', 'nissan', 'robiton', 'tesla',
+            'trw', 'vag', 'valeo', 'популярные категории', 'строительство и ремонт', 'электрика и свет',
+            'сад и огород', 'auto-comfort', 'autotech', 'createk', 'howo', 'kamaz', 'leo trade',
+            'prc', 'shaanxi', 'shacman', 'sitrak', 'weichai', 'zg.link', 'нет в наличии',
+            'палец sitrak', 'ast silver', 'createk', 'howo', 'prc', 'sitrak', 'нет в наличии',
+            'ast', 'ast silver', 'ast smart', 'createk', 'createk палец', 'foton', 'howo',
+            'htp', 'jmc', 'leo trade', 'prc', 'shaanxi', 'shacman', 'shaft-gear', 'sitrak',
+            'wayteko', 'zevs', 'дизель', 'нет в наличии', 'палец рессорный', 'howo', 'prc',
+            'shaanxi', 'sitrak', 'sitrak/howo', 'нет в наличии', 'howo', 'prc', 'shaanxi',
+            'sitrak', 'sitrak/howo', 'нет в наличии', 'jac', 'kamaz', 'prc', 'нет в наличии',
+            'переключатели подрулевые в сборе', 'faw', 'prc', 'нет в наличии'
         }
         
         for brand in brands:
@@ -658,7 +731,68 @@ def parse_armtek_selenium(artikul: str) -> List[str]:
                 not brand_lower.startswith('запчасть') and
                 not brand_lower.startswith('китай') and
                 not brand_lower.startswith('рааз') and
-                not brand_lower.startswith('оплата')):
+                not brand_lower.startswith('оплата') and
+                not brand_lower.startswith('корпус') and
+                not brand_lower.startswith('межосевого') and
+                not brand_lower.startswith('дифференциала') and
+                not brand_lower.startswith('нет в') and
+                not brand_lower.startswith('популярные') and
+                not brand_lower.startswith('категории') and
+                not brand_lower.startswith('строительство') and
+                not brand_lower.startswith('ремонт') and
+                not brand_lower.startswith('электрика') and
+                not brand_lower.startswith('свет') and
+                not brand_lower.startswith('палец') and
+                not brand_lower.startswith('переключатели') and
+                not brand_lower.startswith('подрулевые') and
+                not brand_lower.startswith('рессорный') and
+                not brand_lower.startswith('дизель') and
+                not brand_lower.startswith('мтз') and
+                not brand_lower.startswith('сад') and
+                not brand_lower.startswith('огород') and
+                not brand_lower.startswith('создание') and
+                not brand_lower.startswith('fmsi') and
+                not brand_lower.startswith('verband') and
+                not brand_lower.startswith('ac ') and
+                not brand_lower.startswith('achim') and
+                not brand_lower.startswith('achr') and
+                not brand_lower.startswith('b-tech') and
+                not brand_lower.startswith('beru') and
+                not brand_lower.startswith('champion') and
+                not brand_lower.startswith('chery') and
+                not brand_lower.startswith('dragonzap') and
+                not brand_lower.startswith('ford') and
+                not brand_lower.startswith('hot-') and
+                not brand_lower.startswith('lucas') and
+                not brand_lower.startswith('mobis') and
+                not brand_lower.startswith('ngk') and
+                not brand_lower.startswith('nissan') and
+                not brand_lower.startswith('robiton') and
+                not brand_lower.startswith('tesla') and
+                not brand_lower.startswith('trw') and
+                not brand_lower.startswith('vag') and
+                not brand_lower.startswith('valeo') and
+                not brand_lower.startswith('auto-') and
+                not brand_lower.startswith('autotech') and
+                not brand_lower.startswith('createk') and
+                not brand_lower.startswith('howo') and
+                not brand_lower.startswith('kamaz') and
+                not brand_lower.startswith('leo ') and
+                not brand_lower.startswith('prc') and
+                not brand_lower.startswith('shaanxi') and
+                not brand_lower.startswith('shacman') and
+                not brand_lower.startswith('sitrak') and
+                not brand_lower.startswith('weichai') and
+                not brand_lower.startswith('zg.') and
+                not brand_lower.startswith('ast ') and
+                not brand_lower.startswith('foton') and
+                not brand_lower.startswith('htp') and
+                not brand_lower.startswith('jmc') and
+                not brand_lower.startswith('shaft-') and
+                not brand_lower.startswith('wayteko') and
+                not brand_lower.startswith('zevs') and
+                not brand_lower.startswith('jac') and
+                not brand_lower.startswith('faw')):
                 filtered_brands.add(brand_clean)
         
         return sorted(filtered_brands) if filtered_brands else []

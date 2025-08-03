@@ -24,8 +24,8 @@ def clean_excel_string(s):
     # Удаляем все управляющие символы, кроме табуляции и перевода строки
     return re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', '', s)
 
-@shared_task(time_limit=3600, soft_time_limit=3000)  # 60 минут максимум, 50 минут мягкий лимит
-def process_parsing_task(task_id):
+@shared_task(bind=True, time_limit=7200, soft_time_limit=6000)  # 2 часа максимум, 1.5 часа мягкий лимит
+def process_parsing_task(self, task_id):
     task = ParsingTask.objects.get(id=task_id)
     log_messages = []
     task.status = 'in_progress'
@@ -73,43 +73,62 @@ def process_parsing_task(task_id):
         def parse_all_parallel(numbers, brand, part_number, name):
             results = {'autopiter': [], 'emex': []}
             
-            def parse_one(site, func):
-                def inner(num):
-                    try:
-                        # Сначала пробуем без прокси, потом с прокси
-                        proxy = None  # Пробуем без прокси
-                        
-                        # Добавляем небольшую задержку между запросами
-                        time.sleep(0.2)
-                        brands = func(num, proxy)
-                        log(f"{site}: {num} → {brands}")
-                        return [(brand, part_number, name, b, num, site) for b in brands]
-                    except Exception as e:
-                        log(f"Error parsing {site} for {num}: {str(e)}")
-                        return []
+            def parse_one(site, parser_func, max_retries=3):
+                def inner(num, proxy=None):
+                    for attempt in range(max_retries):
+                        try:
+                            if attempt == 0:
+                                proxy = None
+                                log(f"{site.capitalize()}: попытка {attempt+1} без прокси для {num}")
+                            else:
+                                proxy = get_next_proxy()
+                                log(f"{site.capitalize()}: попытка {attempt+1} с прокси для {num}")
+                            
+                            time.sleep(0.5)
+                            brands = parser_func(num, proxy)
+                            log(f"{site}: {num} → {brands}")
+                            return [(brand, part_number, name, b, num, site) for b in brands]
+                        except Exception as e:
+                            log(f"Error parsing {site} for {num} (attempt {attempt + 1}): {str(e)}")
+                            if attempt < max_retries - 1:
+                                time.sleep(2)
+                            else:
+                                log(f"Failed to parse {site} for {num} after {max_retries} attempts")
+                                return []
                 return inner
             
-            # Уменьшаем количество потоков для экономии ресурсов
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            # Увеличиваем количество потоков для экономии ресурсов
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
                 # Autopiter
                 fut_autopiter = {executor.submit(parse_one('autopiter', get_brands_by_artikul), num): num for num in numbers}
-                # Emex
-                fut_emex = {executor.submit(parse_one('emex', get_brands_by_artikul_emex), num): num for num in numbers}
-                
+                    
                 # Обрабатываем результаты с таймаутом
-                for fut in concurrent.futures.as_completed(fut_autopiter, timeout=30):
+                for fut in concurrent.futures.as_completed(fut_autopiter, timeout=60):
                     try:
                         for res in fut.result():
-                            results['autopiter'].append(res)
+                            results_autopiter.append(res)
                     except Exception as e:
-                        log(f"Error processing autopiter result: {str(e)}")
-                
-                for fut in concurrent.futures.as_completed(fut_emex, timeout=30):
-                    try:
-                        for res in fut.result():
-                            results['emex'].append(res)
-                    except Exception as e:
-                        log(f"Error processing emex result: {str(e)}")
+                        log(f"Ошибка обработки Autopiter: {str(e)}")
+                    
+                    # Emex
+                    fut_emex = {executor.submit(parse_one('emex', get_brands_by_artikul_emex), num): num for num in numbers}
+                    
+                    for fut in concurrent.futures.as_completed(fut_emex, timeout=60):
+                        try:
+                            for res in fut.result():
+                                results_emex.append(res)
+                        except Exception as e:
+                            log(f"Ошибка обработки Emex: {str(e)}")
+                    
+                    # Armtek - увеличиваем таймаут и количество попыток
+                    fut_armtek = {executor.submit(parse_one('armtek', get_brands_by_artikul_armtek, max_retries=5), num): num for num in numbers}
+                    
+                    for fut in concurrent.futures.as_completed(fut_armtek, timeout=180):
+                        try:
+                            for res in fut.result():
+                                results_armtek.append(res)
+                        except Exception as e:
+                            log(f"Ошибка обработки Armtek: {str(e)}")
             
             return results
         
