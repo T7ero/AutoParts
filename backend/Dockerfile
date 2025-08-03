@@ -19,6 +19,7 @@ RUN apt-get update && \
         xvfb \
         sudo \
         gosu \
+        procps \
         && rm -rf /var/lib/apt/lists/*
 
 # Обновляем ключи GPG и источники пакетов

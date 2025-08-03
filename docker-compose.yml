@@ -28,7 +28,7 @@ services:
     build: 
       context: ./backend
       dockerfile: Dockerfile.alternative
-    command: /usr/local/bin/entrypoint.sh daphne -b 0.0.0.0 -p 8000 backend.asgi:application
+    command: /usr/local/bin/entrypoint_simple.sh daphne -b 0.0.0.0 -p 8000 backend.asgi:application
     volumes:
       - ./backend:/app
       - ./backend/media:/app/media
@@ -64,7 +64,7 @@ services:
     build: 
       context: ./backend
       dockerfile: Dockerfile.alternative
-    command: /usr/local/bin/entrypoint.sh celery -A backend worker -l info --concurrency=1 --max-tasks-per-child=10 --prefetch-multiplier=1
+    command: /usr/local/bin/entrypoint_simple.sh celery -A backend worker -l info --concurrency=1 --max-tasks-per-child=10 --prefetch-multiplier=1
     volumes:
       - ./backend:/app
       - ./backend/media:/app/media

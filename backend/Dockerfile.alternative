@@ -17,6 +17,7 @@ RUN apt-get update && \
         unzip \
         xvfb \
         sudo \
+        gosu \
         && rm -rf /var/lib/apt/lists/*
 
 # Устанавливаем Chromium и ChromeDriver
@@ -80,9 +81,10 @@ RUN touch /app/proxies.txt && \
     chown appuser:appuser /app/proxies.txt && \
     chmod 644 /app/proxies.txt
 
-# Копируем entrypoint скрипт
+# Копируем entrypoint скрипты
 COPY --chown=appuser:appuser entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+COPY --chown=appuser:appuser entrypoint_simple.sh /usr/local/bin/entrypoint_simple.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/entrypoint_simple.sh
 
 # Фиксируем права для media директорий
 RUN chown -R appuser:appuser /app/media && \
@@ -100,4 +102,4 @@ RUN python manage.py collectstatic --noinput
 EXPOSE 8000
 
 # Устанавливаем entrypoint
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"] 
+ENTRYPOINT ["/usr/local/bin/entrypoint_simple.sh"] 
