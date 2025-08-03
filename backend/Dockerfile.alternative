@@ -76,9 +76,19 @@ RUN pip install --no-cache-dir -r requirements.txt daphne
 # Копируем код приложения
 COPY --chown=appuser:appuser . .
 
-# Копируем файл прокси с примерами
-COPY --chown=appuser:appuser proxies.txt /app/proxies.txt
-RUN chmod 644 /app/proxies.txt
+# Создаем файл прокси если его нет
+RUN if [ ! -f /app/proxies.txt ]; then \
+        echo "# Пример файла прокси" > /app/proxies.txt && \
+        echo "# Формат: username:password@ip:port" >> /app/proxies.txt && \
+        echo "# Или просто: ip:port" >> /app/proxies.txt && \
+        echo "# Один прокси на строку" >> /app/proxies.txt && \
+        echo "" >> /app/proxies.txt && \
+        echo "# Примеры:" >> /app/proxies.txt && \
+        echo "# user123:pass456@192.168.1.100:8080" >> /app/proxies.txt && \
+        echo "# 192.168.1.100:8080" >> /app/proxies.txt && \
+        echo "# proxy.example.com:3128" >> /app/proxies.txt; \
+    fi && \
+    chmod 644 /app/proxies.txt
 
 # Копируем entrypoint скрипты
 COPY --chown=appuser:appuser entrypoint.sh /usr/local/bin/entrypoint.sh

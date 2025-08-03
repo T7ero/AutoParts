@@ -9,4 +9,5 @@ urlpatterns = [
     path('proxies/upload/', views.upload_proxies, name='upload_proxies'),
     path('proxies/status/', views.proxy_status, name='proxy_status'),
     path('proxies/reset/', views.reset_proxy_index, name='reset_proxy_index'),
+    path('auth/token/', views.auth_token, name='auth_token'),
 ] 
