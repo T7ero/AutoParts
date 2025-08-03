@@ -90,21 +90,21 @@ def process_parsing_task(task_id):
                 return inner
             
             # Уменьшаем количество потоков для экономии ресурсов
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 # Autopiter
                 fut_autopiter = {executor.submit(parse_one('autopiter', get_brands_by_artikul), num): num for num in numbers}
                 # Emex
                 fut_emex = {executor.submit(parse_one('emex', get_brands_by_artikul_emex), num): num for num in numbers}
                 
                 # Обрабатываем результаты с таймаутом
-                for fut in concurrent.futures.as_completed(fut_autopiter, timeout=20):
+                for fut in concurrent.futures.as_completed(fut_autopiter, timeout=30):
                     try:
                         for res in fut.result():
                             results['autopiter'].append(res)
                     except Exception as e:
                         log(f"Error processing autopiter result: {str(e)}")
                 
-                for fut in concurrent.futures.as_completed(fut_emex, timeout=20):
+                for fut in concurrent.futures.as_completed(fut_emex, timeout=30):
                     try:
                         for res in fut.result():
                             results['emex'].append(res)
@@ -218,6 +218,21 @@ def process_parsing_task(task_id):
                         })
                         used_pairs.add(key)
                 
+                # Создаем файл Armtek даже если нет результатов
+                if results_armtek:
+                    log(f"Armtek: найдено {len(results_armtek)} результатов")
+                else:
+                    log("Armtek: результатов не найдено, создаем пустой файл")
+                    # Создаем пустой результат для отображения файла
+                    results_armtek.append({
+                        'Бренд № 1': '',
+                        'Артикул по Бренду № 1': '',
+                        'Наименование': '',
+                        'Бренд № 2': '',
+                        'Артикул по Бренду № 2': '',
+                        'Источник': 'armtek'
+                    })
+                
                 # Обновляем прогресс каждые 10 строк для экономии ресурсов
                 if (index + 1) % 10 == 0 or index == total_rows - 1:
                     progress = int((index + 1) / total_rows * 100)
@@ -246,7 +261,7 @@ def process_parsing_task(task_id):
         try:
             if results_autopiter:
                 df_autopiter = pd.DataFrame(results_autopiter)
-                autopiter_file = f'autopiter_results_{task.id}.xlsx'
+                autopiter_file = f'media/results/autopiter_results_{task.id}.xlsx'
                 try:
                     # Используем openpyxl engine для лучшей совместимости
                     df_autopiter.to_excel(autopiter_file, index=False, engine='openpyxl')
@@ -258,10 +273,11 @@ def process_parsing_task(task_id):
                     log(f"Создан файл Autopiter (без engine): {autopiter_file}")
                 task.result_files = task.result_files or {}
                 task.result_files['autopiter'] = autopiter_file
+                log(f"Файл Autopiter добавлен в result_files: {autopiter_file}")
             
             if results_armtek:
                 df_armtek = pd.DataFrame(results_armtek)
-                armtek_file = f'armtek_results_{task.id}.xlsx'
+                armtek_file = f'media/results/armtek_results_{task.id}.xlsx'
                 try:
                     # Используем openpyxl engine для лучшей совместимости
                     df_armtek.to_excel(armtek_file, index=False, engine='openpyxl')
@@ -273,10 +289,11 @@ def process_parsing_task(task_id):
                     log(f"Создан файл Armtek (без engine): {armtek_file}")
                 task.result_files = task.result_files or {}
                 task.result_files['armtek'] = armtek_file
+                log(f"Файл Armtek добавлен в result_files: {armtek_file}")
             
             if results_emex:
                 df_emex = pd.DataFrame(results_emex)
-                emex_file = f'emex_results_{task.id}.xlsx'
+                emex_file = f'media/results/emex_results_{task.id}.xlsx'
                 try:
                     # Используем openpyxl engine для лучшей совместимости
                     df_emex.to_excel(emex_file, index=False, engine='openpyxl')
@@ -288,12 +305,15 @@ def process_parsing_task(task_id):
                     log(f"Создан файл Emex (без engine): {emex_file}")
                 task.result_files = task.result_files or {}
                 task.result_files['emex'] = emex_file
+                log(f"Файл Emex добавлен в result_files: {emex_file}")
         except Exception as e:
             log(f"Критическая ошибка при создании Excel файлов: {str(e)}")
         
+        # Принудительно сохраняем task с файлами
         task.status = 'completed'
         task.progress = 100
         task.save()
+        log(f"Task завершен. Result files: {task.result_files}")
         ws_send()
         
         # Очистка Chrome процессов

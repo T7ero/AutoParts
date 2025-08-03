@@ -171,7 +171,7 @@ def make_request(url: str, proxies: Optional[Dict] = None, max_retries: int = 3,
                     continue
                 return None
             
-            # Проверка на блокировку - улучшенная логика
+            # Проверка на блокировку - только явные признаки
             if response.status_code == 403:
                 log_debug(f"Запрос заблокирован (403) на {url}")
                 if attempt < max_retries - 1:
@@ -179,10 +179,10 @@ def make_request(url: str, proxies: Optional[Dict] = None, max_retries: int = 3,
                     continue
                 return None
             
-            # Проверка на другие признаки блокировки
+            # Проверка на другие признаки блокировки - только явные
             blocking_indicators = [
-                "blocked", "access denied", "forbidden", "cloudflare", 
-                "captcha", "security check", "ddos protection"
+                "access denied", "forbidden", "cloudflare", 
+                "security check", "ddos protection", "blocked by"
             ]
             
             response_text_lower = response.text.lower()
