@@ -78,19 +78,47 @@ function Tasks() {
   }, [taskId]);
 
   const clearTasks = async () => {
-    if (window.confirm('Вы уверены, что хотите очистить все задачи?')) {
+    if (window.confirm('Вы уверены, что хотите очистить все задачи? Счетчик задач будет сброшен на 1.')) {
       try {
-        await fetch('/api/parsing-tasks/clear/', {
+        const response = await fetch('/api/parsing-tasks/clear/', {
           method: 'DELETE',
           headers: {
             'Authorization': `Token ${localStorage.getItem('token')}`,
             'Content-Type': 'application/json'
           }
         });
-        fetchTasks(); // Обновляем список задач после очистки
+        
+        if (response.ok) {
+          fetchTasks(); // Обновляем список задач после очистки
+        } else {
+          setError('Не удалось очистить задачи');
+        }
       } catch (err) {
         console.error('Ошибка при очистке задач:', err);
         setError('Не удалось очистить задачи');
+      }
+    }
+  };
+
+  const deleteTask = async (taskId) => {
+    if (window.confirm(`Вы уверены, что хотите удалить задачу #${taskId}?`)) {
+      try {
+        const response = await fetch(`/api/parsing-tasks/${taskId}/delete/`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Token ${localStorage.getItem('token')}`,
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        if (response.ok) {
+          fetchTasks(); // Обновляем список задач после удаления
+        } else {
+          setError('Не удалось удалить задачу');
+        }
+      } catch (err) {
+        console.error('Ошибка при удалении задачи:', err);
+        setError('Не удалось удалить задачу');
       }
     }
   };
@@ -194,12 +222,18 @@ function Tasks() {
                   </div>
                 )}
                 {/* Кнопка для показа лога */}
-                <div className="mt-2">
+                <div className="mt-2 flex justify-between items-center">
                   <button
                     className="text-xs text-gray-500 underline hover:text-blue-600"
                     onClick={() => handleShowLog(task.id)}
                   >
                     Показать лог задачи
+                  </button>
+                  <button
+                    className="text-xs text-red-500 underline hover:text-red-700"
+                    onClick={() => deleteTask(task.id)}
+                  >
+                    Удалить задачу
                   </button>
                 </div>
                 {/* Ссылки на все выгруженные файлы */}

@@ -306,7 +306,8 @@ def get_brands_by_artikul(artikul: str, proxies: Optional[Dict] = None) -> List[
         'акции', 'в корзину', 'возврат', 'возможные замены', 'войти', 'выбор armtek', 'гараж',
         'гарантийная политика', 'главная', 'дней', 'доставка', 'инструмент', 'искомый товар',
         'как сделать заказ', 'каталог', 'лучшее предложение', 'магазины', 'мы в социальных сетях',
-        'кислородный датчик', 'кислородный датчик, шт', 'датчик кислорода jac', 'запчасть', 'китай', 'рааз'
+        'кислородный датчик', 'кислородный датчик, шт', 'датчик кислорода jac', 'запчасть', 'китай', 'рааз',
+        'или выбрать другой удобный для\xa0вас способ', 'ка\x00талоги', 'оплата'
     }
     
     for brand in brands:
@@ -375,7 +376,9 @@ def get_brands_by_artikul(artikul: str, proxies: Optional[Dict] = None) -> List[
             not brand_lower.startswith('датчик') and
             not brand_lower.startswith('запчасть') and
             not brand_lower.startswith('китай') and
-            not brand_lower.startswith('рааз')):
+            not brand_lower.startswith('рааз') and
+            not brand_lower.startswith('или выбрать') and
+            not brand_lower.startswith('каталоги')):
             filtered_brands.add(brand_clean)
     
     return sorted(filtered_brands) if filtered_brands else []
@@ -581,7 +584,7 @@ def parse_armtek_selenium(artikul: str) -> List[str]:
             'производители:jacjashisollersзапчастькитайрааз', 'долгопрудныйвходкорзина',
             'все категориикаталоги запчастей', 'офертаконфиденциальность', 'выбор armtekсортировать по:выбор armtek',
             'мы используем cookies, чтобы сайт был лучше', 'мы используем cookies, чтобы сайт был лучшехорошо',
-            'срок отгрузкидней', 'ценаотдо', 'кислородный датчик, шт'
+            'срок отгрузкидней', 'ценаотдо', 'кислородный датчик, шт', 'оплата'
         }
         
         for brand in brands:
@@ -654,7 +657,8 @@ def parse_armtek_selenium(artikul: str) -> List[str]:
                 not brand_lower.startswith('датчик') and
                 not brand_lower.startswith('запчасть') and
                 not brand_lower.startswith('китай') and
-                not brand_lower.startswith('рааз')):
+                not brand_lower.startswith('рааз') and
+                not brand_lower.startswith('оплата')):
                 filtered_brands.add(brand_clean)
         
         return sorted(filtered_brands) if filtered_brands else []

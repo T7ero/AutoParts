@@ -135,6 +135,22 @@ def delete_task(request, task_id):
     except ParsingTask.DoesNotExist:
         return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
 
+@api_view(['DELETE'])
+def clear_all_tasks(request):
+    """Очистить все задачи и сбросить счетчик ID"""
+    try:
+        # Удаляем все задачи
+        ParsingTask.objects.all().delete()
+        
+        # Сбрасываем автоинкремент ID в базе данных
+        from django.db import connection
+        with connection.cursor() as cursor:
+            cursor.execute("ALTER SEQUENCE core_parsingtask_id_seq RESTART WITH 1")
+        
+        return Response({'message': 'Все задачи очищены, счетчик ID сброшен'}, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def auth_token(request):
