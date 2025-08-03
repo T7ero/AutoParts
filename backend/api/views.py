@@ -5,7 +5,7 @@ from django.views.decorators.http import require_http_methods
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-from .models import ParsingTask
+from core.models import ParsingTask
 from .serializers import ParsingTaskSerializer
 from .tasks import process_parsing_task
 from .autopiter_parser import load_proxies_from_file, get_next_proxy
