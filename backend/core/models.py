@@ -68,7 +68,7 @@ class ParsingTask(models.Model):
         ('failed', 'Ошибка'),
     ]
 
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
     file = models.FileField(upload_to=get_upload_path, verbose_name="Файл для парсинга")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     progress = models.IntegerField(default=0)

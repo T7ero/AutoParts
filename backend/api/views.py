@@ -33,7 +33,21 @@ def create_parsing_task(request):
         if not file.name.endswith('.xlsx'):
             return Response({'error': 'Поддерживаются только файлы .xlsx'}, status=status.HTTP_400_BAD_REQUEST)
         
+        # Получаем пользователя из токена аутентификации
+        from rest_framework.authtoken.models import Token
+        auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+        if auth_header.startswith('Token '):
+            token_key = auth_header.split(' ')[1]
+            try:
+                token = Token.objects.get(key=token_key)
+                user = token.user
+            except Token.DoesNotExist:
+                return Response({'error': 'Неверный токен аутентификации'}, status=status.HTTP_401_UNAUTHORIZED)
+        else:
+            return Response({'error': 'Требуется токен аутентификации'}, status=status.HTTP_401_UNAUTHORIZED)
+        
         task = ParsingTask.objects.create(
+            user=user,
             file=file,
             status='pending',
             progress=0
