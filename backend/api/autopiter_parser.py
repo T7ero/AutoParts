@@ -137,20 +137,14 @@ def make_request(url: str, proxies: Optional[Dict] = None, max_retries: int = 3,
         if time.time() - cached_time < CACHE_EXPIRATION:
             return response
     
-    # Проверка доступности сайта (убираем для Autopiter и Emex)
-    # if not is_site_available(url, proxies):
-    #     log_debug(f"Сайт {url} недоступен")
-    #     FAILED_REQUESTS_CACHE[url] = time.time()
-    #     return None
-    
     for attempt in range(max_retries):
         try:
-            # Сначала пробуем без прокси, потом с прокси
+            # Упрощенная логика: сначала без прокси, потом с прокси только если есть
             if attempt == 0:
-                current_proxies = None  # Первая попытка без прокси
+                current_proxies = None
                 log_debug(f"Попытка {attempt+1} без прокси для {url}")
             else:
-                current_proxies = proxies or get_next_proxy()
+                current_proxies = proxies
                 log_debug(f"Попытка {attempt+1} с прокси для {url}")
             
             response = requests.get(
@@ -495,99 +489,14 @@ def parse_armtek_selenium(artikul: str) -> List[str]:
                     if not brand_pattern.search(text) and not any(char.isdigit() for char in text):
                         brands.add(text)
         
-        # Фильтрация брендов - убираем "мусор"
+        # Фильтрация брендов - только разрешенные бренды
+        allowed_brands = {'PAZ', 'PRC', 'РФ'}
         filtered_brands = set()
-        exclude_words = {
-            'telegram', 'whatsapp', 'аккумуляторы', 'масла', 'фильтры', 'тормозные колодки',
-            'амортизаторы', 'подшипники', 'ремни', 'свечи', 'лампы', 'стеклоочистители',
-            'дворники', 'зеркала', 'фары', 'фонари', 'сигналы', 'датчики', 'насосы',
-            'компрессоры', 'радиаторы', 'вентиляторы', 'термостаты', 'терморегуляторы',
-            'датчики температуры', 'датчики давления', 'датчики кислорода', 'датчики детонации',
-            'датчики скорости', 'датчики положения', 'датчики уровня', 'датчики расхода',
-            'датчики вибрации', 'датчики шума', 'датчики вибрации', 'датчики шума',
-            'вход', 'корзина', 'каталоги', 'контакты', 'новости', 'помощь', 'оптовикам',
-            'поставщикам', 'вакансии', 'все категории', 'долгопрудный', 'москва', 'россия',
-            'китай', 'запчасть', 'запчасти', 'оригинальные', 'неоригинальные',
-            'восстановление пароля', 'конфиденциальность', 'оферта', 'оплата заказа',
-            'доставка заказа', 'возврат товара', 'to content', 'zapros@autopiter.ru',
-            '© ооо «автопитер»', 'ваз, газ, камаз', 'запчасти ваз, газ, камаз',
-            'запчасти для то', 'или выбрать другой удобный для вас способ',
-            'каталоги запчастей', 'неоригинальные запчасти', 'оплатить все товары можно',
-            'оптовым клиентам', 'оригинальные каталоги по vin', 'перейти в версию для смартфонов',
-            'помощь по сайту', 'россия, москва, ул. скотопрогонная, 35 стр. 3', 'спецтехника',
-            'фильтры hebel kraft', 'герметик силиконовый mannol', 'кнопка 2114-15, евро кнопка',
-            'кнопка ваз-2115, евро кнопка', 'кольцо уплотнительное ступицы toyota',
-            'лист сзап l1 1,2 задний', 'масло для компрессоров vdl 100 fubag',
-            'мотор омывателя 24v', 'мотор омывателя камаз 24v', 'насос омывателя маз,камаз евро',
-            'переключатель стеклоочистителя', 'профи-75 белак', 'ремкомплект гидроцилиндра',
-            'рессора чмзап', 'русский мастер ps-10 рм', 'русский мастер рмм',
-            'стопорное кольцо чмзап', 'показать все', 'все', 'автомасла', 'автопитер',
-            'вход', 'корзина', 'каталоги', 'контакты', 'новости', 'помощь', 'оптовикам',
-            'поставщикам', 'вакансии', 'все категории', 'долгопрудный', 'москва', 'россия',
-            'китай', 'запчасть', 'запчасти', 'оригинальные', 'неоригинальные',
-            'восстановление пароля', 'конфиденциальность', 'оферта', 'оплата заказа',
-            'доставка заказа', 'возврат товара', 'to content', 'zapros@autopiter.ru',
-            '© ооо «автопитер»', 'ваз, газ, камаз', 'запчасти ваз, газ, камаз',
-            'запчасти для то', 'или выбрать другой удобный для вас способ',
-            'каталоги запчастей', 'неоригинальные запчасти', 'оплатить все товары можно',
-            'оптовым клиентам', 'оригинальные каталоги по vin', 'перейти в версию для смартфонов',
-            'помощь по сайту', 'россия, москва, ул. скотопрогонная, 35 стр. 3', 'спецтехника',
-            'фильтры hebel kraft', 'герметик силиконовый mannol', 'кнопка 2114-15, евро кнопка',
-            'кнопка ваз-2115, евро кнопка', 'кольцо уплотнительное ступицы toyota',
-            'лист сзап l1 1,2 задний', 'масло для компрессоров vdl 100 fubag',
-            'мотор омывателя 24v', 'мотор омывателя камаз 24v', 'насос омывателя маз,камаз евро',
-            'переключатель стеклоочистителя', 'профи-75 белак', 'ремкомплект гидроцилиндра',
-            'рессора чмзап', 'русский мастер ps-10 рм', 'русский мастер рмм',
-            'стопорное кольцо чмзап'
-        }
         
         for brand in brands:
-            brand_lower = brand.lower()
-            if (len(brand) > 2 and len(brand) < 50 and 
-                brand_lower not in exclude_words and
-                not any(word in brand_lower for word in exclude_words) and
-                not brand_lower.startswith('99') and  # Исключаем артикулы
-                not brand_lower.startswith('zapros') and
-                not brand_lower.startswith('©') and
-                not brand_lower.startswith('mannol') and
-                not brand_lower.startswith('герметик') and
-                not brand_lower.startswith('кнопка') and
-                not brand_lower.startswith('кольцо') and
-                not brand_lower.startswith('лист') and
-                not brand_lower.startswith('масло') and
-                not brand_lower.startswith('мотор') and
-                not brand_lower.startswith('насос') and
-                not brand_lower.startswith('переключатель') and
-                not brand_lower.startswith('профи') and
-                not brand_lower.startswith('ремкомплект') and
-                not brand_lower.startswith('рессора') and
-                not brand_lower.startswith('русский мастер') and
-                not brand_lower.startswith('стопорное') and
-                not brand_lower.startswith('telegram') and
-                not brand_lower.startswith('whatsapp') and
-                not brand_lower.startswith('аккумуляторы') and
-                not brand_lower.startswith('масла') and
-                not brand_lower.startswith('фильтры') and
-                not brand_lower.startswith('тормозные') and
-                not brand_lower.startswith('амортизаторы') and
-                not brand_lower.startswith('подшипники') and
-                not brand_lower.startswith('ремни') and
-                not brand_lower.startswith('свечи') and
-                not brand_lower.startswith('лампы') and
-                not brand_lower.startswith('стеклоочистители') and
-                not brand_lower.startswith('дворники') and
-                not brand_lower.startswith('зеркала') and
-                not brand_lower.startswith('фары') and
-                not brand_lower.startswith('фонари') and
-                not brand_lower.startswith('сигналы') and
-                not brand_lower.startswith('датчики') and
-                not brand_lower.startswith('насосы') and
-                not brand_lower.startswith('компрессоры') and
-                not brand_lower.startswith('радиаторы') and
-                not brand_lower.startswith('вентиляторы') and
-                not brand_lower.startswith('термостаты') and
-                not brand_lower.startswith('терморегуляторы')):
-                filtered_brands.add(brand)
+            brand_clean = brand.strip()
+            if brand_clean in allowed_brands:
+                filtered_brands.add(brand_clean)
         
         return sorted(filtered_brands) if filtered_brands else []
         
@@ -674,11 +583,6 @@ def parse_armtek_http(artikul: str, proxies: Optional[Dict] = None) -> List[str]
 
 def get_brands_by_artikul_emex(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
     """Улучшенный парсер для Emex с обработкой таймаутов и прокси"""
-    # Убираем проверку доступности сайта, так как она может блокировать запросы
-    # if not is_site_available("https://emex.ru", proxies):
-    #     log_debug("Emex недоступен, пропускаем")
-    #     return []
-    
     encoded_artikul = quote(artikul)
     api_url = f"https://emex.ru/api/search/search?detailNum={encoded_artikul}&locationId=263&showAll=false&isHeaderSearch=true"
     
@@ -689,23 +593,18 @@ def get_brands_by_artikul_emex(artikul: str, proxies: Optional[Dict] = None) -> 
         "x-requested-with": "XMLHttpRequest",
     }
     
-    max_retries = 5  # Увеличиваем количество попыток
+    max_retries = 3  # Уменьшаем количество попыток
     for attempt in range(max_retries):
         log_debug(f"[API] Emex: попытка {attempt+1} для {artikul}")
         try:
-            # Сначала пробуем без прокси, потом с прокси
-            if attempt == 0:
-                current_proxies = None  # Первая попытка без прокси
-                log_debug(f"[API] Emex: попытка {attempt+1} без прокси для {artikul}")
-            else:
-                current_proxies = proxies or get_next_proxy()
-                log_debug(f"[API] Emex: попытка {attempt+1} с прокси для {artikul}")
+            # Упрощенная логика прокси
+            current_proxies = None if attempt == 0 else proxies
             
             response = requests.get(
                 api_url,
                 headers=headers,
                 proxies=current_proxies,
-                timeout=20  # Увеличиваем таймаут
+                timeout=15  # Уменьшаем таймаут
             )
             
             if response.status_code == 200:
@@ -752,7 +651,7 @@ def get_brands_by_artikul_emex(artikul: str, proxies: Optional[Dict] = None) -> 
             log_debug(f"[API] Emex: ошибка: {str(e)}")
         
         if attempt < max_retries - 1:
-            time.sleep(3)
+            time.sleep(2)
     
     log_debug(f"Emex: все попытки для {artikul} завершились ошибкой")
     return []

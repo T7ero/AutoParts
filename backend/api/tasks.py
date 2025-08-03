@@ -245,55 +245,49 @@ def process_parsing_task(task_id):
             if results_autopiter:
                 df_autopiter = pd.DataFrame(results_autopiter)
                 autopiter_file = f'autopiter_results_{task.id}.xlsx'
-                # Используем openpyxl engine для лучшей совместимости
-                df_autopiter.to_excel(autopiter_file, index=False, engine='openpyxl')
+                try:
+                    # Используем openpyxl engine для лучшей совместимости
+                    df_autopiter.to_excel(autopiter_file, index=False, engine='openpyxl')
+                    log(f"Создан файл Autopiter: {autopiter_file}")
+                except Exception as e:
+                    log(f"Ошибка создания файла Autopiter: {str(e)}")
+                    # Пробуем без engine
+                    df_autopiter.to_excel(autopiter_file, index=False)
+                    log(f"Создан файл Autopiter (без engine): {autopiter_file}")
                 task.result_files = task.result_files or {}
                 task.result_files['autopiter'] = autopiter_file
-                log(f"Создан файл Autopiter: {autopiter_file}")
             
             if results_armtek:
                 df_armtek = pd.DataFrame(results_armtek)
                 armtek_file = f'armtek_results_{task.id}.xlsx'
-                # Используем openpyxl engine для лучшей совместимости
-                df_armtek.to_excel(armtek_file, index=False, engine='openpyxl')
+                try:
+                    # Используем openpyxl engine для лучшей совместимости
+                    df_armtek.to_excel(armtek_file, index=False, engine='openpyxl')
+                    log(f"Создан файл Armtek: {armtek_file}")
+                except Exception as e:
+                    log(f"Ошибка создания файла Armtek: {str(e)}")
+                    # Пробуем без engine
+                    df_armtek.to_excel(armtek_file, index=False)
+                    log(f"Создан файл Armtek (без engine): {armtek_file}")
                 task.result_files = task.result_files or {}
                 task.result_files['armtek'] = armtek_file
-                log(f"Создан файл Armtek: {armtek_file}")
             
             if results_emex:
                 df_emex = pd.DataFrame(results_emex)
                 emex_file = f'emex_results_{task.id}.xlsx'
-                # Используем openpyxl engine для лучшей совместимости
-                df_emex.to_excel(emex_file, index=False, engine='openpyxl')
+                try:
+                    # Используем openpyxl engine для лучшей совместимости
+                    df_emex.to_excel(emex_file, index=False, engine='openpyxl')
+                    log(f"Создан файл Emex: {emex_file}")
+                except Exception as e:
+                    log(f"Ошибка создания файла Emex: {str(e)}")
+                    # Пробуем без engine
+                    df_emex.to_excel(emex_file, index=False)
+                    log(f"Создан файл Emex (без engine): {emex_file}")
                 task.result_files = task.result_files or {}
                 task.result_files['emex'] = emex_file
-                log(f"Создан файл Emex: {emex_file}")
         except Exception as e:
-            log(f"Ошибка при создании Excel файлов: {str(e)}")
-            # Пробуем создать файлы без engine
-            try:
-                if results_autopiter:
-                    df_autopiter = pd.DataFrame(results_autopiter)
-                    autopiter_file = f'autopiter_results_{task.id}.xlsx'
-                    df_autopiter.to_excel(autopiter_file, index=False)
-                    task.result_files = task.result_files or {}
-                    task.result_files['autopiter'] = autopiter_file
-                
-                if results_armtek:
-                    df_armtek = pd.DataFrame(results_armtek)
-                    armtek_file = f'armtek_results_{task.id}.xlsx'
-                    df_armtek.to_excel(armtek_file, index=False)
-                    task.result_files = task.result_files or {}
-                    task.result_files['armtek'] = armtek_file
-                
-                if results_emex:
-                    df_emex = pd.DataFrame(results_emex)
-                    emex_file = f'emex_results_{task.id}.xlsx'
-                    df_emex.to_excel(emex_file, index=False)
-                    task.result_files = task.result_files or {}
-                    task.result_files['emex'] = emex_file
-            except Exception as e2:
-                log(f"Критическая ошибка при создании Excel файлов: {str(e2)}")
+            log(f"Критическая ошибка при создании Excel файлов: {str(e)}")
         
         task.status = 'completed'
         task.progress = 100
