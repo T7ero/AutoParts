@@ -137,16 +137,21 @@ def make_request(url: str, proxies: Optional[Dict] = None, max_retries: int = 3,
         if time.time() - cached_time < CACHE_EXPIRATION:
             return response
     
-    # Проверка доступности сайта
-    if not is_site_available(url, proxies):
-        log_debug(f"Сайт {url} недоступен")
-        FAILED_REQUESTS_CACHE[url] = time.time()
-        return None
+    # Проверка доступности сайта (убираем для Autopiter и Emex)
+    # if not is_site_available(url, proxies):
+    #     log_debug(f"Сайт {url} недоступен")
+    #     FAILED_REQUESTS_CACHE[url] = time.time()
+    #     return None
     
     for attempt in range(max_retries):
         try:
-            # Используем прокси если доступен
-            current_proxies = proxies or get_next_proxy()
+            # Сначала пробуем без прокси, потом с прокси
+            if attempt == 0:
+                current_proxies = None  # Первая попытка без прокси
+                log_debug(f"Попытка {attempt+1} без прокси для {url}")
+            else:
+                current_proxies = proxies or get_next_proxy()
+                log_debug(f"Попытка {attempt+1} с прокси для {url}")
             
             response = requests.get(
                 url,
@@ -688,7 +693,14 @@ def get_brands_by_artikul_emex(artikul: str, proxies: Optional[Dict] = None) -> 
     for attempt in range(max_retries):
         log_debug(f"[API] Emex: попытка {attempt+1} для {artikul}")
         try:
-            current_proxies = proxies or get_next_proxy()
+            # Сначала пробуем без прокси, потом с прокси
+            if attempt == 0:
+                current_proxies = None  # Первая попытка без прокси
+                log_debug(f"[API] Emex: попытка {attempt+1} без прокси для {artikul}")
+            else:
+                current_proxies = proxies or get_next_proxy()
+                log_debug(f"[API] Emex: попытка {attempt+1} с прокси для {artikul}")
+            
             response = requests.get(
                 api_url,
                 headers=headers,

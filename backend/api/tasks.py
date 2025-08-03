@@ -76,8 +76,8 @@ def process_parsing_task(task_id):
             def parse_one(site, func):
                 def inner(num):
                     try:
-                        # Получаем прокси для каждого запроса
-                        proxy = get_next_proxy()
+                        # Сначала пробуем без прокси, потом с прокси
+                        proxy = None  # Пробуем без прокси
                         
                         # Добавляем небольшую задержку между запросами
                         time.sleep(0.2)
@@ -168,8 +168,13 @@ def process_parsing_task(task_id):
                         max_retries = 1  # Уменьшаем количество попыток
                         for attempt in range(max_retries):
                             try:
-                                # Получаем прокси для Armtek
-                                proxy = get_next_proxy()
+                                # Сначала пробуем без прокси, потом с прокси
+                                if attempt == 0:
+                                    proxy = None  # Первая попытка без прокси
+                                    log(f"Armtek: попытка {attempt+1} без прокси для {num}")
+                                else:
+                                    proxy = get_next_proxy()
+                                    log(f"Armtek: попытка {attempt+1} с прокси для {num}")
                                 
                                 # Добавляем задержку для Selenium
                                 time.sleep(0.5)
