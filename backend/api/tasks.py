@@ -24,7 +24,7 @@ def clean_excel_string(s):
     # Удаляем все управляющие символы, кроме табуляции и перевода строки
     return re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', '', s)
 
-@shared_task(bind=True, time_limit=7200, soft_time_limit=6000)  # 2 часа максимум, 1.5 часа мягкий лимит
+@shared_task(bind=True, time_limit=10800, soft_time_limit=9000)  # 3 часа максимум, 2.5 часа мягкий лимит
 def process_parsing_task(self, task_id):
     task = ParsingTask.objects.get(id=task_id)
     log_messages = []
@@ -97,13 +97,13 @@ def process_parsing_task(self, task_id):
                                 return []
                 return inner
             
-            # Увеличиваем количество потоков для экономии ресурсов
+            # Увеличиваем количество потоков для лучшей производительности
             with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
                 # Autopiter
                 fut_autopiter = {executor.submit(parse_one('autopiter', get_brands_by_artikul), num): num for num in numbers}
                     
                 # Обрабатываем результаты с таймаутом
-                for fut in concurrent.futures.as_completed(fut_autopiter, timeout=60):
+                                          for fut in concurrent.futures.as_completed(fut_autopiter, timeout=120):
                     try:
                         for res in fut.result():
                             results_autopiter.append(res)
@@ -113,7 +113,7 @@ def process_parsing_task(self, task_id):
                     # Emex
                     fut_emex = {executor.submit(parse_one('emex', get_brands_by_artikul_emex), num): num for num in numbers}
                     
-                    for fut in concurrent.futures.as_completed(fut_emex, timeout=60):
+                                              for fut in concurrent.futures.as_completed(fut_emex, timeout=120):
                         try:
                             for res in fut.result():
                                 results_emex.append(res)
@@ -123,7 +123,7 @@ def process_parsing_task(self, task_id):
                     # Armtek - увеличиваем таймаут и количество попыток
                     fut_armtek = {executor.submit(parse_one('armtek', get_brands_by_artikul_armtek, max_retries=5), num): num for num in numbers}
                     
-                    for fut in concurrent.futures.as_completed(fut_armtek, timeout=180):
+                                              for fut in concurrent.futures.as_completed(fut_armtek, timeout=300):
                         try:
                             for res in fut.result():
                                 results_armtek.append(res)

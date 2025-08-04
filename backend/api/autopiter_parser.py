@@ -438,6 +438,36 @@ def get_brands_by_artikul(artikul: str, proxies: Optional[Dict] = None) -> List[
     
     return sorted(filtered_brands) if filtered_brands else []
 
+def split_combined_brands(brands: List[str]) -> List[str]:
+    """Разделяет объединенные бренды на отдельные"""
+    result = set()
+    
+    for brand in brands:
+        brand_clean = brand.strip()
+        if not brand_clean:
+            continue
+            
+        # Разделяем по различным разделителям
+        separators = [' / ', '/', ' & ', '&', ' + ', '+', ' - ', '-', ' | ', '|']
+        
+        # Проверяем, есть ли разделители
+        has_separator = False
+        for sep in separators:
+            if sep in brand_clean:
+                has_separator = True
+                parts = brand_clean.split(sep)
+                for part in parts:
+                    part_clean = part.strip()
+                    if part_clean and len(part_clean) > 2:
+                        result.add(part_clean)
+                break
+        
+        # Если нет разделителей, добавляем как есть
+        if not has_separator:
+            result.add(brand_clean)
+    
+    return sorted(list(result))
+
 def get_brands_by_artikul_armtek(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
     """Улучшенный парсер Armtek с полным логированием"""
     log_debug(f"Armtek: начало обработки артикула {artikul}")
@@ -446,18 +476,18 @@ def get_brands_by_artikul_armtek(artikul: str, proxies: Optional[Dict] = None) -
     api_brands = parse_armtek_api(artikul, proxies)
     if api_brands:
         log_debug(f"Armtek API: найдены бренды {api_brands}")
-        return api_brands
+        return split_combined_brands(api_brands)
     
     # 2. Пробуем HTTP запрос
     http_brands = parse_armtek_http(artikul, proxies)
     if http_brands:
         log_debug(f"Armtek HTTP: найдены бренды {http_brands}")
-        return http_brands
+        return split_combined_brands(http_brands)
     
     # 3. Если API и HTTP не сработали, используем Selenium
     selenium_brands = parse_armtek_selenium(artikul)
     log_debug(f"Armtek Selenium: найдены бренды {selenium_brands}")
-    return selenium_brands
+    return split_combined_brands(selenium_brands)
 
 def parse_armtek_api(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
     """Попытка получить данные через API Armtek"""
@@ -657,7 +687,10 @@ def parse_armtek_selenium(artikul: str) -> List[str]:
             'wayteko', 'zevs', 'дизель', 'нет в наличии', 'палец рессорный', 'howo', 'prc',
             'shaanxi', 'sitrak', 'sitrak/howo', 'нет в наличии', 'howo', 'prc', 'shaanxi',
             'sitrak', 'sitrak/howo', 'нет в наличии', 'jac', 'kamaz', 'prc', 'нет в наличии',
-            'переключатели подрулевые в сборе', 'faw', 'prc', 'нет в наличии'
+            'переключатели подрулевые в сборе', 'faw', 'prc', 'нет в наличии',
+            # Дополнительные исключения для объединенных брендов
+            'gspartshinotoyota', 'gspartshino', 'toyota / lexus', 'toyota/lexus',
+            'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus'
         }
         
         for brand in brands:
