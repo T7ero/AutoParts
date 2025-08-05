@@ -112,7 +112,7 @@ def process_parsing_task(self, task_id):
                 for fut in concurrent.futures.as_completed(fut_autopiter, timeout=60):  # Уменьшаем таймаут
                     try:
                         for res in fut.result():
-                            results_autopiter.append(res)
+                            results['autopiter'].append(res)
                     except Exception as e:
                         log(f"Ошибка обработки Autopiter: {str(e)}")
                 
@@ -122,7 +122,7 @@ def process_parsing_task(self, task_id):
                 for fut in concurrent.futures.as_completed(fut_emex, timeout=60):  # Уменьшаем таймаут
                     try:
                         for res in fut.result():
-                            results_emex.append(res)
+                            results['emex'].append(res)
                     except Exception as e:
                         log(f"Ошибка обработки Emex: {str(e)}")
             
@@ -137,44 +137,62 @@ def process_parsing_task(self, task_id):
                         log("Task timeout approaching, finishing up...")
                         break
                 
-                # Правильное чтение данных из Excel
-                brand = str(row.iloc[1]).strip() if len(row) > 1 else ''  # Столбец B (индекс 1)
-                part_number = str(row.iloc[4]).strip() if len(row) > 4 else ''  # Столбец F (индекс 4)
-                name = str(row.iloc[0]).strip() if len(row) > 0 else ''  # Столбец A (индекс 0)
-                cross_numbers_raw = str(row.iloc[5]).strip() if len(row) > 5 else ''  # Столбец G (индекс 5)
+                # Правильное чтение данных из Excel согласно требованиям
+                # A1: "Бренд № 1" - данные из колонки E входного файла (индекс 4)
+                brand_from_e = str(row.iloc[4]).strip() if len(row) > 4 else ''
+                # B1: "Артикул по Бренду № 1" - данные из колонки F входного файла (индекс 5)
+                part_number_from_f = str(row.iloc[5]).strip() if len(row) > 5 else ''
+                # C1: "Наименование" - данные из колонки B входного файла (индекс 1)
+                name_from_b = str(row.iloc[1]).strip() if len(row) > 1 else ''
+                # E1: "Артикул по Бренду № 2" - данные из колонки G входного файла (индекс 6)
+                cross_number_from_g = str(row.iloc[6]).strip() if len(row) > 6 else ''
+                # Основной артикул для парсинга - из колонки F (индекс 5)
+                part_number = part_number_from_f
                 
-                if not brand or not part_number or not name:
+                if not part_number:
                     continue
                 
                 numbers = [part_number]
-                if cross_numbers_raw:
-                    numbers.extend([n.strip() for n in cross_numbers_raw.split(';') if n.strip()])
+                if cross_number_from_g:
+                    numbers.extend([n.strip() for n in cross_number_from_g.split(';') if n.strip()])
                 
                 used_pairs = set()
                 
                 # Параллельно Autopiter, Emex
-                parallel_results = parse_all_parallel(numbers, brand, part_number, name)
+                parallel_results = parse_all_parallel(numbers, brand_from_e, part_number_from_f, name_from_b)
                 
-                for site, result_list in parallel_results.items():
-                    for (b1, pn1, n1, b2, pn2, src) in result_list:
-                        key = (b1, pn1, n1, b2, pn2, src)
-                        if key not in used_pairs:
-                            d = {
-                                'Бренд № 1': clean_excel_string(b1),
-                                'Артикул по Бренду № 1': clean_excel_string(pn1),
-                                'Наименование': clean_excel_string(n1),
-                                'Бренд № 2': clean_excel_string(b2),
-                                'Артикул по Бренду № 2': clean_excel_string(pn2),
-                                'Источник': src
-                            }
-                            if src == 'autopiter':
-                                results_autopiter.append(d)
-                            elif src == 'emex':
-                                results_emex.append(d)
-                            used_pairs.add(key)
+                # Обрабатываем результаты Autopiter
+                for (b1, pn1, n1, b2, pn2, src) in parallel_results['autopiter']:
+                    key = (b1, pn1, n1, b2, pn2, src)
+                    if key not in used_pairs:
+                        d = {
+                            'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                            'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                            'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                            'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
+                            'Артикул по Бренду № 2': clean_excel_string(cross_number_from_g),  # Из колонки G входного файла
+                            'Источник': src
+                        }
+                        results_autopiter.append(d)
+                        used_pairs.add(key)
+                
+                # Обрабатываем результаты Emex
+                for (b1, pn1, n1, b2, pn2, src) in parallel_results['emex']:
+                    key = (b1, pn1, n1, b2, pn2, src)
+                    if key not in used_pairs:
+                        d = {
+                            'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                            'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                            'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                            'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
+                            'Артикул по Бренду № 2': clean_excel_string(cross_number_from_g),  # Из колонки G входного файла
+                            'Источник': src
+                        }
+                        results_emex.append(d)
+                        used_pairs.add(key)
                 
                 # Armtek (Selenium) - с прокси
-                def parse_armtek_parallel(numbers, brand, part_number, name):
+                def parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b):
                     results = []
                     log(f"Armtek: начало обработки {len(numbers)} артикулов")
                     
@@ -194,7 +212,7 @@ def process_parsing_task(self, task_id):
                                 time.sleep(0.2)  # Уменьшаем задержку
                                 brands = get_brands_by_artikul_armtek(num, proxy)
                                 log(f"armtek: {num} → {brands}")
-                                return [(brand, part_number, name, b, num, 'armtek') for b in brands]
+                                return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in brands]
                             except Exception as e:
                                 log(f"Error parsing armtek for {num} (attempt {attempt + 1}): {str(e)}")
                                 if attempt < max_retries - 1:
@@ -216,17 +234,17 @@ def process_parsing_task(self, task_id):
                     log(f"Armtek: завершена обработка, найдено {len(results)} результатов")
                     return results
                 
-                armtek_results = parse_armtek_parallel(numbers, brand, part_number, name)
+                armtek_results = parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b)
                 
                 for (b1, pn1, n1, b2, pn2, src) in armtek_results:
                     key = (b1, pn1, n1, b2, pn2, src)
                     if key not in used_pairs:
                         results_armtek.append({
-                            'Бренд № 1': clean_excel_string(b1),
-                            'Артикул по Бренду № 1': clean_excel_string(pn1),
-                            'Наименование': clean_excel_string(n1),
-                            'Бренд № 2': clean_excel_string(b2),
-                            'Артикул по Бренду № 2': clean_excel_string(pn2),
+                            'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                            'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                            'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                            'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
+                            'Артикул по Бренду № 2': clean_excel_string(cross_number_from_g),  # Из колонки G входного файла
                             'Источник': src
                         })
                         used_pairs.add(key)
