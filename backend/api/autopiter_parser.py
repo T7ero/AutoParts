@@ -460,13 +460,20 @@ def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None) -> L
             response = make_request(api_url, proxy, max_retries=1)
             if response and response.status_code == 200:
                 try:
-                    data = response.json()
-                    if data and 'brands' in data:
-                        brands = [brand.strip() for brand in data['brands'] if brand.strip()]
-                        if brands:
-                            return filter_armtek_brands(brands)
-                except json.JSONDecodeError:
-                    log_debug(f"Armtek API: ошибка декодирования JSON")
+                    # Проверяем, что ответ действительно JSON
+                    content_type = response.headers.get('content-type', '')
+                    if 'application/json' in content_type or 'text/json' in content_type:
+                        data = response.json()
+                        if data and 'brands' in data:
+                            brands = [brand.strip() for brand in data['brands'] if brand.strip()]
+                            if brands:
+                                log_debug(f"Armtek API: найдено {len(brands)} брендов")
+                                return filter_armtek_brands(brands)
+                    else:
+                        log_debug(f"Armtek API: неверный content-type: {content_type}")
+                except json.JSONDecodeError as e:
+                    log_debug(f"Armtek API: ошибка декодирования JSON: {str(e)}")
+                    log_debug(f"Armtek API: ответ: {response.text[:200]}...")
         except Exception as e:
             log_debug(f"Armtek API: ошибка {str(e)}")
         
@@ -477,13 +484,19 @@ def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None) -> L
         try:
             response = make_request(http_url, proxy, max_retries=1)
             if response and response.status_code == 200:
-                return parse_armtek_http_response(response.text, artikul)
+                brands = parse_armtek_http_response(response.text, artikul)
+                if brands:
+                    log_debug(f"Armtek HTTP: найдено {len(brands)} брендов")
+                    return brands
         except Exception as e:
             log_debug(f"Armtek HTTP: ошибка {str(e)}")
         
         # Если HTTP не работает, используем Selenium
         log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
-        return parse_armtek_selenium(artikul, proxy)
+        brands = parse_armtek_selenium(artikul, proxy)
+        if brands:
+            log_debug(f"Armtek Selenium: найдено {len(brands)} брендов")
+        return brands
         
     except Exception as e:
         log_debug(f"Ошибка Armtek для {artikul}: {str(e)}")

@@ -152,102 +152,108 @@ def process_parsing_task(self, task_id):
                 if not part_number:
                     continue
                 
-                numbers = [part_number]
+                # Создаем список всех артикулов для парсинга
+                numbers_to_parse = [part_number]
                 if cross_number_from_g:
-                    numbers.extend([n.strip() for n in cross_number_from_g.split(';') if n.strip()])
+                    numbers_to_parse.extend([n.strip() for n in cross_number_from_g.split(';') if n.strip()])
                 
                 used_pairs = set()
                 
-                # Параллельно Autopiter, Emex
-                parallel_results = parse_all_parallel(numbers, brand_from_e, part_number_from_f, name_from_b)
-                
-                # Обрабатываем результаты Autopiter
-                for (b1, pn1, n1, b2, pn2, src) in parallel_results['autopiter']:
-                    key = (b1, pn1, n1, b2, pn2, src)
-                    if key not in used_pairs:
-                        d = {
-                            'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                            'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                            'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                            'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
-                            'Артикул по Бренду № 2': clean_excel_string(cross_number_from_g),  # Из колонки G входного файла
-                            'Источник': src
-                        }
-                        results_autopiter.append(d)
-                        used_pairs.add(key)
-                
-                # Обрабатываем результаты Emex
-                for (b1, pn1, n1, b2, pn2, src) in parallel_results['emex']:
-                    key = (b1, pn1, n1, b2, pn2, src)
-                    if key not in used_pairs:
-                        d = {
-                            'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                            'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                            'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                            'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
-                            'Артикул по Бренду № 2': clean_excel_string(cross_number_from_g),  # Из колонки G входного файла
-                            'Источник': src
-                        }
-                        results_emex.append(d)
-                        used_pairs.add(key)
-                
-                # Armtek (Selenium) - с прокси
-                def parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b):
-                    results = []
-                    log(f"Armtek: начало обработки {len(numbers)} артикулов")
+                # Обрабатываем каждый артикул отдельно для создания отдельных строк
+                for current_number in numbers_to_parse:
+                    if not current_number:
+                        continue
                     
-                    def parse_one(num):
-                        max_retries = 2  # Уменьшаем количество попыток
-                        for attempt in range(max_retries):
-                            try:
-                                # Сначала пробуем без прокси, потом с прокси
-                                if attempt == 0:
-                                    proxy = None  # Первая попытка без прокси
-                                    log(f"Armtek: попытка {attempt+1} без прокси для {num}")
-                                else:
-                                    proxy = get_next_proxy()
-                                    log(f"Armtek: попытка {attempt+1} с прокси для {num}")
-                                
-                                # Добавляем задержку для Selenium
-                                time.sleep(0.2)  # Уменьшаем задержку
-                                brands = get_brands_by_artikul_armtek(num, proxy)
-                                log(f"armtek: {num} → {brands}")
-                                return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in brands]
-                            except Exception as e:
-                                log(f"Error parsing armtek for {num} (attempt {attempt + 1}): {str(e)}")
-                                if attempt < max_retries - 1:
-                                    time.sleep(1)  # Уменьшаем время ожидания
-                                else:
-                                    log(f"Failed to parse armtek for {num} after {max_retries} attempts")
-                                    return []
+                    # Параллельно Autopiter, Emex для текущего артикула
+                    parallel_results = parse_all_parallel([current_number], brand_from_e, part_number_from_f, name_from_b)
                     
-                    # Используем 1 поток для Selenium
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                        futs = {executor.submit(parse_one, num): num for num in numbers}
-                        for fut in concurrent.futures.as_completed(futs, timeout=60):  # Уменьшаем таймаут
-                            try:
-                                for res in fut.result():
-                                    results.append(res)
-                            except Exception as e:
-                                log(f"Error processing armtek result: {str(e)}")
+                    # Обрабатываем результаты Autopiter для текущего артикула
+                    for (b1, pn1, n1, b2, pn2, src) in parallel_results['autopiter']:
+                        key = (b1, pn1, n1, b2, pn2, src)
+                        if key not in used_pairs:
+                            d = {
+                                'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                                'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                                'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                                'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
+                                'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                'Источник': src
+                            }
+                            results_autopiter.append(d)
+                            used_pairs.add(key)
                     
-                    log(f"Armtek: завершена обработка, найдено {len(results)} результатов")
-                    return results
-                
-                armtek_results = parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b)
-                
-                for (b1, pn1, n1, b2, pn2, src) in armtek_results:
-                    key = (b1, pn1, n1, b2, pn2, src)
-                    if key not in used_pairs:
-                        results_armtek.append({
-                            'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                            'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                            'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                            'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
-                            'Артикул по Бренду № 2': clean_excel_string(cross_number_from_g),  # Из колонки G входного файла
-                            'Источник': src
-                        })
-                        used_pairs.add(key)
+                    # Обрабатываем результаты Emex для текущего артикула
+                    for (b1, pn1, n1, b2, pn2, src) in parallel_results['emex']:
+                        key = (b1, pn1, n1, b2, pn2, src)
+                        if key not in used_pairs:
+                            d = {
+                                'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                                'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                                'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                                'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
+                                'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                'Источник': src
+                            }
+                            results_emex.append(d)
+                            used_pairs.add(key)
+                    
+                    # Armtek (Selenium) - с прокси для текущего артикула
+                    def parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b):
+                        results = []
+                        log(f"Armtek: начало обработки {len(numbers)} артикулов")
+                        
+                        def parse_one(num):
+                            max_retries = 2  # Уменьшаем количество попыток
+                            for attempt in range(max_retries):
+                                try:
+                                    # Сначала пробуем без прокси, потом с прокси
+                                    if attempt == 0:
+                                        proxy = None  # Первая попытка без прокси
+                                        log(f"Armtek: попытка {attempt+1} без прокси для {num}")
+                                    else:
+                                        proxy = get_next_proxy()
+                                        log(f"Armtek: попытка {attempt+1} с прокси для {num}")
+                                    
+                                    # Добавляем задержку для Selenium
+                                    time.sleep(0.2)  # Уменьшаем задержку
+                                    brands = get_brands_by_artikul_armtek(num, proxy)
+                                    log(f"armtek: {num} → {brands}")
+                                    return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in brands]
+                                except Exception as e:
+                                    log(f"Error parsing armtek for {num} (attempt {attempt + 1}): {str(e)}")
+                                    if attempt < max_retries - 1:
+                                        time.sleep(1)  # Уменьшаем время ожидания
+                                    else:
+                                        log(f"Failed to parse armtek for {num} after {max_retries} attempts")
+                                        return []
+                        
+                        # Используем 1 поток для Selenium
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                            futs = {executor.submit(parse_one, num): num for num in numbers}
+                            for fut in concurrent.futures.as_completed(futs, timeout=60):  # Уменьшаем таймаут
+                                try:
+                                    for res in fut.result():
+                                        results.append(res)
+                                except Exception as e:
+                                    log(f"Error processing armtek result: {str(e)}")
+                        
+                        log(f"Armtek: завершена обработка, найдено {len(results)} результатов")
+                        return results
+                    
+                    armtek_results = parse_armtek_parallel([current_number], brand_from_e, part_number_from_f, name_from_b)
+                    
+                    for (b1, pn1, n1, b2, pn2, src) in armtek_results:
+                        key = (b1, pn1, n1, b2, pn2, src)
+                        if key not in used_pairs:
+                            results_armtek.append({
+                                'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                                'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                                'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                                'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
+                                'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                'Источник': src
+                            })
+                            used_pairs.add(key)
                 
                 # Создаем файл Armtek даже если нет результатов
                 if results_armtek:
