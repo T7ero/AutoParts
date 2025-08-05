@@ -101,34 +101,34 @@ def process_parsing_task(self, task_id):
             with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
                 # Autopiter
                 fut_autopiter = {executor.submit(parse_one('autopiter', get_brands_by_artikul), num): num for num in numbers}
-                    
+                
                 # Обрабатываем результаты с таймаутом
-                                          for fut in concurrent.futures.as_completed(fut_autopiter, timeout=120):
+                for fut in concurrent.futures.as_completed(fut_autopiter, timeout=120):
                     try:
                         for res in fut.result():
                             results_autopiter.append(res)
                     except Exception as e:
                         log(f"Ошибка обработки Autopiter: {str(e)}")
-                    
-                    # Emex
-                    fut_emex = {executor.submit(parse_one('emex', get_brands_by_artikul_emex), num): num for num in numbers}
-                    
-                                              for fut in concurrent.futures.as_completed(fut_emex, timeout=120):
-                        try:
-                            for res in fut.result():
-                                results_emex.append(res)
-                        except Exception as e:
-                            log(f"Ошибка обработки Emex: {str(e)}")
-                    
-                    # Armtek - увеличиваем таймаут и количество попыток
-                    fut_armtek = {executor.submit(parse_one('armtek', get_brands_by_artikul_armtek, max_retries=5), num): num for num in numbers}
-                    
-                                              for fut in concurrent.futures.as_completed(fut_armtek, timeout=300):
-                        try:
-                            for res in fut.result():
-                                results_armtek.append(res)
-                        except Exception as e:
-                            log(f"Ошибка обработки Armtek: {str(e)}")
+                
+                # Emex
+                fut_emex = {executor.submit(parse_one('emex', get_brands_by_artikul_emex), num): num for num in numbers}
+                
+                for fut in concurrent.futures.as_completed(fut_emex, timeout=120):
+                    try:
+                        for res in fut.result():
+                            results_emex.append(res)
+                    except Exception as e:
+                        log(f"Ошибка обработки Emex: {str(e)}")
+                
+                # Armtek - увеличиваем таймаут и количество попыток
+                fut_armtek = {executor.submit(parse_one('armtek', get_brands_by_artikul_armtek, max_retries=5), num): num for num in numbers}
+                
+                for fut in concurrent.futures.as_completed(fut_armtek, timeout=300):
+                    try:
+                        for res in fut.result():
+                            results_armtek.append(res)
+                    except Exception as e:
+                        log(f"Ошибка обработки Armtek: {str(e)}")
             
             return results
         
