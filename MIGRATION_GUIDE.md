@@ -47,7 +47,7 @@ sudo apt install git -y
 
 ### 1. Клонирование репозитория
 ```bash
-git clone https://github.com/your-username/AutoParts.git
+git clone https://github.com/T7ero/AutoParts.git
 cd AutoParts
 ```
 
@@ -58,7 +58,7 @@ cat > .env << EOF
 POSTGRES_DB=autoparts
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=your_secure_password
-DJANGO_SECRET_KEY=your_django_secret_key_here
+DJANGO_SECRET_KEY=your-secret-key
 DEBUG=False
 ALLOWED_HOSTS=your_domain.com,your_ip_address
 EOF

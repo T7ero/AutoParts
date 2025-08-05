@@ -17,6 +17,7 @@ import tempfile
 import uuid
 import random
 from typing import List, Dict, Optional, Tuple
+from selenium.common.exceptions import TimeoutException
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -34,8 +35,10 @@ HEADERS = {
     "Sec-Fetch-User": "?1",
     "Upgrade-Insecure-Requests": "1",
 }
-TIMEOUT = 20
-SELENIUM_TIMEOUT = 30
+# Уменьшаем таймауты для ускорения работы
+TIMEOUT = 10  # Уменьшаем с 15 до 10 секунд
+SELENIUM_TIMEOUT = 15  # Уменьшаем с 20 до 15 секунд
+PAGE_LOAD_TIMEOUT = 10  # Уменьшаем с 15 до 10 секунд
 
 # Кеширование
 REQUEST_CACHE = {}
@@ -133,87 +136,61 @@ def is_site_available(url: str, proxies: Optional[Dict] = None) -> bool:
     except:
         return False
 
-def make_request(url: str, proxies: Optional[Dict] = None, max_retries: int = 3, cache_key: Optional[str] = None) -> Optional[requests.Response]:
-    """Улучшенный запрос с кешированием и прокси"""
-    # Проверка кеша ошибок
-    if url in FAILED_REQUESTS_CACHE and FAILED_REQUESTS_CACHE[url] > time.time() - 3600:
-        log_debug(f"Запрос к {url} пропущен из-за предыдущих ошибок")
-        return None
-        
-    # Проверка кеша успешных запросов
-    if cache_key and cache_key in REQUEST_CACHE:
-        cached_time, response = REQUEST_CACHE[cache_key]
-        if time.time() - cached_time < CACHE_EXPIRATION:
-            return response
+def make_request(url: str, proxy: Optional[str] = None, max_retries: int = 2) -> Optional[requests.Response]:
+    """Выполняет HTTP запрос с поддержкой прокси и повторными попытками"""
+    session = requests.Session()
+    
+    # Настройка прокси
+    if proxy:
+        try:
+            if '@' in proxy:
+                # Формат: ip:port@login:password
+                proxy_parts = proxy.split('@')
+                proxy_url = proxy_parts[0]
+                auth_parts = proxy_parts[1].split(':')
+                username = auth_parts[0]
+                password = auth_parts[1]
+                
+                proxy_dict = {
+                    'http': f'http://{username}:{password}@{proxy_url}',
+                    'https': f'http://{username}:{password}@{proxy_url}'
+                }
+            else:
+                # Формат: ip:port
+                proxy_dict = {
+                    'http': f'http://{proxy}',
+                    'https': f'http://{proxy}'
+                }
+            
+            session.proxies.update(proxy_dict)
+            log_debug(f"Используется прокси: {proxy}")
+        except Exception as e:
+            log_debug(f"Ошибка настройки прокси {proxy}: {str(e)}")
+    
+    # Настройка заголовков
+    session.headers.update(HEADERS)
     
     for attempt in range(max_retries):
         try:
-            # Упрощенная логика: сначала без прокси, потом с прокси только если есть
-            if attempt == 0:
-                current_proxies = None
-                log_debug(f"Попытка {attempt+1} без прокси для {url}")
+            response = session.get(url, timeout=TIMEOUT)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.ProxyError as e:
+            log_debug(f"Ошибка прокси {proxy}: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
             else:
-                current_proxies = proxies
-                log_debug(f"Попытка {attempt+1} с прокси для {url}")
-            
-            response = requests.get(
-                url,
-                headers=HEADERS,
-                proxies=current_proxies,
-                timeout=TIMEOUT
-            )
-            
-            # Проверка на CAPTCHA
-            if "captcha" in response.text.lower():
-                log_debug(f"Обнаружена CAPTCHA на {url}")
-                if attempt < max_retries - 1:
-                    time.sleep(2)
-                    continue
-                return None
-            
-            # Проверка на блокировку - только явные признаки
-            if response.status_code == 403:
-                log_debug(f"Запрос заблокирован (403) на {url}")
-                if attempt < max_retries - 1:
-                    time.sleep(3)
-                    continue
-                return None
-            
-            # Проверка на другие признаки блокировки - только явные
-            blocking_indicators = [
-                "access denied", "forbidden", "cloudflare", 
-                "security check", "ddos protection", "blocked by"
-            ]
-            
-            response_text_lower = response.text.lower()
-            if any(indicator in response_text_lower for indicator in blocking_indicators):
-                log_debug(f"Запрос заблокирован (индикаторы) на {url}")
-                if attempt < max_retries - 1:
-                    time.sleep(3)
-                    continue
-                return None
-            
-            if response.status_code == 200:
-                # Кешируем успешный ответ
-                if cache_key:
-                    REQUEST_CACHE[cache_key] = (time.time(), response)
-                return response
+                raise
+        except requests.exceptions.RequestException as e:
+            log_debug(f"Ошибка запроса (попытка {attempt + 1}): {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
             else:
-                log_debug(f"HTTP {response.status_code} для {url}")
-                if response.status_code in [429, 503, 502]:
-                    # Rate limiting или временная недоступность
-                    wait_time = (attempt + 1) * 5
-                    log_debug(f"Rate limiting, ждем {wait_time} секунд")
-                    time.sleep(wait_time)
-                    if attempt < max_retries - 1:
-                        continue
-                
-        except requests.exceptions.Timeout:
-            log_debug(f"Таймаут для {url} (попытка {attempt+1})")
-        except requests.exceptions.ProxyError:
-            log_debug(f"Ошибка прокси для {url} (попытка {attempt+1})")
-        except Exception as e:
-            log_debug(f"Ошибка запроса к {url}: {str(e)}")
+                raise
+    
+    return None
         
         if attempt < max_retries - 1:
             time.sleep(2)
@@ -221,26 +198,36 @@ def make_request(url: str, proxies: Optional[Dict] = None, max_retries: int = 3,
     FAILED_REQUESTS_CACHE[url] = time.time()
     return None
 
-def get_brands_by_artikul(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
-    """Улучшенный парсер для Autopiter.ru с правильным извлечением брендов"""
-    url = f"https://autopiter.ru/goods/{artikul}"
-    log_debug(f"Autopiter: запрос к {url}")
-    
-    # Увеличиваем количество попыток для Autopiter
-    max_retries = 3
-    for attempt in range(max_retries):
+def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str]:
+    """Получает бренды с Autopiter по артикулу"""
+    try:
+        url = f"https://autopiter.ru/goods/{artikul}"
+        log_debug(f"Autopiter: запрос к {url}")
+        
+        # Сначала пробуем без прокси
         try:
-            response = make_request(url, proxies, cache_key=f"autopiter_{artikul}")
-            if response:
-                break
-            else:
-                log_debug(f"Autopiter: попытка {attempt+1} не удалась")
-                if attempt < max_retries - 1:
-                    time.sleep(2)
+            log_debug(f"Попытка 1 без прокси для {url}")
+            response = make_request(url, None, max_retries=1)
+            if response and response.status_code == 200:
+                return parse_autopiter_response(response.text, artikul)
         except Exception as e:
-            log_debug(f"Autopiter: ошибка попытки {attempt+1}: {str(e)}")
-            if attempt < max_retries - 1:
-                time.sleep(2)
+            log_debug(f"Ошибка без прокси: {str(e)}")
+        
+        # Если не получилось, пробуем с прокси
+        if proxy:
+            try:
+                log_debug(f"Попытка 2 с прокси для {url}")
+                response = make_request(url, proxy, max_retries=1)
+                if response and response.status_code == 200:
+                    return parse_autopiter_response(response.text, artikul)
+            except Exception as e:
+                log_debug(f"Ошибка с прокси: {str(e)}")
+        
+        return []
+        
+    except Exception as e:
+        log_debug(f"Ошибка Autopiter для {artikul}: {str(e)}")
+        return []
     
     if not response:
         log_debug("Autopiter: не удалось получить данные после всех попыток")
@@ -468,26 +455,47 @@ def split_combined_brands(brands: List[str]) -> List[str]:
     
     return sorted(list(result))
 
-def get_brands_by_artikul_armtek(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
-    """Улучшенный парсер Armtek с полным логированием"""
-    log_debug(f"Armtek: начало обработки артикула {artikul}")
-    
-    # 1. Пробуем API
-    api_brands = parse_armtek_api(artikul, proxies)
-    if api_brands:
-        log_debug(f"Armtek API: найдены бренды {api_brands}")
-        return split_combined_brands(api_brands)
-    
-    # 2. Пробуем HTTP запрос
-    http_brands = parse_armtek_http(artikul, proxies)
-    if http_brands:
-        log_debug(f"Armtek HTTP: найдены бренды {http_brands}")
-        return split_combined_brands(http_brands)
-    
-    # 3. Если API и HTTP не сработали, используем Selenium
-    selenium_brands = parse_armtek_selenium(artikul)
-    log_debug(f"Armtek Selenium: найдены бренды {selenium_brands}")
-    return split_combined_brands(selenium_brands)
+def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None) -> List[str]:
+    """Получает бренды с Armtek по артикулу"""
+    try:
+        log_debug(f"Armtek: начало обработки артикула {artikul}")
+        
+        # Сначала пробуем API
+        api_url = f"https://armtek.ru/api/search?query={artikul}&limit=50"
+        log_debug(f"Armtek API: запрос к {api_url}")
+        
+        try:
+            response = make_request(api_url, proxy, max_retries=1)
+            if response and response.status_code == 200:
+                try:
+                    data = response.json()
+                    if data and 'brands' in data:
+                        brands = [brand.strip() for brand in data['brands'] if brand.strip()]
+                        if brands:
+                            return filter_armtek_brands(brands)
+                except json.JSONDecodeError:
+                    log_debug(f"Armtek API: ошибка декодирования JSON")
+        except Exception as e:
+            log_debug(f"Armtek API: ошибка {str(e)}")
+        
+        # Если API не работает, пробуем HTTP
+        http_url = f"https://armtek.ru/search?text={artikul}"
+        log_debug(f"Armtek HTTP: запрос к {http_url}")
+        
+        try:
+            response = make_request(http_url, proxy, max_retries=1)
+            if response and response.status_code == 200:
+                return parse_armtek_http_response(response.text, artikul)
+        except Exception as e:
+            log_debug(f"Armtek HTTP: ошибка {str(e)}")
+        
+        # Если HTTP не работает, используем Selenium
+        log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
+        return parse_armtek_selenium(artikul, proxy)
+        
+    except Exception as e:
+        log_debug(f"Ошибка Armtek для {artikul}: {str(e)}")
+        return []
 
 def parse_armtek_api(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
     """Попытка получить данные через API Armtek"""
@@ -911,30 +919,26 @@ def parse_armtek_http(artikul: str, proxies: Optional[Dict] = None) -> List[str]
     
     return sorted(brands) if brands else []
 
-def get_brands_by_artikul_emex(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
-    """Улучшенный парсер для Emex с обработкой таймаутов и прокси"""
-    encoded_artikul = quote(artikul)
-    api_url = f"https://emex.ru/api/search/search?detailNum={encoded_artikul}&locationId=263&showAll=false&isHeaderSearch=true"
-    
-    headers = {
-        "User-Agent": HEADERS["User-Agent"],
-        "Accept": "application/json, text/plain, */*",
-        "Referer": f"https://emex.ru/products/{encoded_artikul}",
-        "x-requested-with": "XMLHttpRequest",
-    }
-    
-    max_retries = 3  # Уменьшаем количество попыток
-    for attempt in range(max_retries):
-        log_debug(f"[API] Emex: попытка {attempt+1} для {artikul}")
+def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> List[str]:
+    """Получает бренды с Emex по артикулу"""
+    try:
+        encoded_artikul = quote(artikul)
+        api_url = f"https://emex.ru/api/search/search?detailNum={encoded_artikul}&locationId=263&showAll=false&isHeaderSearch=true"
+        
+        headers = {
+            "User-Agent": HEADERS["User-Agent"],
+            "Accept": "application/json, text/plain, */*",
+            "Referer": f"https://emex.ru/products/{encoded_artikul}",
+            "x-requested-with": "XMLHttpRequest",
+        }
+        
+        # Сначала пробуем без прокси
         try:
-            # Упрощенная логика прокси
-            current_proxies = None if attempt == 0 else proxies
-            
+            log_debug(f"[API] Emex: попытка 1 для {artikul}")
             response = requests.get(
                 api_url,
                 headers=headers,
-                proxies=current_proxies,
-                timeout=15  # Уменьшаем таймаут
+                timeout=10
             )
             
             if response.status_code == 200:
@@ -967,24 +971,77 @@ def get_brands_by_artikul_emex(artikul: str, proxies: Optional[Dict] = None) -> 
                     return sorted(brands)
                 except json.JSONDecodeError:
                     log_debug("Emex API: ошибка декодирования JSON")
-            elif response.status_code == 429:
-                wait_time = (attempt + 1) * 5
-                log_debug(f"Emex rate limited. Waiting {wait_time} seconds...")
-                time.sleep(wait_time)
-            else:
-                log_debug(f"[API] Emex: HTTP ошибка {response.status_code}")
-        except requests.exceptions.Timeout:
-            log_debug(f"[API] Emex: таймаут подключения (попытка {attempt+1})")
-        except requests.exceptions.ProxyError:
-            log_debug(f"[API] Emex: ошибка прокси (попытка {attempt+1})")
         except Exception as e:
-            log_debug(f"[API] Emex: ошибка: {str(e)}")
+            log_debug(f"Emex API: ошибка без прокси: {str(e)}")
         
-        if attempt < max_retries - 1:
-            time.sleep(2)
-    
-    log_debug(f"Emex: все попытки для {artikul} завершились ошибкой")
-    return []
+        # Если не получилось, пробуем с прокси
+        if proxy:
+            try:
+                log_debug(f"[API] Emex: попытка 2 с прокси для {artikul}")
+                
+                # Настройка прокси для requests
+                if '@' in proxy:
+                    proxy_parts = proxy.split('@')
+                    proxy_url = proxy_parts[0]
+                    auth_parts = proxy_parts[1].split(':')
+                    username = auth_parts[0]
+                    password = auth_parts[1]
+                    
+                    proxy_dict = {
+                        'http': f'http://{username}:{password}@{proxy_url}',
+                        'https': f'http://{username}:{password}@{proxy_url}'
+                    }
+                else:
+                    proxy_dict = {
+                        'http': f'http://{proxy}',
+                        'https': f'http://{proxy}'
+                    }
+                
+                response = requests.get(
+                    api_url,
+                    headers=headers,
+                    proxies=proxy_dict,
+                    timeout=10
+                )
+                
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        brands = set()
+                        
+                        # Обработка различных форматов ответа
+                        makes_list = data.get("searchResult", {}).get("makes", {}).get("list", [])
+                        for item in makes_list:
+                            if "make" in item:
+                                brand = item["make"]
+                                if brand:
+                                    brands.add(brand)
+                        
+                        if not brands:
+                            details_list = data.get("searchResult", {}).get("details", [])
+                            for item in details_list:
+                                if "make" in item and "name" in item["make"]:
+                                    brand = item["make"]["name"]
+                                    if brand:
+                                        brands.add(brand)
+                        
+                        if not brands:
+                            brands_list = data.get("brands", [])
+                            for brand in brands_list:
+                                if isinstance(brand, str):
+                                    brands.add(brand)
+                        
+                        return sorted(brands)
+                    except json.JSONDecodeError:
+                        log_debug("Emex API: ошибка декодирования JSON")
+            except Exception as e:
+                log_debug(f"Emex API: ошибка с прокси: {str(e)}")
+        
+        return []
+        
+    except Exception as e:
+        log_debug(f"Ошибка Emex для {artikul}: {str(e)}")
+        return []
 
 # Инициализация прокси при импорте модуля
 load_proxies_from_file()

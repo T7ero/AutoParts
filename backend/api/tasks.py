@@ -21,8 +21,14 @@ from typing import List, Dict, Optional
 def clean_excel_string(s):
     if not isinstance(s, str):
         return s
-    # Удаляем все управляющие символы, кроме табуляции и перевода строки
-    return re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', '', s)
+    # Удаляем все управляющие символы и недопустимые для Excel символы
+    cleaned = re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', '', s)
+    # Удаляем символы, которые нельзя использовать в Excel
+    cleaned = re.sub(r'[\\/*?:\[\]]', '', cleaned)
+    # Ограничиваем длину строки для Excel
+    if len(cleaned) > 32000:
+        cleaned = cleaned[:32000]
+    return cleaned
 
 @shared_task(bind=True, time_limit=10800, soft_time_limit=9000)  # 3 часа максимум, 2.5 часа мягкий лимит
 def process_parsing_task(self, task_id):
@@ -72,8 +78,8 @@ def process_parsing_task(self, task_id):
         # Оптимизированная функция для параллельного парсинга с таймаутами и прокси
         def parse_all_parallel(numbers, brand, part_number, name):
             results = {'autopiter': [], 'emex': []}
-
-            def parse_one(site, parser_func, max_retries=3):
+            
+            def parse_one(site, parser_func, max_retries=2):  # Уменьшаем количество попыток
                 def inner(num, proxy=None):
                     for attempt in range(max_retries):
                         try:
@@ -83,53 +89,43 @@ def process_parsing_task(self, task_id):
                             else:
                                 proxy = get_next_proxy()
                                 log(f"{site.capitalize()}: попытка {attempt+1} с прокси для {num}")
-
-                            time.sleep(0.5)
+                            
+                            time.sleep(0.2)  # Уменьшаем задержку
                             brands = parser_func(num, proxy)
                             log(f"{site}: {num} → {brands}")
                             return [(brand, part_number, name, b, num, site) for b in brands]
                         except Exception as e:
                             log(f"Error parsing {site} for {num} (attempt {attempt + 1}): {str(e)}")
                             if attempt < max_retries - 1:
-                                time.sleep(2)
+                                time.sleep(1)  # Уменьшаем время ожидания
                             else:
                                 log(f"Failed to parse {site} for {num} after {max_retries} attempts")
                                 return []
                 return inner
-
+            
             # Увеличиваем количество потоков для лучшей производительности
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:  # Увеличиваем количество потоков
                 # Autopiter
                 fut_autopiter = {executor.submit(parse_one('autopiter', get_brands_by_artikul), num): num for num in numbers}
-
+                
                 # Обрабатываем результаты с таймаутом
-                for fut in concurrent.futures.as_completed(fut_autopiter, timeout=120):
+                for fut in concurrent.futures.as_completed(fut_autopiter, timeout=60):  # Уменьшаем таймаут
                     try:
                         for res in fut.result():
                             results_autopiter.append(res)
                     except Exception as e:
                         log(f"Ошибка обработки Autopiter: {str(e)}")
-
+                
                 # Emex
                 fut_emex = {executor.submit(parse_one('emex', get_brands_by_artikul_emex), num): num for num in numbers}
-
-                for fut in concurrent.futures.as_completed(fut_emex, timeout=120):
+                
+                for fut in concurrent.futures.as_completed(fut_emex, timeout=60):  # Уменьшаем таймаут
                     try:
                         for res in fut.result():
                             results_emex.append(res)
                     except Exception as e:
                         log(f"Ошибка обработки Emex: {str(e)}")
-
-                # Armtek - увеличиваем таймаут и количество попыток
-                fut_armtek = {executor.submit(parse_one('armtek', get_brands_by_artikul_armtek, max_retries=5), num): num for num in numbers}
-
-                for fut in concurrent.futures.as_completed(fut_armtek, timeout=300):
-                    try:
-                        for res in fut.result():
-                            results_armtek.append(res)
-                    except Exception as e:
-                        log(f"Ошибка обработки Armtek: {str(e)}")
-
+            
             return results
         
         # Основной цикл с оптимизацией памяти
@@ -141,13 +137,11 @@ def process_parsing_task(self, task_id):
                         log("Task timeout approaching, finishing up...")
                         break
                 
-                brand = str(row.get('Бренд', '')).strip()
-                part_number = str(row.get('Артикул', '')).strip()
-                if 'Наименование' in row:
-                    name = str(row['Наименование']).strip()
-                else:
-                    name = str(row.iloc[1]).strip() if 1 < len(row) else '' 
-                cross_numbers_raw = str(row.get('Кросс-номера', '')).strip()
+                # Правильное чтение данных из Excel
+                brand = str(row.iloc[1]).strip() if len(row) > 1 else ''  # Столбец B (индекс 1)
+                part_number = str(row.iloc[4]).strip() if len(row) > 4 else ''  # Столбец F (индекс 4)
+                name = str(row.iloc[0]).strip() if len(row) > 0 else ''  # Столбец A (индекс 0)
+                cross_numbers_raw = str(row.iloc[5]).strip() if len(row) > 5 else ''  # Столбец G (индекс 5)
                 
                 if not brand or not part_number or not name:
                     continue
@@ -185,7 +179,7 @@ def process_parsing_task(self, task_id):
                     log(f"Armtek: начало обработки {len(numbers)} артикулов")
                     
                     def parse_one(num):
-                        max_retries = 3  # Увеличиваем количество попыток
+                        max_retries = 2  # Уменьшаем количество попыток
                         for attempt in range(max_retries):
                             try:
                                 # Сначала пробуем без прокси, потом с прокси
@@ -197,14 +191,14 @@ def process_parsing_task(self, task_id):
                                     log(f"Armtek: попытка {attempt+1} с прокси для {num}")
                                 
                                 # Добавляем задержку для Selenium
-                                time.sleep(0.5)
+                                time.sleep(0.2)  # Уменьшаем задержку
                                 brands = get_brands_by_artikul_armtek(num, proxy)
                                 log(f"armtek: {num} → {brands}")
                                 return [(brand, part_number, name, b, num, 'armtek') for b in brands]
                             except Exception as e:
                                 log(f"Error parsing armtek for {num} (attempt {attempt + 1}): {str(e)}")
                                 if attempt < max_retries - 1:
-                                    time.sleep(2)  # Уменьшаем время ожидания
+                                    time.sleep(1)  # Уменьшаем время ожидания
                                 else:
                                     log(f"Failed to parse armtek for {num} after {max_retries} attempts")
                                     return []
@@ -212,7 +206,7 @@ def process_parsing_task(self, task_id):
                     # Используем 1 поток для Selenium
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                         futs = {executor.submit(parse_one, num): num for num in numbers}
-                        for fut in concurrent.futures.as_completed(futs, timeout=120):  # Увеличиваем таймаут
+                        for fut in concurrent.futures.as_completed(futs, timeout=60):  # Уменьшаем таймаут
                             try:
                                 for res in fut.result():
                                     results.append(res)
