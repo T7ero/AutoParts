@@ -191,12 +191,6 @@ def make_request(url: str, proxy: Optional[str] = None, max_retries: int = 2) ->
                 raise
     
     return None
-        
-        if attempt < max_retries - 1:
-            time.sleep(2)
-    
-    FAILED_REQUESTS_CACHE[url] = time.time()
-    return None
 
 def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str]:
     """Получает бренды с Autopiter по артикулу"""
@@ -228,12 +222,10 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
     except Exception as e:
         log_debug(f"Ошибка Autopiter для {artikul}: {str(e)}")
         return []
-    
-    if not response:
-        log_debug("Autopiter: не удалось получить данные после всех попыток")
-        return []
-    
-    soup = BeautifulSoup(response.text, "html.parser")
+
+def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
+    """Парсит ответ от Autopiter и извлекает бренды"""
+    soup = BeautifulSoup(html_content, "html.parser")
     brands = set()
     
     # Ищем бренды в различных элементах
@@ -542,7 +534,7 @@ def parse_armtek_api(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
     
     return []
 
-def parse_armtek_selenium(artikul: str) -> List[str]:
+def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str]:
     """Парсинг Armtek через Selenium с уникальными user-data-dir"""
     log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
     
@@ -566,6 +558,10 @@ def parse_armtek_selenium(artikul: str) -> List[str]:
     options.add_argument(f'--user-data-dir={temp_dir}')
     options.add_argument('--disable-background-timer-throttling')
     options.add_argument('--disable-backgrounding-occluded-windows')
+    
+    # Настройка прокси для Selenium
+    if proxy:
+        options.add_argument(f'--proxy-server={proxy}')
     options.add_argument('--disable-renderer-backgrounding')
     options.add_argument('--disable-features=VizDisplayCompositor')
     options.add_argument('--disable-ipc-flooding-protection')
@@ -918,6 +914,76 @@ def parse_armtek_http(artikul: str, proxies: Optional[Dict] = None) -> List[str]
                     brands.add(text)
     
     return sorted(brands) if brands else []
+
+def filter_armtek_brands(brands: List[str]) -> List[str]:
+    """Фильтрует бренды Armtek, убирая мусор"""
+    filtered = []
+    exclude_words = {
+        '...', 'автохимия и автокосметика', 'автоглушитель', 'аксессуары', 'акции',
+        'возврат', 'возможные замены', 'войти', 'выбор armtek', 'гараж',
+        'гарантийная политика', 'главная', 'дней', 'доставка', 'инструмент',
+        'искомый товар', 'как сделать заказ', 'каталог', 'лучшее предложение',
+        'магазины', 'мы в социальных сетях', 'кислородный датчик', 'кислородный датчик, шт',
+        'датчик кислорода jac', 'запчасть', 'китай', 'рааз', 'или выбрать другой удобный для\xa0вас способ',
+        'ка\x00талоги', 'оплата', 'ки\x00тай', 'к\x00итай', 'товары на autopiter market',
+        'переключатели подрулевые, в сборе', 'переключатели подрулевые в сборе',
+        'переключатели подрулевые', 'подрулевые', 'в сборе', 'рессорный палец',
+        'палец', 'рессорный', 'автокомпонент', 'россия', 'камаз', 'автокомпонент плюс',
+        'автодеталь', 'четырнадцать', 'motul.', 'motul', 'faw', 'foton', 'hande axle',
+        'leo trade', 'onashi', 'prc', 'shaanxi/shacman', 'sinotruk', 'sitrak', 'weichai',
+        'zg.link', 'ast', 'ast silver', 'ast smart', 'autotech', 'avto-tech', 'component',
+        'createk', 'howo', 'kolbenschmidt', 'leo', 'peugeot-citroen', 'prc', 'shaanxi/shacman',
+        'sinotruk', 'sitrak', 'bosch', 'jac', 'переключатели подрулевые, в сборе', 'россия',
+        'autocomponent', 'component', 'howo', 'prc', 'shaanxi', 'shacman', 'sinotruk', 'sitrak',
+        'автодеталь', 'автокомпонент плюс', 'камаз', 'наконечник правый', 'наконечник рулевой п',
+        'наконечник рулевой тяги, rh', 'наконечник рулевой тяги, rh hino', 'pyчнoй тoпливoпoдкaчивaющий нacoc',
+        'сезонные товары', 'шины и диски', 'колпачок маслосъемный', 'невский фильтр',
+        'подушка дизеля боковая tk smx', 'сальник распредвала', 'сезонные товары', 'шины и диски'
+    }
+    
+    for brand in brands:
+        brand_clean = brand.strip()
+        if (brand_clean and 
+            len(brand_clean) > 2 and 
+            brand_clean.lower() not in exclude_words and
+            not any(char.isdigit() for char in brand_clean) and
+            not brand_clean.startswith('...') and
+            not brand_clean.endswith('...')):
+            filtered.append(brand_clean)
+    
+    return filtered
+
+def parse_armtek_http_response(html_content: str, artikul: str) -> List[str]:
+    """Парсит HTTP ответ от Armtek и извлекает бренды"""
+    soup = BeautifulSoup(html_content, "html.parser")
+    brands = set()
+    
+    # Ищем бренды в различных элементах
+    brand_selectors = [
+        '.brand-name',
+        '.product-brand',
+        '.manufacturer-name',
+        '.vendor-title',
+        '.item-brand',
+        '.brand__name'
+    ]
+    
+    for selector in brand_selectors:
+        for tag in soup.select(selector):
+            brand = tag.get_text(strip=True)
+            if brand and len(brand) > 2 and not brand.isdigit():
+                brands.add(brand)
+    
+    # Поиск по тексту
+    if not brands:
+        brand_pattern = re.compile(r'(бренд|производитель|brand|manufacturer)', re.IGNORECASE)
+        for tag in soup.find_all(['span', 'div', 'a', 'h3']):
+            text = tag.get_text(strip=True)
+            if text and len(text) > 2 and len(text) < 50:
+                if not brand_pattern.search(text) and not any(char.isdigit() for char in text):
+                    brands.add(text)
+    
+    return filter_armtek_brands(list(brands))
 
 def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> List[str]:
     """Получает бренды с Emex по артикулу"""
