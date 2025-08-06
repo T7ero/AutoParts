@@ -36,9 +36,9 @@ HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 # Уменьшаем таймауты для ускорения работы
-TIMEOUT = 10  # Уменьшаем с 15 до 10 секунд
+TIMEOUT = 15  # Увеличиваем с 10 до 15 секунд для Emex
 SELENIUM_TIMEOUT = 15  # Уменьшаем с 20 до 15 секунд
-PAGE_LOAD_TIMEOUT = 10  # Уменьшаем с 15 до 10 секунд
+PAGE_LOAD_TIMEOUT = 15  # Увеличиваем с 10 до 15 секунд для Emex
 
 # Кеширование
 REQUEST_CACHE = {}
@@ -104,29 +104,26 @@ def get_next_proxy() -> Optional[Dict[str, str]]:
         return None
 
 def cleanup_chrome_processes():
-    """Принудительно завершает зависшие процессы Chrome"""
+    """Очищает процессы Chrome и временные директории"""
     try:
-        kill_commands = [
-            ['pkill', '-9', '-f', 'chrome'],
-            ['pkill', '-9', '-f', 'chromedriver'],
-            ['pkill', '-9', '-f', 'google-chrome'],
-            ['pkill', '-9', '-f', 'chromium'],
-            ['killall', '-9', 'chrome'],
-            ['killall', '-9', 'chromedriver']
-        ]
+        # Убиваем процессы Chrome
+        subprocess.run(['pkill', '-f', 'chrome'], capture_output=True, timeout=10)
+        subprocess.run(['pkill', '-f', 'chromedriver'], capture_output=True, timeout=10)
         
-        for cmd in kill_commands:
+        # Очищаем временные директории Chrome
+        temp_dirs = ['/tmp/chrome_*', '/tmp/.org.chromium.Chromium.*', '/tmp/.com.google.Chrome.*']
+        for pattern in temp_dirs:
             try:
-                subprocess.run(cmd, 
-                              stdout=subprocess.DEVNULL, 
-                              stderr=subprocess.DEVNULL,
-                              timeout=2)
+                subprocess.run(['rm', '-rf'] + subprocess.run(['find', '/tmp', '-name', pattern.split('/')[-1], '-type', 'd'], 
+                                                           capture_output=True, text=True).stdout.splitlines(), 
+                             capture_output=True, timeout=10)
             except:
                 pass
         
-        time.sleep(1)
+        time.sleep(2)  # Даем время на завершение процессов
+        log_debug("Chrome processes cleaned up")
     except Exception as e:
-        log_debug(f"Error cleaning up Chrome processes: {e}")
+        log_debug(f"Error during Chrome cleanup: {str(e)}")
 
 def is_site_available(url: str, proxies: Optional[Dict] = None) -> bool:
     """Проверяет доступность сайта"""
@@ -170,22 +167,32 @@ def make_request(url: str, proxy: Optional[str] = None, max_retries: int = 2) ->
     # Настройка заголовков
     session.headers.update(HEADERS)
     
+    # Настройка таймаутов
+    timeout_config = (TIMEOUT, TIMEOUT)  # (connect_timeout, read_timeout)
+    
     for attempt in range(max_retries):
         try:
-            response = session.get(url, timeout=TIMEOUT)
+            response = session.get(url, timeout=timeout_config)
             response.raise_for_status()
             return response
         except requests.exceptions.ProxyError as e:
             log_debug(f"Ошибка прокси {proxy}: {str(e)}")
             if attempt < max_retries - 1:
-                time.sleep(1)
+                time.sleep(2)  # Увеличиваем время ожидания
+                continue
+            else:
+                raise
+        except requests.exceptions.Timeout as e:
+            log_debug(f"Таймаут запроса (попытка {attempt + 1}): {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(2)  # Увеличиваем время ожидания
                 continue
             else:
                 raise
         except requests.exceptions.RequestException as e:
             log_debug(f"Ошибка запроса (попытка {attempt + 1}): {str(e)}")
             if attempt < max_retries - 1:
-                time.sleep(1)
+                time.sleep(2)  # Увеличиваем время ожидания
                 continue
             else:
                 raise
@@ -571,27 +578,56 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
     options.add_argument(f'--user-data-dir={temp_dir}')
     options.add_argument('--disable-background-timer-throttling')
     options.add_argument('--disable-backgrounding-occluded-windows')
-    
-    # Настройка прокси для Selenium
-    if proxy:
-        options.add_argument(f'--proxy-server={proxy}')
     options.add_argument('--disable-renderer-backgrounding')
     options.add_argument('--disable-features=VizDisplayCompositor')
     options.add_argument('--disable-ipc-flooding-protection')
+    options.add_argument('--no-first-run')
+    options.add_argument('--no-default-browser-check')
+    options.add_argument('--disable-default-apps')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
     
     driver = None
     try:
+        # Принудительная очистка перед запуском
         cleanup_chrome_processes()
-        time.sleep(1)
+        time.sleep(3)  # Увеличиваем время ожидания
         
         try:
             service = Service('/usr/local/bin/chromedriver')
             driver = webdriver.Chrome(service=service, options=options)
         except Exception as e:
             log_debug(f"Chrome driver init error: {str(e)}")
-            driver = webdriver.Chrome(options=options)
+            try:
+                driver = webdriver.Chrome(options=options)
+            except Exception as e2:
+                log_debug(f"Second Chrome driver init error: {str(e2)}")
+                # Пробуем без user-data-dir
+                options = Options()
+                options.add_argument('--headless=new')
+                options.add_argument('--no-sandbox')
+                options.add_argument('--disable-dev-shm-usage')
+                options.add_argument('--disable-gpu')
+                options.add_argument('--disable-extensions')
+                options.add_argument('--disable-plugins')
+                options.add_argument('--blink-settings=imagesEnabled=false')
+                options.add_argument('--remote-debugging-port=0')
+                options.add_argument('--disable-web-security')
+                options.add_argument('--single-process')
+                options.add_argument('--disable-logging')
+                options.add_argument('--log-level=3')
+                options.add_argument('--user-agent=' + HEADERS["User-Agent"])
+                options.add_argument('--disable-background-timer-throttling')
+                options.add_argument('--disable-backgrounding-occluded-windows')
+                options.add_argument('--disable-renderer-backgrounding')
+                options.add_argument('--disable-features=VizDisplayCompositor')
+                options.add_argument('--disable-ipc-flooding-protection')
+                options.add_argument('--no-first-run')
+                options.add_argument('--no-default-browser-check')
+                options.add_argument('--disable-default-apps')
+                options.add_experimental_option("excludeSwitches", ["enable-automation"])
+                options.add_experimental_option('useAutomationExtension', False)
+                driver = webdriver.Chrome(options=options)
         
         driver.set_page_load_timeout(SELENIUM_TIMEOUT)
         driver.set_script_timeout(SELENIUM_TIMEOUT)
@@ -648,204 +684,16 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
                         brands.add(text)
         
         # Фильтрация брендов - убираем "мусор", но оставляем все бренды
-        filtered_brands = set()
-        exclude_words = {
-            'telegram', 'whatsapp', 'аккумуляторы', 'масла', 'фильтры', 'тормозные колодки',
-            'амортизаторы', 'подшипники', 'ремни', 'свечи', 'лампы', 'стеклоочистители',
-            'дворники', 'зеркала', 'фары', 'фонари', 'сигналы', 'датчики', 'насосы',
-            'компрессоры', 'радиаторы', 'вентиляторы', 'термостаты', 'терморегуляторы',
-            'датчики температуры', 'датчики давления', 'датчики кислорода', 'датчики детонации',
-            'датчики скорости', 'датчики положения', 'датчики уровня', 'датчики расхода',
-            'датчики вибрации', 'датчики шума', 'вход', 'корзина', 'каталоги', 'контакты', 
-            'новости', 'помощь', 'оптовикам', 'поставщикам', 'вакансии', 'все категории', 
-            'долгопрудный', 'москва', 'россия', 'китай', 'запчасть', 'запчасти', 
-            'оригинальные', 'неоригинальные', 'восстановление пароля', 'конфиденциальность', 
-            'оферта', 'оплата заказа', 'доставка заказа', 'возврат товара', 'to content', 
-            'zapros@autopiter.ru', '© ооо «автопитер»', 'ваз, газ, камаз', 
-            'запчасти ваз, газ, камаз', 'запчасти для то', 'или выбрать другой удобный для вас способ',
-            'каталоги запчастей', 'неоригинальные запчасти', 'оплатить все товары можно',
-            'оптовым клиентам', 'оригинальные каталоги по vin', 'перейти в версию для смартфонов',
-            'помощь по сайту', 'россия, москва, ул. скотопрогонная, 35 стр. 3', 'спецтехника',
-            'фильтры hebel kraft', 'герметик силиконовый mannol', 'кнопка 2114-15, евро кнопка',
-            'кнопка ваз-2115, евро кнопка', 'кольцо уплотнительное ступицы toyota',
-            'лист сзап l1 1,2 задний', 'масло для компрессоров vdl 100 fubag',
-            'мотор омывателя 24v', 'мотор омывателя камаз 24v', 'насос омывателя маз,камаз евро',
-            'переключатель стеклоочистителя', 'профи-75 белак', 'ремкомплект гидроцилиндра',
-            'рессора чмзап', 'русский мастер ps-10 рм', 'русский мастер рмм',
-            'стопорное кольцо чмзап', 'показать все', 'все', 'автомасла', 'автопитер',
-            'armtek', 'new', 'аксессуары', 'акции', 'в корзину', 'возврат', 'возможные замены',
-            'войти', 'выбор armtek', 'гараж', 'гарантийная политика', 'главная', 'дней',
-            'доставка', 'инструмент', 'искомый товар', 'как сделать заказ', 'каталог',
-            'лучшее предложение', 'магазины', 'мы в социальных сетях', 'мы используем cookies',
-            'мы принимаем к оплате:', 'о компании', 'оптовым покупателям', 'партнерам',
-            'планировщик выгрузки', 'подбор', 'поиск по результату', 'покупателям',
-            'правовая информация', 'программа лояльности', 'работа в компании', 'реклама на сайте',
-            'сортировать по:выбор armtek', 'срок отгрузки', 'хорошо', 'цена', 'этна', 'отдо',
-            'заявку на подбор', 'vin или марке авто', 'кислородный датчик', 'датчик кислорода jac',
-            'запчасть', 'китай', 'рааз', 'jacjashisollersзапчастькитайрааз', 'производители:дизель',
-            'производители:jacjashisollersзапчастькитайрааз', 'долгопрудныйвходкорзина',
-            'все категориикаталоги запчастей', 'офертаконфиденциальность', 'выбор armtekсортировать по:выбор armtek',
-            'мы используем cookies, чтобы сайт был лучше', 'мы используем cookies, чтобы сайт был лучшехорошо',
-            'срок отгрузкидней', 'ценаотдо', 'кислородный датчик, шт', 'оплата',
-            # Новые исключения для Armtek
-            'корпус межосевого дифференциала', 'нет в наличии', 'популярные категории',
-            'строительство и ремонт', 'электрика и свет', 'палец sitrak', 'переключатели подрулевые в сборе',
-            'палец рессорный', 'дизель', 'мтз', 'сад и огород', 'создание и ремонт',
-            'электрика и свет', 'популярные категории', 'строительство и ремонт',
-            'fmsi', 'fmsi-verband', 'fmsifmsi-verband', 'популярные категории',
-            'ac delco', 'achim', 'achr', 'b-tech', 'beru', 'champion', 'chery', 'dragonzap',
-            'ford', 'hot-parts', 'lucas', 'mobis', 'ngk', 'nissan', 'robiton', 'tesla',
-            'trw', 'vag', 'valeo', 'популярные категории', 'строительство и ремонт', 'электрика и свет',
-            'сад и огород', 'auto-comfort', 'autotech', 'createk', 'howo', 'kamaz', 'leo trade',
-            'prc', 'shaanxi', 'shacman', 'sitrak', 'weichai', 'zg.link', 'нет в наличии',
-            'палец sitrak', 'ast silver', 'createk', 'howo', 'prc', 'sitrak', 'нет в наличии',
-            'ast', 'ast silver', 'ast smart', 'createk', 'createk палец', 'foton', 'howo',
-            'htp', 'jmc', 'leo trade', 'prc', 'shaanxi', 'shacman', 'shaft-gear', 'sitrak',
-            'wayteko', 'zevs', 'дизель', 'нет в наличии', 'палец рессорный', 'howo', 'prc',
-            'shaanxi', 'sitrak', 'sitrak/howo', 'нет в наличии', 'howo', 'prc', 'shaanxi',
-            'sitrak', 'sitrak/howo', 'нет в наличии', 'jac', 'kamaz', 'prc', 'нет в наличии',
-            'переключатели подрулевые в сборе', 'faw', 'prc', 'нет в наличии',
-            # Дополнительные исключения для объединенных брендов
-            'gspartshinotoyota', 'gspartshino', 'toyota / lexus', 'toyota/lexus',
-            'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus'
-        }
-        
+        filtered_brands = []
         for brand in brands:
-            brand_clean = brand.strip()
-            brand_lower = brand_clean.lower()
-            
-            # Проверяем, что бренд не является "мусором"
-            if (len(brand_clean) > 2 and len(brand_clean) < 50 and
-                brand_lower not in exclude_words and
-                not any(word in brand_lower for word in exclude_words) and
-                not brand_lower.startswith('99') and  # Исключаем артикулы
-                not brand_lower.startswith('zapros') and
-                not brand_lower.startswith('©') and
-                not brand_lower.startswith('mannol') and
-                not brand_lower.startswith('герметик') and
-                not brand_lower.startswith('кнопка') and
-                not brand_lower.startswith('кольцо') and
-                not brand_lower.startswith('лист') and
-                not brand_lower.startswith('масло') and
-                not brand_lower.startswith('мотор') and
-                not brand_lower.startswith('насос') and
-                not brand_lower.startswith('переключатель') and
-                not brand_lower.startswith('профи') and
-                not brand_lower.startswith('ремкомплект') and
-                not brand_lower.startswith('рессора') and
-                not brand_lower.startswith('русский мастер') and
-                not brand_lower.startswith('стопорное') and
-                not brand_lower.startswith('armtek') and
-                not brand_lower.startswith('new') and
-                not brand_lower.startswith('аксессуары') and
-                not brand_lower.startswith('акции') and
-                not brand_lower.startswith('в корзину') and
-                not brand_lower.startswith('возврат') and
-                not brand_lower.startswith('возможные') and
-                not brand_lower.startswith('войти') and
-                not brand_lower.startswith('выбор') and
-                not brand_lower.startswith('гараж') and
-                not brand_lower.startswith('гарантийная') and
-                not brand_lower.startswith('главная') and
-                not brand_lower.startswith('дней') and
-                not brand_lower.startswith('доставка') and
-                not brand_lower.startswith('инструмент') and
-                not brand_lower.startswith('искомый') and
-                not brand_lower.startswith('как сделать') and
-                not brand_lower.startswith('каталог') and
-                not brand_lower.startswith('лучшее') and
-                not brand_lower.startswith('магазины') and
-                not brand_lower.startswith('мы в') and
-                not brand_lower.startswith('мы используем') and
-                not brand_lower.startswith('мы принимаем') and
-                not brand_lower.startswith('оптовым') and
-                not brand_lower.startswith('партнерам') and
-                not brand_lower.startswith('планировщик') and
-                not brand_lower.startswith('подбор') and
-                not brand_lower.startswith('поиск') and
-                not brand_lower.startswith('покупателям') and
-                not brand_lower.startswith('правовая') and
-                not brand_lower.startswith('программа') and
-                not brand_lower.startswith('работа в') and
-                not brand_lower.startswith('реклама') and
-                not brand_lower.startswith('сортировать') and
-                not brand_lower.startswith('срок') and
-                not brand_lower.startswith('хорошо') and
-                not brand_lower.startswith('цена') and
-                not brand_lower.startswith('этна') and
-                not brand_lower.startswith('отдо') and
-                not brand_lower.startswith('заявку') and
-                not brand_lower.startswith('vin или') and
-                not brand_lower.startswith('кислородный') and
-                not brand_lower.startswith('датчик') and
-                not brand_lower.startswith('запчасть') and
-                not brand_lower.startswith('китай') and
-                not brand_lower.startswith('рааз') and
-                not brand_lower.startswith('оплата') and
-                not brand_lower.startswith('корпус') and
-                not brand_lower.startswith('межосевого') and
-                not brand_lower.startswith('дифференциала') and
-                not brand_lower.startswith('нет в') and
-                not brand_lower.startswith('популярные') and
-                not brand_lower.startswith('категории') and
-                not brand_lower.startswith('строительство') and
-                not brand_lower.startswith('ремонт') and
-                not brand_lower.startswith('электрика') and
-                not brand_lower.startswith('свет') and
-                not brand_lower.startswith('палец') and
-                not brand_lower.startswith('переключатели') and
-                not brand_lower.startswith('подрулевые') and
-                not brand_lower.startswith('рессорный') and
-                not brand_lower.startswith('дизель') and
-                not brand_lower.startswith('мтз') and
-                not brand_lower.startswith('сад') and
-                not brand_lower.startswith('огород') and
-                not brand_lower.startswith('создание') and
-                not brand_lower.startswith('fmsi') and
-                not brand_lower.startswith('verband') and
-                not brand_lower.startswith('ac ') and
-                not brand_lower.startswith('achim') and
-                not brand_lower.startswith('achr') and
-                not brand_lower.startswith('b-tech') and
-                not brand_lower.startswith('beru') and
-                not brand_lower.startswith('champion') and
-                not brand_lower.startswith('chery') and
-                not brand_lower.startswith('dragonzap') and
-                not brand_lower.startswith('ford') and
-                not brand_lower.startswith('hot-') and
-                not brand_lower.startswith('lucas') and
-                not brand_lower.startswith('mobis') and
-                not brand_lower.startswith('ngk') and
-                not brand_lower.startswith('nissan') and
-                not brand_lower.startswith('robiton') and
-                not brand_lower.startswith('tesla') and
-                not brand_lower.startswith('trw') and
-                not brand_lower.startswith('vag') and
-                not brand_lower.startswith('valeo') and
-                not brand_lower.startswith('auto-') and
-                not brand_lower.startswith('autotech') and
-                not brand_lower.startswith('createk') and
-                not brand_lower.startswith('howo') and
-                not brand_lower.startswith('kamaz') and
-                not brand_lower.startswith('leo ') and
-                not brand_lower.startswith('prc') and
-                not brand_lower.startswith('shaanxi') and
-                not brand_lower.startswith('shacman') and
-                not brand_lower.startswith('sitrak') and
-                not brand_lower.startswith('weichai') and
-                not brand_lower.startswith('zg.') and
-                not brand_lower.startswith('ast ') and
-                not brand_lower.startswith('foton') and
-                not brand_lower.startswith('htp') and
-                not brand_lower.startswith('jmc') and
-                not brand_lower.startswith('shaft-') and
-                not brand_lower.startswith('wayteko') and
-                not brand_lower.startswith('zevs') and
-                not brand_lower.startswith('jac') and
-                not brand_lower.startswith('faw')):
-                filtered_brands.add(brand_clean)
+            brand = brand.strip()
+            if brand and len(brand) > 2 and len(brand) < 50:
+                # Убираем очевидный мусор
+                if not any(word in brand.lower() for word in ['добавить', 'корзину', 'купить', 'руб', 'шт', 'шт.']):
+                    filtered_brands.append(brand)
         
-        return sorted(filtered_brands) if filtered_brands else []
+        log_debug(f"Armtek Selenium: найдены бренды {filtered_brands}")
+        return filtered_brands
         
     except Exception as e:
         log_debug(f"Armtek Selenium error: {str(e)}")
@@ -856,10 +704,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
                 driver.quit()
             except:
                 pass
-        cleanup_chrome_processes()
-        time.sleep(1)
-        
-        # Удаляем временную директорию
+        # Очищаем временную директорию
         try:
             import shutil
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -1017,7 +862,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             response = requests.get(
                 api_url,
                 headers=headers,
-                timeout=10
+                timeout=20  # Увеличиваем таймаут
             )
             
             if response.status_code == 200:
@@ -1047,9 +892,12 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                             if isinstance(brand, str):
                                 brands.add(brand)
                     
+                    log_debug(f"Emex API: найдено {len(brands)} брендов")
                     return sorted(brands)
                 except json.JSONDecodeError:
                     log_debug("Emex API: ошибка декодирования JSON")
+        except requests.exceptions.Timeout:
+            log_debug(f"Emex API: таймаут без прокси для {artikul}")
         except Exception as e:
             log_debug(f"Emex API: ошибка без прокси: {str(e)}")
         
@@ -1080,7 +928,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                     api_url,
                     headers=headers,
                     proxies=proxy_dict,
-                    timeout=10
+                    timeout=20  # Увеличиваем таймаут
                 )
                 
                 if response.status_code == 200:
@@ -1110,9 +958,12 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                                 if isinstance(brand, str):
                                     brands.add(brand)
                         
+                        log_debug(f"Emex API с прокси: найдено {len(brands)} брендов")
                         return sorted(brands)
                     except json.JSONDecodeError:
                         log_debug("Emex API: ошибка декодирования JSON")
+            except requests.exceptions.Timeout:
+                log_debug(f"Emex API: таймаут с прокси для {artikul}")
             except Exception as e:
                 log_debug(f"Emex API: ошибка с прокси: {str(e)}")
         
