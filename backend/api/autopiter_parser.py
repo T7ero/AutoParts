@@ -106,21 +106,24 @@ def get_next_proxy() -> Optional[Dict[str, str]]:
 def cleanup_chrome_processes():
     """Очищает процессы Chrome и временные директории"""
     try:
-        # Убиваем процессы Chrome
-        subprocess.run(['pkill', '-f', 'chrome'], capture_output=True, timeout=10)
-        subprocess.run(['pkill', '-f', 'chromedriver'], capture_output=True, timeout=10)
+        # Убиваем процессы Chrome более агрессивно
+        subprocess.run(['pkill', '-9', '-f', 'chrome'], capture_output=True, timeout=15)
+        subprocess.run(['pkill', '-9', '-f', 'chromedriver'], capture_output=True, timeout=15)
         
         # Очищаем временные директории Chrome
-        temp_dirs = ['/tmp/chrome_*', '/tmp/.org.chromium.Chromium.*', '/tmp/.com.google.Chrome.*']
+        temp_dirs = ['/tmp/chrome_*', '/tmp/.org.chromium.Chromium.*', '/tmp/.com.google.Chrome.*', '/tmp/chromium_*']
         for pattern in temp_dirs:
             try:
-                subprocess.run(['rm', '-rf'] + subprocess.run(['find', '/tmp', '-name', pattern.split('/')[-1], '-type', 'd'], 
-                                                           capture_output=True, text=True).stdout.splitlines(), 
-                             capture_output=True, timeout=10)
+                result = subprocess.run(['find', '/tmp', '-name', pattern.split('/')[-1], '-type', 'd'], 
+                                       capture_output=True, text=True, timeout=10)
+                if result.stdout:
+                    for dir_path in result.stdout.splitlines():
+                        if dir_path:
+                            subprocess.run(['rm', '-rf', dir_path], capture_output=True, timeout=10)
             except:
                 pass
         
-        time.sleep(2)  # Даем время на завершение процессов
+        time.sleep(3)  # Увеличиваем время ожидания
         log_debug("Chrome processes cleaned up")
     except Exception as e:
         log_debug(f"Error during Chrome cleanup: {str(e)}")
@@ -528,6 +531,12 @@ def parse_armtek_api(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
         )
         
         if response.status_code == 200:
+            # Проверяем content-type перед попыткой JSON декодирования
+            content_type = response.headers.get('content-type', '').lower()
+            if 'application/json' not in content_type and 'text/json' not in content_type:
+                log_debug(f"Armtek API: неверный content-type: {content_type}")
+                return []
+            
             try:
                 data = response.json()
                 brands = set()
@@ -543,9 +552,13 @@ def parse_armtek_api(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
                             if brand and isinstance(brand, str):
                                 brands.add(brand)
                 
+                log_debug(f"Armtek API: найдено {len(brands)} брендов")
                 return sorted(brands)
-            except json.JSONDecodeError:
-                log_debug("Armtek API: ошибка декодирования JSON")
+            except json.JSONDecodeError as e:
+                log_debug(f"Armtek API: ошибка декодирования JSON: {str(e)}")
+                # Логируем первые 200 символов ответа для отладки
+                response_text = response.text[:200]
+                log_debug(f"Armtek API: начало ответа: {response_text}")
         else:
             log_debug(f"Armtek API: HTTP {response.status_code}")
             
@@ -584,6 +597,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
     options.add_argument('--no-first-run')
     options.add_argument('--no-default-browser-check')
     options.add_argument('--disable-default-apps')
+    options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
     
@@ -591,43 +605,64 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
     try:
         # Принудительная очистка перед запуском
         cleanup_chrome_processes()
-        time.sleep(3)  # Увеличиваем время ожидания
+        time.sleep(5)  # Увеличиваем время ожидания
         
-        try:
-            service = Service('/usr/local/bin/chromedriver')
-            driver = webdriver.Chrome(service=service, options=options)
-        except Exception as e:
-            log_debug(f"Chrome driver init error: {str(e)}")
+        # Пробуем несколько способов инициализации драйвера
+        driver_init_methods = [
+            lambda: webdriver.Chrome(service=Service('/usr/local/bin/chromedriver'), options=options),
+            lambda: webdriver.Chrome(options=options),
+            lambda: webdriver.Chrome(service=Service('/usr/bin/chromedriver'), options=options),
+        ]
+        
+        driver = None
+        for i, init_method in enumerate(driver_init_methods):
             try:
-                driver = webdriver.Chrome(options=options)
-            except Exception as e2:
-                log_debug(f"Second Chrome driver init error: {str(e2)}")
-                # Пробуем без user-data-dir
-                options = Options()
-                options.add_argument('--headless=new')
-                options.add_argument('--no-sandbox')
-                options.add_argument('--disable-dev-shm-usage')
-                options.add_argument('--disable-gpu')
-                options.add_argument('--disable-extensions')
-                options.add_argument('--disable-plugins')
-                options.add_argument('--blink-settings=imagesEnabled=false')
-                options.add_argument('--remote-debugging-port=0')
-                options.add_argument('--disable-web-security')
-                options.add_argument('--single-process')
-                options.add_argument('--disable-logging')
-                options.add_argument('--log-level=3')
-                options.add_argument('--user-agent=' + HEADERS["User-Agent"])
-                options.add_argument('--disable-background-timer-throttling')
-                options.add_argument('--disable-backgrounding-occluded-windows')
-                options.add_argument('--disable-renderer-backgrounding')
-                options.add_argument('--disable-features=VizDisplayCompositor')
-                options.add_argument('--disable-ipc-flooding-protection')
-                options.add_argument('--no-first-run')
-                options.add_argument('--no-default-browser-check')
-                options.add_argument('--disable-default-apps')
-                options.add_experimental_option("excludeSwitches", ["enable-automation"])
-                options.add_experimental_option('useAutomationExtension', False)
-                driver = webdriver.Chrome(options=options)
+                log_debug(f"Armtek Selenium: попытка инициализации драйвера {i+1}")
+                driver = init_method()
+                log_debug(f"Armtek Selenium: драйвер успешно инициализирован методом {i+1}")
+                break
+            except Exception as e:
+                log_debug(f"Armtek Selenium: ошибка инициализации драйвера {i+1}: {str(e)}")
+                if i == len(driver_init_methods) - 1:  # Последняя попытка
+                    # Пробуем без user-data-dir как последний вариант
+                    log_debug("Armtek Selenium: пробуем без user-data-dir")
+                    options = Options()
+                    options.add_argument('--headless=new')
+                    options.add_argument('--no-sandbox')
+                    options.add_argument('--disable-dev-shm-usage')
+                    options.add_argument('--disable-gpu')
+                    options.add_argument('--disable-extensions')
+                    options.add_argument('--disable-plugins')
+                    options.add_argument('--blink-settings=imagesEnabled=false')
+                    options.add_argument('--remote-debugging-port=0')
+                    options.add_argument('--disable-web-security')
+                    options.add_argument('--single-process')
+                    options.add_argument('--disable-logging')
+                    options.add_argument('--log-level=3')
+                    options.add_argument('--user-agent=' + HEADERS["User-Agent"])
+                    options.add_argument('--disable-background-timer-throttling')
+                    options.add_argument('--disable-backgrounding-occluded-windows')
+                    options.add_argument('--disable-renderer-backgrounding')
+                    options.add_argument('--disable-features=VizDisplayCompositor')
+                    options.add_argument('--disable-ipc-flooding-protection')
+                    options.add_argument('--no-first-run')
+                    options.add_argument('--no-default-browser-check')
+                    options.add_argument('--disable-default-apps')
+                    options.add_argument('--disable-blink-features=AutomationControlled')
+                    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+                    options.add_experimental_option('useAutomationExtension', False)
+                    try:
+                        driver = webdriver.Chrome(options=options)
+                        log_debug("Armtek Selenium: драйвер инициализирован без user-data-dir")
+                    except Exception as e2:
+                        log_debug(f"Armtek Selenium: финальная ошибка инициализации: {str(e2)}")
+                        raise e2
+                else:
+                    time.sleep(2)  # Пауза между попытками
+        
+        if driver is None:
+            log_debug("Armtek Selenium: не удалось инициализировать драйвер")
+            return []
         
         driver.set_page_load_timeout(SELENIUM_TIMEOUT)
         driver.set_script_timeout(SELENIUM_TIMEOUT)
@@ -654,45 +689,29 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
         brand_selectors = [
             '.product-card .brand-name',
             '.product-card__brand',
-            '[itemprop="brand"]',
-            '.catalog-item__brand',
+            '.catalog-item .brand',
+            '.item .brand',
+            '[data-testid="product-item"] .brand',
+            '.product-name .brand',
+            '.product .brand',
             '.brand-name',
-            '.product-brand',
-            'span[data-brand]',
-            '.item-brand',
-            '.brand__name',
-            '.manufacturer-name',
-            '.vendor-title',
-            '.product-item .brand',
-            '.item .brand'
+            '.brand',
+            '.make',
+            '.manufacturer'
         ]
         
         brands = set()
         for selector in brand_selectors:
-            for tag in soup.select(selector):
-                brand = tag.get_text(strip=True)
-                if brand and len(brand) > 2 and not brand.isdigit():
-                    brands.add(brand)
+            elements = soup.select(selector)
+            for element in elements:
+                brand_text = element.get_text(strip=True)
+                if brand_text and len(brand_text) > 1:
+                    brands.add(brand_text)
         
-        # Дополнительный поиск по тексту
-        if not brands:
-            brand_pattern = re.compile(r'(бренд|производитель|brand|manufacturer)', re.IGNORECASE)
-            for tag in soup.find_all(['span', 'div', 'a', 'h3']):
-                text = tag.get_text(strip=True)
-                if text and len(text) > 2 and len(text) < 50:
-                    if not brand_pattern.search(text) and not any(char.isdigit() for char in text):
-                        brands.add(text)
-        
-        # Фильтрация брендов - убираем "мусор", но оставляем все бренды
-        filtered_brands = []
-        for brand in brands:
-            brand = brand.strip()
-            if brand and len(brand) > 2 and len(brand) < 50:
-                # Убираем очевидный мусор
-                if not any(word in brand.lower() for word in ['добавить', 'корзину', 'купить', 'руб', 'шт', 'шт.']):
-                    filtered_brands.append(brand)
-        
+        # Фильтруем бренды
+        filtered_brands = filter_armtek_brands(list(brands))
         log_debug(f"Armtek Selenium: найдены бренды {filtered_brands}")
+        
         return filtered_brands
         
     except Exception as e:
@@ -704,7 +723,6 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
                 driver.quit()
             except:
                 pass
-        # Очищаем временную директорию
         try:
             import shutil
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -862,7 +880,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             response = requests.get(
                 api_url,
                 headers=headers,
-                timeout=20  # Увеличиваем таймаут
+                timeout=30  # Увеличиваем таймаут до 30 секунд
             )
             
             if response.status_code == 200:
@@ -928,7 +946,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                     api_url,
                     headers=headers,
                     proxies=proxy_dict,
-                    timeout=20  # Увеличиваем таймаут
+                    timeout=30  # Увеличиваем таймаут до 30 секунд
                 )
                 
                 if response.status_code == 200:

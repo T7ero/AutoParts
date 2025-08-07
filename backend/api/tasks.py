@@ -63,8 +63,9 @@ def process_parsing_task(self, task_id):
         # Очищаем DataFrame от пустых строк
         df.dropna(how='all', inplace=True)
         
-        # Инициализируем таймаут
+        # Инициализируем таймаут и счетчик обработанных строк
         task._timeout_check = time.time()
+        task._processed_rows = 0  # Добавляем счетчик обработанных строк
         
         total_rows = len(df)
         results_autopiter = []
@@ -74,6 +75,8 @@ def process_parsing_task(self, task_id):
         def log(msg):
             log_messages.append(msg)
             print(msg)
+        
+        log(f"Начинаем обработку {total_rows} строк")
         
         # Оптимизированная функция для параллельного парсинга с таймаутами и прокси
         def parse_all_parallel(numbers, brand, part_number, name):
@@ -128,11 +131,11 @@ def process_parsing_task(self, task_id):
             
             return results
         
-        # Основной цикл с оптимизацией памяти
+        # Основной цикл с улучшенной обработкой ошибок и предотвращением бесконечного цикла
         for index, row in df.iterrows():
             try:
-                # Проверка таймаута каждые 50 строк (увеличиваем интервал)
-                if index % 50 == 0:
+                # Проверка таймаута каждые 25 строк (уменьшаем интервал для более частых проверок)
+                if index % 25 == 0:
                     if time.time() - task._timeout_check > 2700:  # 45 минут
                         log("Task timeout approaching, finishing up...")
                         break
@@ -152,6 +155,7 @@ def process_parsing_task(self, task_id):
                 # Обрабатываем строку даже если основной артикул пустой, но есть кросс-номера
                 if not part_number and not cross_number_from_g:
                     log(f"Пропускаем строку {index + 1}: нет артикула и кросс-номеров")
+                    task._processed_rows += 1  # Увеличиваем счетчик
                     continue
                 
                 # Создаем список всех артикулов для парсинга
@@ -164,6 +168,7 @@ def process_parsing_task(self, task_id):
                 # Если нет артикулов для парсинга, пропускаем
                 if not numbers_to_parse:
                     log(f"Пропускаем строку {index + 1}: нет артикулов для парсинга")
+                    task._processed_rows += 1  # Увеличиваем счетчик
                     continue
                 
                 log(f"Обрабатываем строку {index + 1}: {len(numbers_to_parse)} артикулов")
@@ -270,6 +275,9 @@ def process_parsing_task(self, task_id):
                         log(f"Ошибка при обработке артикула {current_number} в строке {index + 1}: {str(e)}")
                         continue
                 
+                # Увеличиваем счетчик обработанных строк
+                task._processed_rows += 1
+                
                 # Создаем файл Armtek даже если нет результатов
                 if results_armtek:
                     log(f"Armtek: найдено {len(results_armtek)} результатов")
@@ -285,8 +293,8 @@ def process_parsing_task(self, task_id):
                         'Источник': 'armtek'
                     })
                 
-                # Обновляем прогресс каждые 5 строк для более частого обновления
-                if (index + 1) % 5 == 0 or index == total_rows - 1:
+                # Обновляем прогресс каждые 3 строки для более частого обновления
+                if (index + 1) % 3 == 0 or index == total_rows - 1:
                     progress = int((index + 1) / total_rows * 100)
                     task.progress = progress
                     task.log = '\n'.join(log_messages[-100:])  # Ограничиваем лог
@@ -297,8 +305,8 @@ def process_parsing_task(self, task_id):
                     # Принудительная очистка памяти
                     gc.collect()
                     
-                    # Периодическая очистка процессов Chrome каждые 20 строк
-                    if (index + 1) % 20 == 0:
+                    # Периодическая очистка процессов Chrome каждые 15 строк
+                    if (index + 1) % 15 == 0:
                         try:
                             cleanup_chrome_processes()
                             log("Performed periodic Chrome cleanup")
@@ -307,7 +315,10 @@ def process_parsing_task(self, task_id):
                 
             except Exception as e:
                 log(f"Error processing row {index + 1}: {str(e)}")
+                task._processed_rows += 1  # Увеличиваем счетчик даже при ошибке
                 continue
+        
+        log(f"Обработка завершена. Обработано строк: {task._processed_rows} из {total_rows}")
         
         # Создаем результаты с улучшенной обработкой ошибок
         try:
