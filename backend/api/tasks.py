@@ -112,7 +112,7 @@ def process_parsing_task(self, task_id):
                 fut_autopiter = {executor.submit(parse_one('autopiter', get_brands_by_artikul), num): num for num in numbers}
                 
                 # Обрабатываем результаты с таймаутом
-                for fut in concurrent.futures.as_completed(fut_autopiter, timeout=60):  # Уменьшаем таймаут
+                for fut in concurrent.futures.as_completed(fut_autopiter, timeout=120):  # Увеличиваем таймаут до 120с
                     try:
                         for res in fut.result():
                             results['autopiter'].append(res)
@@ -122,7 +122,7 @@ def process_parsing_task(self, task_id):
                 # Emex
                 fut_emex = {executor.submit(parse_one('emex', get_brands_by_artikul_emex), num): num for num in numbers}
                 
-                for fut in concurrent.futures.as_completed(fut_emex, timeout=60):  # Уменьшаем таймаут
+                for fut in concurrent.futures.as_completed(fut_emex, timeout=120):  # Увеличиваем таймаут до 120с
                     try:
                         for res in fut.result():
                             results['emex'].append(res)
@@ -134,8 +134,8 @@ def process_parsing_task(self, task_id):
         # Основной цикл с улучшенной обработкой ошибок и предотвращением бесконечного цикла
         for index, row in df.iterrows():
             try:
-                # Проверка таймаута каждые 25 строк (уменьшаем интервал для более частых проверок)
-                if index % 25 == 0:
+                # Проверка таймаута каждые 50 строк (увеличиваем интервал для больших файлов)
+                if index % 50 == 0:
                     if time.time() - task._timeout_check > 2700:  # 45 минут
                         log("Task timeout approaching, finishing up...")
                         break
@@ -219,7 +219,7 @@ def process_parsing_task(self, task_id):
                             log(f"Armtek: начало обработки {len(numbers)} артикулов")
                             
                             def parse_one(num):
-                                max_retries = 2  # Уменьшаем количество попыток
+                                max_retries = 5  # Увеличиваем количество попыток для Armtek
                                 for attempt in range(max_retries):
                                     try:
                                         # Сначала пробуем без прокси, потом с прокси
@@ -246,7 +246,7 @@ def process_parsing_task(self, task_id):
                             # Используем 1 поток для Selenium
                             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                                 futs = {executor.submit(parse_one, num): num for num in numbers}
-                                for fut in concurrent.futures.as_completed(futs, timeout=60):  # Уменьшаем таймаут
+                                for fut in concurrent.futures.as_completed(futs, timeout=300):  # Увеличиваем таймаут до 300с
                                     try:
                                         for res in fut.result():
                                             results.append(res)
@@ -293,8 +293,8 @@ def process_parsing_task(self, task_id):
                         'Источник': 'armtek'
                     })
                 
-                # Обновляем прогресс каждые 3 строки для более частого обновления
-                if (index + 1) % 3 == 0 or index == total_rows - 1:
+                # Обновляем прогресс каждые 5 строк для более частого обновления
+                if (index + 1) % 5 == 0 or index == total_rows - 1:
                     progress = int((index + 1) / total_rows * 100)
                     task.progress = progress
                     task.log = '\n'.join(log_messages[-100:])  # Ограничиваем лог
@@ -305,8 +305,8 @@ def process_parsing_task(self, task_id):
                     # Принудительная очистка памяти
                     gc.collect()
                     
-                    # Периодическая очистка процессов Chrome каждые 15 строк
-                    if (index + 1) % 15 == 0:
+                    # Периодическая очистка процессов Chrome каждые 20 строк
+                    if (index + 1) % 20 == 0:
                         try:
                             cleanup_chrome_processes()
                             log("Performed periodic Chrome cleanup")

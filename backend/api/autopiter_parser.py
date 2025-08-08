@@ -104,29 +104,68 @@ def get_next_proxy() -> Optional[Dict[str, str]]:
         return None
 
 def cleanup_chrome_processes():
-    """Очищает процессы Chrome и временные директории"""
+    """Принудительно очищает процессы Chrome и временные директории"""
     try:
-        # Убиваем процессы Chrome более агрессивно
-        subprocess.run(['pkill', '-9', '-f', 'chrome'], capture_output=True, timeout=15)
-        subprocess.run(['pkill', '-9', '-f', 'chromedriver'], capture_output=True, timeout=15)
+        # Убиваем все процессы Chrome более агрессивно
+        subprocess.run(['pkill', '-9', '-f', 'chrome'], 
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+        subprocess.run(['pkill', '-9', '-f', 'chromedriver'], 
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+        subprocess.run(['pkill', '-9', '-f', 'chromium'], 
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
         
         # Очищаем временные директории Chrome
-        temp_dirs = ['/tmp/chrome_*', '/tmp/.org.chromium.Chromium.*', '/tmp/.com.google.Chrome.*', '/tmp/chromium_*']
+        temp_dirs = [
+            '/tmp/.com.google.Chrome*',
+            '/tmp/.org.chromium.Chromium*',
+            '/tmp/chrome_*',
+            '/tmp/chromium_*',
+            '/tmp/.X*',
+            '/tmp/.org.chromium.Chromium*',
+            '/tmp/.com.google.Chrome*',
+            '/tmp/chrome_*',
+            '/tmp/chromium_*',
+            '/tmp/.X*',
+            '/tmp/.org.chromium.Chromium*',
+            '/tmp/.com.google.Chrome*',
+            '/tmp/chrome_*',
+            '/tmp/chromium_*',
+            '/tmp/.X*'
+        ]
+        
         for pattern in temp_dirs:
             try:
+                # Находим все файлы и директории по паттерну
                 result = subprocess.run(['find', '/tmp', '-name', pattern.split('/')[-1], '-type', 'd'], 
-                                       capture_output=True, text=True, timeout=10)
+                                      capture_output=True, text=True, timeout=10)
                 if result.stdout:
-                    for dir_path in result.stdout.splitlines():
-                        if dir_path:
-                            subprocess.run(['rm', '-rf', dir_path], capture_output=True, timeout=10)
+                    for path in result.stdout.strip().split('\n'):
+                        if path:
+                            try:
+                                subprocess.run(['rm', '-rf', path], 
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                            except:
+                                pass
             except:
                 pass
         
-        time.sleep(3)  # Увеличиваем время ожидания
-        log_debug("Chrome processes cleaned up")
+        # Дополнительная очистка через glob
+        import glob
+        for pattern in ['/tmp/chrome_*', '/tmp/chromium_*', '/tmp/.com.google.Chrome*', '/tmp/.org.chromium.Chromium*']:
+            try:
+                for path in glob.glob(pattern):
+                    try:
+                        subprocess.run(['rm', '-rf', path], 
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                    except:
+                        pass
+            except:
+                pass
+        
+        time.sleep(3)  # Увеличиваем время ожидания после очистки
+        
     except Exception as e:
-        log_debug(f"Error during Chrome cleanup: {str(e)}")
+        log_debug(f"Ошибка очистки Chrome процессов: {str(e)}")
 
 def is_site_available(url: str, proxies: Optional[Dict] = None) -> bool:
     """Проверяет доступность сайта"""
@@ -139,12 +178,12 @@ def is_site_available(url: str, proxies: Optional[Dict] = None) -> bool:
 def make_request(url: str, proxy: Optional[str] = None, max_retries: int = 2) -> Optional[requests.Response]:
     """Выполняет HTTP запрос с поддержкой прокси и повторными попытками"""
     session = requests.Session()
+    session.headers.update(HEADERS)
     
     # Настройка прокси
     if proxy:
         try:
             if '@' in proxy:
-                # Формат: ip:port@login:password
                 proxy_parts = proxy.split('@')
                 proxy_url = proxy_parts[0]
                 auth_parts = proxy_parts[1].split(':')
@@ -156,49 +195,37 @@ def make_request(url: str, proxy: Optional[str] = None, max_retries: int = 2) ->
                     'https': f'http://{username}:{password}@{proxy_url}'
                 }
             else:
-                # Формат: ip:port
                 proxy_dict = {
                     'http': f'http://{proxy}',
                     'https': f'http://{proxy}'
                 }
-            
             session.proxies.update(proxy_dict)
-            log_debug(f"Используется прокси: {proxy}")
         except Exception as e:
-            log_debug(f"Ошибка настройки прокси {proxy}: {str(e)}")
-    
-    # Настройка заголовков
-    session.headers.update(HEADERS)
-    
-    # Настройка таймаутов
-    timeout_config = (TIMEOUT, TIMEOUT)  # (connect_timeout, read_timeout)
+            log_debug(f"Ошибка настройки прокси: {str(e)}")
     
     for attempt in range(max_retries):
         try:
+            # Увеличиваем таймауты для лучшей стабильности
+            timeout_config = (TIMEOUT, TIMEOUT)  # (connect_timeout, read_timeout)
             response = session.get(url, timeout=timeout_config)
-            response.raise_for_status()
-            return response
-        except requests.exceptions.ProxyError as e:
-            log_debug(f"Ошибка прокси {proxy}: {str(e)}")
-            if attempt < max_retries - 1:
-                time.sleep(2)  # Увеличиваем время ожидания
-                continue
+            
+            if response.status_code == 200:
+                return response
             else:
-                raise
-        except requests.exceptions.Timeout as e:
-            log_debug(f"Таймаут запроса (попытка {attempt + 1}): {str(e)}")
+                log_debug(f"HTTP {response.status_code} для {url}")
+                
+        except requests.exceptions.Timeout:
+            log_debug(f"Таймаут для {url} (попытка {attempt + 1})")
             if attempt < max_retries - 1:
-                time.sleep(2)  # Увеличиваем время ожидания
-                continue
-            else:
-                raise
+                time.sleep(2)  # Увеличиваем время ожидания между попытками
         except requests.exceptions.RequestException as e:
-            log_debug(f"Ошибка запроса (попытка {attempt + 1}): {str(e)}")
+            log_debug(f"Ошибка запроса для {url}: {str(e)} (попытка {attempt + 1})")
             if attempt < max_retries - 1:
-                time.sleep(2)  # Увеличиваем время ожидания
-                continue
-            else:
-                raise
+                time.sleep(2)  # Увеличиваем время ожидания между попытками
+        except Exception as e:
+            log_debug(f"Неожиданная ошибка для {url}: {str(e)} (попытка {attempt + 1})")
+            if attempt < max_retries - 1:
+                time.sleep(2)  # Увеличиваем время ожидания между попытками
     
     return None
 
@@ -315,7 +342,15 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
         'автокомпонент плюс', 'четырнадцать', 'autocomponent', 'component', 'howo', 'prc', 'sinotruk',
         'sitrak', 'автодеталь', 'автокомпонент плюс', 'четырнадцать', 'autocomponent', 'component', 'howo',
         'prc', 'sinotruk', 'sitrak', 'автодеталь', 'автокомпонент плюс', 'четырнадцать', 'jac', 'prc',
-        'автокомпонент', 'камаз'
+        'автокомпонент', 'камаз', 'корпус межосевого дифференциала', 'нет в наличии', 'или выбрать другой удобный для вас способ',
+        'каталоги', 'оплата', 'популярные категории', 'строительство и ремонт', 'электрика и свет',
+        'палец sitrak', 'переключатели подрулевые в сборе', 'дизель', 'мтз', 'сад и огород',
+        'fmsi', 'ac delco', 'achim', 'achr', 'b-tech', 'beru', 'champion', 'chery', 'dragonzap',
+        'ford', 'hot-parts', 'lucas', 'mobis', 'ngk', 'nissan', 'robiton', 'tesla', 'trw', 'vag',
+        'valeo', 'auto-comfort', 'autotech', 'createk', 'howo', 'kamaz', 'leo trade', 'prc',
+        'shaanxi', 'shacman', 'sitrak', 'weichai', 'zg.link', 'ast', 'foton', 'htp', 'jmc',
+        'shaft-gear', 'wayteko', 'zevs', 'jac', 'faw', 'gspartshinotoyota', 'gspartshino',
+        'toyota / lexus', 'toyota/lexus', 'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus'
     }
     
     for brand in brands:
@@ -348,84 +383,88 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             not brand_lower.startswith('акции') and
             not brand_lower.startswith('в корзину') and
             not brand_lower.startswith('возврат') and
+            not brand_lower.startswith('возможные замены') and
             not brand_lower.startswith('войти') and
-            not brand_lower.startswith('выбор') and
+            not brand_lower.startswith('выбор armtek') and
             not brand_lower.startswith('гараж') and
+            not brand_lower.startswith('гарантийная политика') and
             not brand_lower.startswith('главная') and
+            not brand_lower.startswith('дней') and
             not brand_lower.startswith('доставка') and
             not brand_lower.startswith('инструмент') and
-            not brand_lower.startswith('как сделать') and
+            not brand_lower.startswith('искомый товар') and
+            not brand_lower.startswith('как сделать заказ') and
             not brand_lower.startswith('каталог') and
-            not brand_lower.startswith('лучшее') and
+            not brand_lower.startswith('лучшее предложение') and
             not brand_lower.startswith('магазины') and
-            not brand_lower.startswith('мы в') and
-            not brand_lower.startswith('мы используем') and
-            not brand_lower.startswith('мы принимаем') and
-            not brand_lower.startswith('оптовым') and
-            not brand_lower.startswith('партнерам') and
-            not brand_lower.startswith('планировщик') and
-            not brand_lower.startswith('подбор') and
-            not brand_lower.startswith('поиск') and
-            not brand_lower.startswith('покупателям') and
-            not brand_lower.startswith('правовая') and
-            not brand_lower.startswith('программа') and
-            not brand_lower.startswith('работа в') and
-            not brand_lower.startswith('реклама') and
-            not brand_lower.startswith('сортировать') and
-            not brand_lower.startswith('срок') and
-            not brand_lower.startswith('хорошо') and
-            not brand_lower.startswith('цена') and
-            not brand_lower.startswith('этна') and
-            not brand_lower.startswith('отдо') and
-            not brand_lower.startswith('заявку') and
-            not brand_lower.startswith('vin или') and
-            not brand_lower.startswith('искомый') and
-            not brand_lower.startswith('кислородный') and
-            not brand_lower.startswith('датчик') and
+            not brand_lower.startswith('мы в социальных сетях') and
+            not brand_lower.startswith('кислородный датчик') and
+            not brand_lower.startswith('датчик кислорода') and
             not brand_lower.startswith('запчасть') and
             not brand_lower.startswith('китай') and
             not brand_lower.startswith('рааз') and
-            not brand_lower.startswith('или выбрать') and
+            not brand_lower.startswith('или выбрать другой удобный для') and
             not brand_lower.startswith('каталоги') and
-            not brand_lower.startswith('ки\x00тай') and
-            not brand_lower.startswith('к\x00итай') and
-            not brand_lower.startswith('товары на') and
-            not brand_lower.startswith('переключатели') and
-            not brand_lower.startswith('подрулевые') and
-            not brand_lower.startswith('в сборе') and
-            not brand_lower.startswith('рессорный') and
-            not brand_lower.startswith('палец') and
-            not brand_lower.startswith('автокомпонент') and
-            not brand_lower.startswith('россия') and
-            not brand_lower.startswith('камаз') and
-            not brand_lower.startswith('автодеталь') and
-            not brand_lower.startswith('четырнадцать') and
-            not brand_lower.startswith('motul') and
-            not brand_lower.startswith('faw') and
-            not brand_lower.startswith('foton') and
-            not brand_lower.startswith('hande') and
-            not brand_lower.startswith('leo') and
-            not brand_lower.startswith('onashi') and
-            not brand_lower.startswith('prc') and
-            not brand_lower.startswith('shaanxi') and
-            not brand_lower.startswith('sinotruk') and
-            not brand_lower.startswith('sitrak') and
-            not brand_lower.startswith('weichai') and
-            not brand_lower.startswith('zg.') and
-            not brand_lower.startswith('ast') and
+            not brand_lower.startswith('оплата') and
+            not brand_lower.startswith('корпус межосевого дифференциала') and
+            not brand_lower.startswith('нет в наличии') and
+            not brand_lower.startswith('популярные категории') and
+            not brand_lower.startswith('строительство и ремонт') and
+            not brand_lower.startswith('электрика и свет') and
+            not brand_lower.startswith('палец sitrak') and
+            not brand_lower.startswith('дизель') and
+            not brand_lower.startswith('мтз') and
+            not brand_lower.startswith('сад и огород') and
+            not brand_lower.startswith('fmsi') and
+            not brand_lower.startswith('ac delco') and
+            not brand_lower.startswith('achim') and
+            not brand_lower.startswith('achr') and
+            not brand_lower.startswith('b-tech') and
+            not brand_lower.startswith('beru') and
+            not brand_lower.startswith('champion') and
+            not brand_lower.startswith('chery') and
+            not brand_lower.startswith('dragonzap') and
+            not brand_lower.startswith('ford') and
+            not brand_lower.startswith('hot-parts') and
+            not brand_lower.startswith('lucas') and
+            not brand_lower.startswith('mobis') and
+            not brand_lower.startswith('ngk') and
+            not brand_lower.startswith('nissan') and
+            not brand_lower.startswith('robiton') and
+            not brand_lower.startswith('tesla') and
+            not brand_lower.startswith('trw') and
+            not brand_lower.startswith('vag') and
+            not brand_lower.startswith('valeo') and
+            not brand_lower.startswith('auto-comfort') and
             not brand_lower.startswith('autotech') and
-            not brand_lower.startswith('avto-') and
-            not brand_lower.startswith('component') and
             not brand_lower.startswith('createk') and
             not brand_lower.startswith('howo') and
-            not brand_lower.startswith('kolbenschmidt') and
-            not brand_lower.startswith('peugeot') and
-            not brand_lower.startswith('bosch') and
+            not brand_lower.startswith('kamaz') and
+            not brand_lower.startswith('leo trade') and
+            not brand_lower.startswith('prc') and
+            not brand_lower.startswith('shaanxi') and
+            not brand_lower.startswith('shacman') and
+            not brand_lower.startswith('sitrak') and
+            not brand_lower.startswith('weichai') and
+            not brand_lower.startswith('zg.link') and
+            not brand_lower.startswith('ast') and
+            not brand_lower.startswith('foton') and
+            not brand_lower.startswith('htp') and
+            not brand_lower.startswith('jmc') and
+            not brand_lower.startswith('shaft-gear') and
+            not brand_lower.startswith('wayteko') and
+            not brand_lower.startswith('zevs') and
             not brand_lower.startswith('jac') and
-            not brand_lower.startswith('autocomponent')):
+            not brand_lower.startswith('faw') and
+            not brand_lower.startswith('gspartshinotoyota') and
+            not brand_lower.startswith('gspartshino') and
+            not brand_lower.startswith('toyota / lexus') and
+            not brand_lower.startswith('toyota/lexus') and
+            not brand_lower.startswith('gspartshinotoyota / lexus') and
+            not brand_lower.startswith('gspartshinotoyota/lexus')):
             filtered_brands.add(brand_clean)
     
-    return sorted(filtered_brands) if filtered_brands else []
+    return sorted(list(filtered_brands))
 
 def split_combined_brands(brands: List[str]) -> List[str]:
     """Разделяет объединенные бренды на отдельные"""
@@ -478,7 +517,9 @@ def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None) -> L
                             brands = [brand.strip() for brand in data['brands'] if brand.strip()]
                             if brands:
                                 log_debug(f"Armtek API: найдено {len(brands)} брендов")
-                                return filter_armtek_brands(brands)
+                                # Применяем разделение объединенных брендов
+                                split_brands = split_combined_brands(brands)
+                                return filter_armtek_brands(split_brands)
                     else:
                         log_debug(f"Armtek API: неверный content-type: {content_type}")
                 except json.JSONDecodeError as e:
@@ -497,7 +538,9 @@ def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None) -> L
                 brands = parse_armtek_http_response(response.text, artikul)
                 if brands:
                     log_debug(f"Armtek HTTP: найдено {len(brands)} брендов")
-                    return brands
+                    # Применяем разделение объединенных брендов
+                    split_brands = split_combined_brands(brands)
+                    return filter_armtek_brands(split_brands)
         except Exception as e:
             log_debug(f"Armtek HTTP: ошибка {str(e)}")
         
@@ -506,7 +549,10 @@ def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None) -> L
         brands = parse_armtek_selenium(artikul, proxy)
         if brands:
             log_debug(f"Armtek Selenium: найдено {len(brands)} брендов")
-        return brands
+            # Применяем разделение объединенных брендов
+            split_brands = split_combined_brands(brands)
+            return filter_armtek_brands(split_brands)
+        return []
         
     except Exception as e:
         log_debug(f"Ошибка Armtek для {artikul}: {str(e)}")
@@ -697,22 +743,36 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
             '.brand-name',
             '.brand',
             '.make',
-            '.manufacturer'
+            '.manufacturer',
+            '.vendor',
+            '.producer',
+            '.manufacturer-name',
+            '.vendor-title',
+            '.item-brand',
+            '.brand__name'
         ]
         
         brands = set()
         for selector in brand_selectors:
-            elements = soup.select(selector)
-            for element in elements:
-                brand_text = element.get_text(strip=True)
-                if brand_text and len(brand_text) > 1:
-                    brands.add(brand_text)
+            for tag in soup.select(selector):
+                brand = tag.get_text(strip=True)
+                if brand and len(brand) > 2 and not brand.isdigit():
+                    brands.add(brand)
         
-        # Фильтруем бренды
-        filtered_brands = filter_armtek_brands(list(brands))
-        log_debug(f"Armtek Selenium: найдены бренды {filtered_brands}")
+        # Поиск по тексту если не нашли бренды
+        if not brands:
+            brand_pattern = re.compile(r'(бренд|производитель|brand|manufacturer)', re.IGNORECASE)
+            for tag in soup.find_all(['span', 'div', 'a', 'h3', 'h4', 'h5']):
+                text = tag.get_text(strip=True)
+                if text and len(text) > 2 and len(text) < 50:
+                    if not brand_pattern.search(text) and not any(char.isdigit() for char in text):
+                        brands.add(text)
         
-        return filtered_brands
+        log_debug(f"Armtek Selenium: найдены бренды {list(brands)}")
+        
+        # Применяем разделение объединенных брендов
+        split_brands = split_combined_brands(list(brands))
+        return filter_armtek_brands(split_brands)
         
     except Exception as e:
         log_debug(f"Armtek Selenium error: {str(e)}")
@@ -723,6 +783,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
                 driver.quit()
             except:
                 pass
+        # Очищаем временную директорию
         try:
             import shutil
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -814,17 +875,100 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
         'автодеталь', 'автокомпонент плюс', 'камаз', 'наконечник правый', 'наконечник рулевой п',
         'наконечник рулевой тяги, rh', 'наконечник рулевой тяги, rh hino', 'pyчнoй тoпливoпoдкaчивaющий нacoc',
         'сезонные товары', 'шины и диски', 'колпачок маслосъемный', 'невский фильтр',
-        'подушка дизеля боковая tk smx', 'сальник распредвала', 'сезонные товары', 'шины и диски'
+        'подушка дизеля боковая tk smx', 'сальник распредвала', 'сезонные товары', 'шины и диски',
+        'корпус межосевого дифференциала', 'нет в наличии', 'или выбрать другой удобный для вас способ',
+        'каталоги', 'оплата', 'популярные категории', 'строительство и ремонт', 'электрика и свет',
+        'палец sitrak', 'переключатели подрулевые в сборе', 'дизель', 'мтз', 'сад и огород',
+        'fmsi', 'ac delco', 'achim', 'achr', 'b-tech', 'beru', 'champion', 'chery', 'dragonzap',
+        'ford', 'hot-parts', 'lucas', 'mobis', 'ngk', 'nissan', 'robiton', 'tesla', 'trw', 'vag',
+        'valeo', 'auto-comfort', 'autotech', 'createk', 'howo', 'kamaz', 'leo trade', 'prc',
+        'shaanxi', 'shacman', 'sitrak', 'weichai', 'zg.link', 'ast', 'foton', 'htp', 'jmc',
+        'shaft-gear', 'wayteko', 'zevs', 'jac', 'faw', 'gspartshinotoyota', 'gspartshino',
+        'toyota / lexus', 'toyota/lexus', 'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus',
+        'наконечник правый', 'наконечник рулевой п', 'наконечник рулевой тяги, rh', 'наконечник рулевой тяги, rh hino',
+        'pyчнoй тoпливoпoдкaчивaющий нacoc', 'сезонные товары', 'шины и диски', 'колпачок маслосъемный',
+        'невский фильтр', 'подушка дизеля боковая tk smx', 'сальник распредвала', 'сезонные товары',
+        'шины и диски', 'корпус межосевого дифференциала', 'нет в наличии', 'или выбрать другой удобный для вас способ',
+        'каталоги', 'оплата', 'популярные категории', 'строительство и ремонт', 'электрика и свет',
+        'палец sitrak', 'переключатели подрулевые в сборе', 'дизель', 'мтз', 'сад и огород',
+        'fmsi', 'ac delco', 'achim', 'achr', 'b-tech', 'beru', 'champion', 'chery', 'dragonzap',
+        'ford', 'hot-parts', 'lucas', 'mobis', 'ngk', 'nissan', 'robiton', 'tesla', 'trw', 'vag',
+        'valeo', 'auto-comfort', 'autotech', 'createk', 'howo', 'kamaz', 'leo trade', 'prc',
+        'shaanxi', 'shacman', 'sitrak', 'weichai', 'zg.link', 'ast', 'foton', 'htp', 'jmc',
+        'shaft-gear', 'wayteko', 'zevs', 'jac', 'faw', 'gspartshinotoyota', 'gspartshino',
+        'toyota / lexus', 'toyota/lexus', 'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus'
     }
     
     for brand in brands:
         brand_clean = brand.strip()
+        brand_lower = brand_clean.lower()
+        
+        # Проверяем, что бренд не является "мусором"
         if (brand_clean and 
             len(brand_clean) > 2 and 
-            brand_clean.lower() not in exclude_words and
+            brand_lower not in exclude_words and
             not any(char.isdigit() for char in brand_clean) and
             not brand_clean.startswith('...') and
-            not brand_clean.endswith('...')):
+            not brand_clean.endswith('...') and
+            not brand_lower.startswith('корпус межосевого дифференциала') and
+            not brand_lower.startswith('нет в наличии') and
+            not brand_lower.startswith('или выбрать другой удобный для вас способ') and
+            not brand_lower.startswith('каталоги') and
+            not brand_lower.startswith('оплата') and
+            not brand_lower.startswith('популярные категории') and
+            not brand_lower.startswith('строительство и ремонт') and
+            not brand_lower.startswith('электрика и свет') and
+            not brand_lower.startswith('палец sitrak') and
+            not brand_lower.startswith('дизель') and
+            not brand_lower.startswith('мтз') and
+            not brand_lower.startswith('сад и огород') and
+            not brand_lower.startswith('fmsi') and
+            not brand_lower.startswith('ac delco') and
+            not brand_lower.startswith('achim') and
+            not brand_lower.startswith('achr') and
+            not brand_lower.startswith('b-tech') and
+            not brand_lower.startswith('beru') and
+            not brand_lower.startswith('champion') and
+            not brand_lower.startswith('chery') and
+            not brand_lower.startswith('dragonzap') and
+            not brand_lower.startswith('ford') and
+            not brand_lower.startswith('hot-parts') and
+            not brand_lower.startswith('lucas') and
+            not brand_lower.startswith('mobis') and
+            not brand_lower.startswith('ngk') and
+            not brand_lower.startswith('nissan') and
+            not brand_lower.startswith('robiton') and
+            not brand_lower.startswith('tesla') and
+            not brand_lower.startswith('trw') and
+            not brand_lower.startswith('vag') and
+            not brand_lower.startswith('valeo') and
+            not brand_lower.startswith('auto-comfort') and
+            not brand_lower.startswith('autotech') and
+            not brand_lower.startswith('createk') and
+            not brand_lower.startswith('howo') and
+            not brand_lower.startswith('kamaz') and
+            not brand_lower.startswith('leo trade') and
+            not brand_lower.startswith('prc') and
+            not brand_lower.startswith('shaanxi') and
+            not brand_lower.startswith('shacman') and
+            not brand_lower.startswith('sitrak') and
+            not brand_lower.startswith('weichai') and
+            not brand_lower.startswith('zg.link') and
+            not brand_lower.startswith('ast') and
+            not brand_lower.startswith('foton') and
+            not brand_lower.startswith('htp') and
+            not brand_lower.startswith('jmc') and
+            not brand_lower.startswith('shaft-gear') and
+            not brand_lower.startswith('wayteko') and
+            not brand_lower.startswith('zevs') and
+            not brand_lower.startswith('jac') and
+            not brand_lower.startswith('faw') and
+            not brand_lower.startswith('gspartshinotoyota') and
+            not brand_lower.startswith('gspartshino') and
+            not brand_lower.startswith('toyota / lexus') and
+            not brand_lower.startswith('toyota/lexus') and
+            not brand_lower.startswith('gspartshinotoyota / lexus') and
+            not brand_lower.startswith('gspartshinotoyota/lexus')):
             filtered.append(brand_clean)
     
     return filtered
@@ -880,7 +1024,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             response = requests.get(
                 api_url,
                 headers=headers,
-                timeout=30  # Увеличиваем таймаут до 30 секунд
+                timeout=20  # Увеличиваем таймаут до 20 секунд
             )
             
             if response.status_code == 200:
@@ -898,55 +1042,47 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                     
                     if not brands:
                         details_list = data.get("searchResult", {}).get("details", [])
-                        for item in details_list:
-                            if "make" in item and "name" in item["make"]:
-                                brand = item["make"]["name"]
+                        for detail in details_list:
+                            if "make" in detail:
+                                brand = detail["make"]
                                 if brand:
                                     brands.add(brand)
                     
                     if not brands:
-                        brands_list = data.get("brands", [])
-                        for brand in brands_list:
-                            if isinstance(brand, str):
-                                brands.add(brand)
+                        # Попробуем найти в других полях
+                        for key, value in data.items():
+                            if isinstance(value, dict):
+                                for sub_key, sub_value in value.items():
+                                    if isinstance(sub_value, list):
+                                        for item in sub_value:
+                                            if isinstance(item, dict) and "make" in item:
+                                                brand = item["make"]
+                                                if brand:
+                                                    brands.add(brand)
                     
                     log_debug(f"Emex API: найдено {len(brands)} брендов")
-                    return sorted(brands)
-                except json.JSONDecodeError:
-                    log_debug("Emex API: ошибка декодирования JSON")
+                    return sorted(list(brands))
+                    
+                except json.JSONDecodeError as e:
+                    log_debug(f"Emex API: ошибка декодирования JSON: {str(e)}")
+                    log_debug(f"Emex API: ответ: {response.text[:200]}...")
+            else:
+                log_debug(f"Emex API: статус {response.status_code}")
+                
         except requests.exceptions.Timeout:
-            log_debug(f"Emex API: таймаут без прокси для {artikul}")
-        except Exception as e:
-            log_debug(f"Emex API: ошибка без прокси: {str(e)}")
+            log_debug(f"Emex API: таймаут для {artikul}")
+        except requests.exceptions.RequestException as e:
+            log_debug(f"Emex API: ошибка запроса: {str(e)}")
         
-        # Если не получилось, пробуем с прокси
+        # Если API не работает, пробуем с прокси
         if proxy:
             try:
                 log_debug(f"[API] Emex: попытка 2 с прокси для {artikul}")
-                
-                # Настройка прокси для requests
-                if '@' in proxy:
-                    proxy_parts = proxy.split('@')
-                    proxy_url = proxy_parts[0]
-                    auth_parts = proxy_parts[1].split(':')
-                    username = auth_parts[0]
-                    password = auth_parts[1]
-                    
-                    proxy_dict = {
-                        'http': f'http://{username}:{password}@{proxy_url}',
-                        'https': f'http://{username}:{password}@{proxy_url}'
-                    }
-                else:
-                    proxy_dict = {
-                        'http': f'http://{proxy}',
-                        'https': f'http://{proxy}'
-                    }
-                
                 response = requests.get(
                     api_url,
                     headers=headers,
-                    proxies=proxy_dict,
-                    timeout=30  # Увеличиваем таймаут до 30 секунд
+                    proxies=proxy,
+                    timeout=20  # Увеличиваем таймаут до 20 секунд
                 )
                 
                 if response.status_code == 200:
@@ -964,27 +1100,39 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                         
                         if not brands:
                             details_list = data.get("searchResult", {}).get("details", [])
-                            for item in details_list:
-                                if "make" in item and "name" in item["make"]:
-                                    brand = item["make"]["name"]
+                            for detail in details_list:
+                                if "make" in detail:
+                                    brand = detail["make"]
                                     if brand:
                                         brands.add(brand)
                         
                         if not brands:
-                            brands_list = data.get("brands", [])
-                            for brand in brands_list:
-                                if isinstance(brand, str):
-                                    brands.add(brand)
+                            # Попробуем найти в других полях
+                            for key, value in data.items():
+                                if isinstance(value, dict):
+                                    for sub_key, sub_value in value.items():
+                                        if isinstance(sub_value, list):
+                                            for item in sub_value:
+                                                if isinstance(item, dict) and "make" in item:
+                                                    brand = item["make"]
+                                                    if brand:
+                                                        brands.add(brand)
                         
-                        log_debug(f"Emex API с прокси: найдено {len(brands)} брендов")
-                        return sorted(brands)
-                    except json.JSONDecodeError:
-                        log_debug("Emex API: ошибка декодирования JSON")
+                        log_debug(f"Emex API (с прокси): найдено {len(brands)} брендов")
+                        return sorted(list(brands))
+                        
+                    except json.JSONDecodeError as e:
+                        log_debug(f"Emex API (с прокси): ошибка декодирования JSON: {str(e)}")
+                        log_debug(f"Emex API (с прокси): ответ: {response.text[:200]}...")
+                else:
+                    log_debug(f"Emex API (с прокси): статус {response.status_code}")
+                    
             except requests.exceptions.Timeout:
-                log_debug(f"Emex API: таймаут с прокси для {artikul}")
-            except Exception as e:
-                log_debug(f"Emex API: ошибка с прокси: {str(e)}")
+                log_debug(f"Emex API (с прокси): таймаут для {artikul}")
+            except requests.exceptions.RequestException as e:
+                log_debug(f"Emex API (с прокси): ошибка запроса: {str(e)}")
         
+        log_debug(f"Emex: не удалось получить бренды для {artikul}")
         return []
         
     except Exception as e:
