@@ -896,7 +896,23 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
         'valeo', 'auto-comfort', 'autotech', 'createk', 'howo', 'kamaz', 'leo trade', 'prc',
         'shaanxi', 'shacman', 'sitrak', 'weichai', 'zg.link', 'ast', 'foton', 'htp', 'jmc',
         'shaft-gear', 'wayteko', 'zevs', 'jac', 'faw', 'gspartshinotoyota', 'gspartshino',
-        'toyota / lexus', 'toyota/lexus', 'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus'
+        'toyota / lexus', 'toyota/lexus', 'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus',
+        # Добавляем новые "мусорные" бренды из логов
+        'telegramwhatsapp', 'грузовые запчасти', 'выбор armtekсортировать по:выбор armtek',
+        'каталогглавнаяподборкорзинагаражвойти', 'мы используем cookies, чтобы сайт был лучшехорошо',
+        'прокладка гбц на hino hino', 'прокладка гбц производства японии', 'прокладка клапанной крышки',
+        'колпачок маслосъемный', 'о-кольцо стержня капана (victor reinz)', 'прокладка гбц',
+        'прокладка', 'гбц', 'клапанной крышки', 'стержня капана', 'victor reinz', 'кольцо',
+        'маслосъемный', 'капана', 'стержня', 'крышки', 'клапанной', 'производства японии',
+        'японии', 'производства', 'hino hino', 'на hino', 'гбц на', 'гбц производства',
+        'прокладка гбц на', 'прокладка гбц производства', 'прокладка клапанной',
+        'о-кольцо стержня', 'кольцо стержня', 'стержня капана (victor reinz)',
+        'капана (victor reinz)', '(victor reinz)', 'victor', 'reinz', 'кольцо стержня капана',
+        'о-кольцо', 'кольцо', 'стержня', 'капана', 'victor reinz', 'маслосъемный колпачок',
+        'колпачок маслосъемный', 'маслосъемный', 'колпачок', 'крышки клапанной',
+        'клапанной крышки', 'крышки', 'клапанной', 'производства', 'японии', 'hino',
+        'гбц', 'прокладка', 'кольцо', 'стержня', 'капана', 'victor', 'reinz', 'маслосъемный',
+        'колпачок', 'крышки', 'клапанной', 'производства', 'японии', 'hino', 'гбц', 'прокладка'
     }
     
     for brand in brands:
@@ -910,6 +926,80 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
             not any(char.isdigit() for char in brand_clean) and
             not brand_clean.startswith('...') and
             not brand_clean.endswith('...') and
+            # Дополнительные проверки для новых "мусорных" брендов
+            not brand_lower.startswith('telegramwhatsapp') and
+            not brand_lower.startswith('грузовые запчасти') and
+            not brand_lower.startswith('выбор armtekсортировать по:выбор armtek') and
+            not brand_lower.startswith('каталогглавнаяподборкорзинагаражвойти') and
+            not brand_lower.startswith('мы используем cookies, чтобы сайт был лучшехорошо') and
+            not brand_lower.startswith('прокладка гбц на hino hino') and
+            not brand_lower.startswith('прокладка гбц производства японии') and
+            not brand_lower.startswith('прокладка клапанной крышки') and
+            not brand_lower.startswith('колпачок маслосъемный') and
+            not brand_lower.startswith('о-кольцо стержня капана (victor reinz)') and
+            not brand_lower.startswith('прокладка гбц') and
+            not brand_lower.startswith('прокладка') and
+            not brand_lower.startswith('гбц') and
+            not brand_lower.startswith('клапанной крышки') and
+            not brand_lower.startswith('стержня капана') and
+            not brand_lower.startswith('victor reinz') and
+            not brand_lower.startswith('кольцо') and
+            not brand_lower.startswith('маслосъемный') and
+            not brand_lower.startswith('капана') and
+            not brand_lower.startswith('стержня') and
+            not brand_lower.startswith('крышки') and
+            not brand_lower.startswith('клапанной') and
+            not brand_lower.startswith('производства японии') and
+            not brand_lower.startswith('японии') and
+            not brand_lower.startswith('производства') and
+            not brand_lower.startswith('hino hino') and
+            not brand_lower.startswith('на hino') and
+            not brand_lower.startswith('гбц на') and
+            not brand_lower.startswith('гбц производства') and
+            not brand_lower.startswith('прокладка гбц на') and
+            not brand_lower.startswith('прокладка гбц производства') and
+            not brand_lower.startswith('прокладка клапанной') and
+            not brand_lower.startswith('о-кольцо стержня') and
+            not brand_lower.startswith('кольцо стержня') and
+            not brand_lower.startswith('стержня капана (victor reinz)') and
+            not brand_lower.startswith('капана (victor reinz)') and
+            not brand_lower.startswith('(victor reinz)') and
+            not brand_lower.startswith('victor') and
+            not brand_lower.startswith('reinz') and
+            not brand_lower.startswith('кольцо стержня капана') and
+            not brand_lower.startswith('о-кольцо') and
+            not brand_lower.startswith('кольцо') and
+            not brand_lower.startswith('стержня') and
+            not brand_lower.startswith('капана') and
+            not brand_lower.startswith('victor reinz') and
+            not brand_lower.startswith('маслосъемный колпачок') and
+            not brand_lower.startswith('колпачок маслосъемный') and
+            not brand_lower.startswith('маслосъемный') and
+            not brand_lower.startswith('колпачок') and
+            not brand_lower.startswith('крышки клапанной') and
+            not brand_lower.startswith('клапанной крышки') and
+            not brand_lower.startswith('крышки') and
+            not brand_lower.startswith('клапанной') and
+            not brand_lower.startswith('производства') and
+            not brand_lower.startswith('японии') and
+            not brand_lower.startswith('hino') and
+            not brand_lower.startswith('гбц') and
+            not brand_lower.startswith('прокладка') and
+            not brand_lower.startswith('кольцо') and
+            not brand_lower.startswith('стержня') and
+            not brand_lower.startswith('капана') and
+            not brand_lower.startswith('victor') and
+            not brand_lower.startswith('reinz') and
+            not brand_lower.startswith('маслосъемный') and
+            not brand_lower.startswith('колпачок') and
+            not brand_lower.startswith('крышки') and
+            not brand_lower.startswith('клапанной') and
+            not brand_lower.startswith('производства') and
+            not brand_lower.startswith('японии') and
+            not brand_lower.startswith('hino') and
+            not brand_lower.startswith('гбц') and
+            not brand_lower.startswith('прокладка') and
+            # Оригинальные проверки
             not brand_lower.startswith('корпус межосевого дифференциала') and
             not brand_lower.startswith('нет в наличии') and
             not brand_lower.startswith('или выбрать другой удобный для вас способ') and
