@@ -106,46 +106,27 @@ def get_next_proxy() -> Optional[Dict[str, str]]:
 def cleanup_chrome_processes():
     """Принудительно очищает процессы Chrome и временные директории"""
     try:
-        # Убиваем все процессы Chrome более агрессивно
+        # Убиваем все процессы Chrome более эффективно
         subprocess.run(['pkill', '-9', '-f', 'chrome'], 
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
         subprocess.run(['pkill', '-9', '-f', 'chromedriver'], 
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
         subprocess.run(['pkill', '-9', '-f', 'chromium'], 
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
         
-        # Очищаем временные директории Chrome
-        temp_dirs = [
-            '/tmp/.com.google.Chrome*',
-            '/tmp/.org.chromium.Chromium*',
-            '/tmp/chrome_*',
-            '/tmp/chromium_*',
-            '/tmp/.X*',
-            '/tmp/.org.chromium.Chromium*',
-            '/tmp/.com.google.Chrome*',
-            '/tmp/chrome_*',
-            '/tmp/chromium_*',
-            '/tmp/.X*',
-            '/tmp/.org.chromium.Chromium*',
-            '/tmp/.com.google.Chrome*',
-            '/tmp/chrome_*',
-            '/tmp/chromium_*',
-            '/tmp/.X*'
+        # Очищаем временные директории Chrome более эффективно
+        temp_patterns = [
+            '.com.google.Chrome*',
+            '.org.chromium.Chromium*',
+            'chrome_*',
+            'chromium_*'
         ]
         
-        for pattern in temp_dirs:
+        for pattern in temp_patterns:
             try:
-                # Находим все файлы и директории по паттерну
-                result = subprocess.run(['find', '/tmp', '-name', pattern.split('/')[-1], '-type', 'd'], 
-                                      capture_output=True, text=True, timeout=10)
-                if result.stdout:
-                    for path in result.stdout.strip().split('\n'):
-                        if path:
-                            try:
-                                subprocess.run(['rm', '-rf', path], 
-                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
-                            except:
-                                pass
+                # Более быстрая очистка с единой командой
+                subprocess.run(['find', '/tmp', '-name', pattern, '-type', 'd', '-exec', 'rm', '-rf', '{}', '+'], 
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
             except:
                 pass
         
@@ -350,7 +331,14 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
         'valeo', 'auto-comfort', 'autotech', 'createk', 'howo', 'kamaz', 'leo trade', 'prc',
         'shaanxi', 'shacman', 'sitrak', 'weichai', 'zg.link', 'ast', 'foton', 'htp', 'jmc',
         'shaft-gear', 'wayteko', 'zevs', 'jac', 'faw', 'gspartshinotoyota', 'gspartshino',
-        'toyota / lexus', 'toyota/lexus', 'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus'
+        'toyota / lexus', 'toyota/lexus', 'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus',
+        # Новые мусорные бренды из последних логов
+        'new', 'хорошо', 'корзина', 'cookies', 'сайт был лучше', 'лучше', 'был', 'сайт',
+        'telegram', 'whatsapp', 'запчасти', 'грузовые', 'сортировать по', 'сортировать',
+        'выбор', 'armtek', 'каталог', 'главная', 'подбор', 'гараж', 'войти',
+        'мы используем', 'используем', 'чтобы', 'был лучше', 'лучшехорошо',
+        'telegramwhatsapp', 'грузовые запчасти', 'выбор armtek', 'сортировать по:выбор armtek',
+        'каталогглавнаяподборкорзинагаражвойти', 'мы используем cookies, чтобы сайт был лучшехорошо'
     }
     
     for brand in brands:
@@ -461,7 +449,27 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             not brand_lower.startswith('toyota / lexus') and
             not brand_lower.startswith('toyota/lexus') and
             not brand_lower.startswith('gspartshinotoyota / lexus') and
-            not brand_lower.startswith('gspartshinotoyota/lexus')):
+            not brand_lower.startswith('gspartshinotoyota/lexus') and
+            # Новые проверки для мусорных брендов из логов
+            not brand_lower.startswith('new') and
+            not brand_lower.startswith('хорошо') and
+            not brand_lower.startswith('telegram') and
+            not brand_lower.startswith('whatsapp') and
+            not brand_lower.startswith('telegramwhatsapp') and
+            not brand_lower.startswith('грузовые') and
+            not brand_lower.startswith('сортировать') and
+            not brand_lower.startswith('выбор') and
+            not brand_lower.startswith('armtek') and
+            not brand_lower.startswith('подбор') and
+            not brand_lower.startswith('мы используем') and
+            not brand_lower.startswith('используем') and
+            not brand_lower.startswith('cookies') and
+            not brand_lower.startswith('сайт был') and
+            not brand_lower.startswith('лучше') and
+            not brand_lower.startswith('был') and
+            not brand_lower.startswith('сайт') and
+            not brand_lower.startswith('чтобы') and
+            not brand_lower.startswith('лучшехорошо')):
             filtered_brands.add(brand_clean)
     
     return sorted(list(filtered_brands))
@@ -651,7 +659,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
     try:
         # Принудительная очистка перед запуском
         cleanup_chrome_processes()
-        time.sleep(5)  # Увеличиваем время ожидания
+        time.sleep(2)  # Уменьшаем время ожидания для ускорения
         
         # Пробуем несколько способов инициализации драйвера
         driver_init_methods = [
@@ -912,7 +920,13 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
         'колпачок маслосъемный', 'маслосъемный', 'колпачок', 'крышки клапанной',
         'клапанной крышки', 'крышки', 'клапанной', 'производства', 'японии', 'hino',
         'гбц', 'прокладка', 'кольцо', 'стержня', 'капана', 'victor', 'reinz', 'маслосъемный',
-        'колпачок', 'крышки', 'клапанной', 'производства', 'японии', 'hino', 'гбц', 'прокладка'
+        'колпачок', 'крышки', 'клапанной', 'производства', 'японии', 'hino', 'гбц', 'прокладка',
+        # Новые мусорные бренды из последних логов
+        'new', 'хорошо', 'корзина', 'cookies', 'сайт был лучше', 'лучше', 'был', 'сайт',
+        'telegram', 'whatsapp', 'запчасти', 'грузовые', 'сортировать по', 'сортировать',
+        'выбор', 'armtek', 'каталог', 'главная', 'подбор', 'гараж', 'войти',
+        'мы используем', 'используем', 'чтобы', 'был лучше', 'лучшехорошо',
+        'gspartshinotoyota', 'gspartshino', 'toyota', 'lexus', 'toyota / lexus', 'toyota/lexus'
     }
     
     for brand in brands:
@@ -928,10 +942,23 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
             not brand_clean.endswith('...') and
             # Дополнительные проверки для новых "мусорных" брендов
             not brand_lower.startswith('telegramwhatsapp') and
+            not brand_lower.startswith('telegram') and
+            not brand_lower.startswith('whatsapp') and
             not brand_lower.startswith('грузовые запчасти') and
+            not brand_lower.startswith('грузовые') and
+            not brand_lower.startswith('запчасти') and
             not brand_lower.startswith('выбор armtekсортировать по:выбор armtek') and
+            not brand_lower.startswith('выбор armtek') and
+            not brand_lower.startswith('сортировать по') and
             not brand_lower.startswith('каталогглавнаяподборкорзинагаражвойти') and
             not brand_lower.startswith('мы используем cookies, чтобы сайт был лучшехорошо') and
+            not brand_lower.startswith('мы используем cookies') and
+            not brand_lower.startswith('мы используем') and
+            not brand_lower.startswith('cookies') and
+            not brand_lower.startswith('сайт был лучше') and
+            not brand_lower.startswith('хорошо') and
+            not brand_lower.startswith('корзина') and
+            not brand_lower.startswith('new') and
             not brand_lower.startswith('прокладка гбц на hino hino') and
             not brand_lower.startswith('прокладка гбц производства японии') and
             not brand_lower.startswith('прокладка клапанной крышки') and
@@ -948,6 +975,7 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
             not brand_lower.startswith('капана') and
             not brand_lower.startswith('стержня') and
             not brand_lower.startswith('крышки') and
+            not brand_lower.startswith('gsparts') and
             not brand_lower.startswith('клапанной') and
             not brand_lower.startswith('производства японии') and
             not brand_lower.startswith('японии') and
