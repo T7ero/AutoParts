@@ -8,7 +8,8 @@ from .autopiter_parser import (
     get_brands_by_artikul_emex, 
     cleanup_chrome_processes,
     get_next_proxy,
-    load_proxies_from_file
+    load_proxies_from_file,
+    log_debug
 )
 import re
 import concurrent.futures
@@ -30,13 +31,97 @@ def clean_excel_string(s):
         cleaned = cleaned[:32000]
     return cleaned
 
+def filter_garbage_brands(brands: List[str]) -> List[str]:
+    """Фильтрует мусорные бренды из результатов Autopiter и Emex"""
+    garbage_words = {
+        'артикул', 'тестовый', 'клиента', 'ремень', 'грм', 'без артикула', 'оригинальная',
+        'крышка', 'решетки', 'фен', 'строительный', 'полироль', 'mat', 'номер', 'корея',
+        'русская', 'артель', 'освар', 'plak', 'zabectuaptukyl', 'zikmar', 'plak',
+        'testartikul', 'euroflextestartikul', 'тестовый артикул', 'артикул клиента',
+        'артикул №', 'без артикула', 'оригинальная', 'артикул', 'см предыдущий артикул',
+        'new', 'хорошо', 'корзина', 'cookies', 'сайт был лучше', 'лучше', 'был', 'сайт',
+        'telegram', 'whatsapp', 'запчасти', 'грузовые', 'сортировать по', 'сортировать',
+        'выбор', 'armtek', 'каталог', 'главная', 'подбор', 'гараж', 'войти',
+        'мы используем', 'используем', 'чтобы', 'был лучше', 'лучшехорошо',
+        'как сделать заказ', 'аксессуары', 'dragonflys', 'грузовые запчасти',
+        'оплата', 'доставка', 'возврат', 'гарантийная политика', 'контакты',
+        'новости', 'акции', 'партнерам', 'поставщикам', 'покупателям', 'реклама на сайте',
+        'программа лояльности', 'правовая информация', 'о компании', 'работа в компании',
+        'китайские авто', 'новые товары', 'популярные товары', 'сезонные товары',
+        'моторные масла', 'аккумуляторы', 'инструмент', 'автохимия', 'автокосметика',
+        'автоглушитель', 'автокомпонент', 'автодеталь', 'автокомпонент плюс',
+        'автокомпонент', 'компонент', 'автодеталь', 'автокомпонент плюс',
+        'наконечник правый', 'наконечник рулевой п', 'наконечник рулевой тяги',
+        'pyчнoй тoпливoпoдкaчивaющий нacoc', 'шины и диски', 'колпачок маслосъемный',
+        'невский фильтр', 'подушка дизеля боковая', 'сальник распредвала',
+        'корпус межосевого дифференциала', 'нет в наличии', 'или выбрать другой удобный для вас способ',
+        'каталоги', 'популярные категории', 'строительство и ремонт', 'электрика и свет',
+        'палец sitrak', 'переключатели подрулевые в сборе', 'дизель', 'мтз', 'сад и огород',
+        'fmsi', 'ac delco', 'achim', 'achr', 'b-tech', 'beru', 'champion', 'chery', 'dragonzap',
+        'ford', 'hot-parts', 'lucas', 'mobis', 'ngk', 'nissan', 'robiton', 'tesla', 'trw', 'vag',
+        'valeo', 'auto-comfort', 'autotech', 'createk', 'howo', 'kamaz', 'leo trade', 'prc',
+        'shaanxi', 'shacman', 'sitrak', 'weichai', 'zg.link', 'ast', 'foton', 'htp', 'jmc',
+        'shaft-gear', 'wayteko', 'zevs', 'jac', 'faw', 'gspartshinotoyota', 'gspartshino',
+        'toyota / lexus', 'toyota/lexus', 'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus',
+        'telegramwhatsapp', 'грузовые запчасти', 'выбор armtekсортировать по:выбор armtek',
+        'каталогглавнаяподборкорзинагаражвойти', 'мы используем cookies, чтобы сайт был лучшехорошо',
+        'прокладка гбц на hino hino', 'прокладка гбц производства японии', 'прокладка клапанной крышки',
+        'колпачок маслосъемный', 'о-кольцо стержня капана (victor reinz)', 'прокладка гбц',
+        'прокладка', 'гбц', 'клапанной крышки', 'стержня капана', 'victor reinz', 'кольцо',
+        'маслосъемный', 'капана', 'стержня', 'крышки', 'клапанной', 'производства японии',
+        'японии', 'производства', 'hino hino', 'на hino', 'гбц на', 'гбц производства',
+        'прокладка гбц на', 'прокладка гбц производства', 'прокладка клапанной',
+        'о-кольцо стержня', 'кольцо стержня', 'стержня капана (victor reinz)',
+        'капана (victor reinz)', '(victor reinz)', 'victor', 'reinz', 'кольцо стержня капана',
+        'о-кольцо', 'кольцо', 'стержня', 'капана', 'victor reinz', 'маслосъемный колпачок',
+        'колпачок маслосъемный', 'маслосъемный', 'колпачок', 'крышки клапанной',
+        'клапанной крышки', 'крышки', 'клапанной', 'производства', 'японии', 'hino',
+        'гбц', 'прокладка', 'кольцо', 'стержня', 'капана', 'victor', 'reinz', 'маслосъемный',
+        'колпачок', 'крышки', 'клапанной', 'производства', 'японии', 'hino', 'гбц', 'прокладка'
+    }
+    
+    filtered = []
+    for brand in brands:
+        brand_clean = brand.strip()
+        if not brand_clean:
+            continue
+            
+        brand_lower = brand_clean.lower()
+        
+        # Проверяем, что бренд не является мусором
+        if (brand_clean and 
+            len(brand_clean) > 2 and 
+            brand_lower not in garbage_words and
+            not any(char.isdigit() for char in brand_clean) and
+            not brand_clean.startswith('...') and
+            not brand_clean.endswith('...') and
+            not any(garbage in brand_lower for garbage in garbage_words)):
+            filtered.append(brand_clean)
+    
+    return filtered
+
 @shared_task(bind=True, time_limit=28800, soft_time_limit=27000)  # 8 часов максимум, 7.5 часа мягкий лимит
 def process_parsing_task(self, task_id):
-    task = ParsingTask.objects.get(id=task_id)
-    log_messages = []
+    # Проверяем, не завершена ли уже задача
+    try:
+        task = ParsingTask.objects.get(id=task_id)
+        if task.status == 'completed':
+            log_debug(f"Task {task_id} уже завершена, пропускаем повторную обработку")
+            return None
+        elif task.status == 'in_progress':
+            # Проверяем, не выполняется ли уже эта задача
+            log_debug(f"Task {task_id} уже выполняется, пропускаем повторную обработку")
+            return None
+    except ParsingTask.DoesNotExist:
+        log_debug(f"Task {task_id} не найдена")
+        return None
+    
+    # Отмечаем задачу как выполняющуюся
     task.status = 'in_progress'
     task.progress = 0
     task.save()
+    
+    log_messages = []
     channel_layer = get_channel_layer()
     
     def ws_send():
@@ -183,8 +268,19 @@ def process_parsing_task(self, task_id):
                         # Параллельно Autopiter, Emex для текущего артикула
                         parallel_results = parse_all_parallel([current_number], brand_from_e, part_number_from_f, name_from_b)
                         
-                        # Обрабатываем результаты Autopiter для текущего артикула
+                        # Фильтруем мусорные бренды из результатов Autopiter
+                        filtered_autopiter = []
                         for (b1, pn1, n1, b2, pn2, src) in parallel_results['autopiter']:
+                            # Фильтруем бренд № 2 (результат парсинга)
+                            if b2 and b2.strip():
+                                filtered_brands = filter_garbage_brands([b2])
+                                if filtered_brands:
+                                    filtered_autopiter.append((b1, pn1, n1, filtered_brands[0], pn2, src))
+                            else:
+                                filtered_autopiter.append((b1, pn1, n1, b2, pn2, src))
+                        
+                        # Обрабатываем результаты Autopiter для текущего артикула
+                        for (b1, pn1, n1, b2, pn2, src) in filtered_autopiter:
                             key = (b1, pn1, n1, b2, pn2, src)
                             if key not in used_pairs:
                                 d = {
@@ -198,8 +294,19 @@ def process_parsing_task(self, task_id):
                                 results_autopiter.append(d)
                                 used_pairs.add(key)
                         
-                        # Обрабатываем результаты Emex для текущего артикула
+                        # Фильтруем мусорные бренды из результатов Emex
+                        filtered_emex = []
                         for (b1, pn1, n1, b2, pn2, src) in parallel_results['emex']:
+                            # Фильтруем бренд № 2 (результат парсинга)
+                            if b2 and b2.strip():
+                                filtered_brands = filter_garbage_brands([b2])
+                                if filtered_brands:
+                                    filtered_emex.append((b1, pn1, n1, filtered_brands[0], pn2, src))
+                            else:
+                                filtered_emex.append((b1, pn1, n1, b2, pn2, src))
+                        
+                        # Обрабатываем результаты Emex для текущего артикула
+                        for (b1, pn1, n1, b2, pn2, src) in filtered_emex:
                             key = (b1, pn1, n1, b2, pn2, src)
                             if key not in used_pairs:
                                 d = {
@@ -381,6 +488,18 @@ def process_parsing_task(self, task_id):
         
         # Очистка Chrome процессов
         cleanup_chrome_processes()
+        
+        # Финальная очистка и подтверждение завершения
+        log(f"Task {task_id} успешно завершена. Обработано строк: {task._processed_rows}")
+        
+        # Возвращаем результат для предотвращения повторного выполнения
+        return {
+            'status': 'completed',
+            'task_id': task_id,
+            'result_files': task.result_files,
+            'processed_rows': task._processed_rows,
+            'message': 'Task completed successfully'
+        }
         
     except Exception as e:
         task.status = 'error'

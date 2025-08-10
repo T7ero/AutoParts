@@ -233,11 +233,14 @@ CELERY_RESULT_SERIALIZER = 'json'
 
 # Оптимизация для ограниченных ресурсов
 CELERY_WORKER_CONCURRENCY = 1  # Один воркер для экономии памяти
-CELERY_WORKER_MAX_TASKS_PER_CHILD = 10  # Перезапуск воркера после 10 задач
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 1  # Перезапуск воркера после каждой задачи для предотвращения накопления памяти
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1  # Берем только одну задачу за раз
-CELERY_TASK_ACKS_LATE = True  # Подтверждаем задачу только после выполнения
+CELERY_TASK_ACKS_LATE = False  # Подтверждаем задачу сразу для предотвращения повторного выполнения
 CELERY_WORKER_DISABLE_RATE_LIMITS = True  # Отключаем ограничения скорости
-CELERY_TASK_TIME_LIMIT = 3600  # Максимальное время выполнения задачи (1 час)
-CELERY_TASK_SOFT_TIME_LIMIT = 3000  # Мягкий лимит (50 минут)
+CELERY_TASK_TIME_LIMIT = 28800  # Максимальное время выполнения задачи (8 часов) - соответствует настройкам в tasks.py
+CELERY_TASK_SOFT_TIME_LIMIT = 27000  # Мягкий лимит (7.5 часов) - соответствует настройкам в tasks.py
 CELERY_WORKER_SEND_TASK_EVENTS = False  # Отключаем события для экономии ресурсов
-CELERY_TASK_IGNORE_RESULT = True  # Игнорируем результаты для экономии памяти
+CELERY_TASK_IGNORE_RESULT = False  # Сохраняем результаты для предотвращения повторного выполнения
+CELERY_TASK_REJECT_ON_WORKER_LOST = True  # Отклоняем задачи при потере воркера
+CELERY_TASK_ALWAYS_EAGER = False  # Не выполняем задачи синхронно
+CELERY_TASK_EAGER_PROPAGATES = True  # Пробрасываем исключения при синхронном выполнении
