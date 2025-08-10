@@ -36,9 +36,9 @@ HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 # Уменьшаем таймауты для ускорения работы
-TIMEOUT = 15  # Увеличиваем с 10 до 15 секунд для Emex
-SELENIUM_TIMEOUT = 15  # Уменьшаем с 20 до 15 секунд
-PAGE_LOAD_TIMEOUT = 15  # Увеличиваем с 10 до 15 секунд для Emex
+TIMEOUT = 10  # Уменьшаем с 15 до 10 секунд для ускорения
+SELENIUM_TIMEOUT = 10  # Уменьшаем с 15 до 10 секунд для ускорения
+PAGE_LOAD_TIMEOUT = 10  # Уменьшаем с 15 до 10 секунд для ускорения
 
 # Кеширование
 REQUEST_CACHE = {}
@@ -108,11 +108,11 @@ def cleanup_chrome_processes():
     try:
         # Убиваем все процессы Chrome более эффективно
         subprocess.run(['pkill', '-9', '-f', 'chrome'], 
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
         subprocess.run(['pkill', '-9', '-f', 'chromedriver'], 
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
         subprocess.run(['pkill', '-9', '-f', 'chromium'], 
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
         
         # Очищаем временные директории Chrome более эффективно
         temp_patterns = [
@@ -126,7 +126,7 @@ def cleanup_chrome_processes():
             try:
                 # Более быстрая очистка с единой командой
                 subprocess.run(['find', '/tmp', '-name', pattern, '-type', 'd', '-exec', 'rm', '-rf', '{}', '+'], 
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
             except:
                 pass
         
@@ -137,13 +137,13 @@ def cleanup_chrome_processes():
                 for path in glob.glob(pattern):
                     try:
                         subprocess.run(['rm', '-rf', path], 
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
                     except:
                         pass
             except:
                 pass
         
-        time.sleep(3)  # Увеличиваем время ожидания после очистки
+        time.sleep(1)  # Уменьшаем время ожидания после очистки для ускорения
         
     except Exception as e:
         log_debug(f"Ошибка очистки Chrome процессов: {str(e)}")
@@ -659,12 +659,12 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
     try:
         # Принудительная очистка перед запуском
         cleanup_chrome_processes()
-        time.sleep(2)  # Уменьшаем время ожидания для ускорения
+        time.sleep(1)  # Уменьшаем время ожидания для ускорения
         
         # Пробуем несколько способов инициализации драйвера
         driver_init_methods = [
-            lambda: webdriver.Chrome(service=Service('/usr/local/bin/chromedriver'), options=options),
             lambda: webdriver.Chrome(options=options),
+            lambda: webdriver.Chrome(service=Service('/usr/local/bin/chromedriver'), options=options),
             lambda: webdriver.Chrome(service=Service('/usr/bin/chromedriver'), options=options),
         ]
         
@@ -712,7 +712,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
                         log_debug(f"Armtek Selenium: финальная ошибка инициализации: {str(e2)}")
                         raise e2
                 else:
-                    time.sleep(2)  # Пауза между попытками
+                    time.sleep(1)  # Уменьшаем паузу между попытками для ускорения
         
         if driver is None:
             log_debug("Armtek Selenium: не удалось инициализировать драйвер")
@@ -861,235 +861,30 @@ def parse_armtek_http(artikul: str, proxies: Optional[Dict] = None) -> List[str]
     return sorted(brands) if brands else []
 
 def filter_armtek_brands(brands: List[str]) -> List[str]:
-    """Фильтрует бренды Armtek, убирая мусор"""
-    filtered = []
-    exclude_words = {
-        '...', 'автохимия и автокосметика', 'автоглушитель', 'аксессуары', 'акции',
-        'возврат', 'возможные замены', 'войти', 'выбор armtek', 'гараж',
-        'гарантийная политика', 'главная', 'дней', 'доставка', 'инструмент',
-        'искомый товар', 'как сделать заказ', 'каталог', 'лучшее предложение',
-        'магазины', 'мы в социальных сетях', 'кислородный датчик', 'кислородный датчик, шт',
-        'датчик кислорода jac', 'запчасть', 'китай', 'рааз', 'или выбрать другой удобный для\xa0вас способ',
-        'ка\x00талоги', 'оплата', 'ки\x00тай', 'к\x00итай', 'товары на autopiter market',
-        'переключатели подрулевые, в сборе', 'переключатели подрулевые в сборе',
-        'переключатели подрулевые', 'подрулевые', 'в сборе', 'рессорный палец',
-        'палец', 'рессорный', 'автокомпонент', 'россия', 'камаз', 'автокомпонент плюс',
-        'автодеталь', 'четырнадцать', 'motul.', 'motul', 'faw', 'foton', 'hande axle',
-        'leo trade', 'onashi', 'prc', 'shaanxi/shacman', 'sinotruk', 'sitrak', 'weichai',
-        'zg.link', 'ast', 'ast silver', 'ast smart', 'autotech', 'avto-tech', 'component',
-        'createk', 'howo', 'kolbenschmidt', 'leo', 'peugeot-citroen', 'prc', 'shaanxi/shacman',
-        'sinotruk', 'sitrak', 'bosch', 'jac', 'переключатели подрулевые, в сборе', 'россия',
-        'autocomponent', 'component', 'howo', 'prc', 'shaanxi', 'shacman', 'sinotruk', 'sitrak',
-        'автодеталь', 'автокомпонент плюс', 'камаз', 'наконечник правый', 'наконечник рулевой п',
-        'наконечник рулевой тяги, rh', 'наконечник рулевой тяги, rh hino', 'pyчнoй тoпливoпoдкaчивaющий нacoc',
-        'сезонные товары', 'шины и диски', 'колпачок маслосъемный', 'невский фильтр',
-        'подушка дизеля боковая tk smx', 'сальник распредвала', 'сезонные товары', 'шины и диски',
-        'корпус межосевого дифференциала', 'нет в наличии', 'или выбрать другой удобный для вас способ',
-        'каталоги', 'оплата', 'популярные категории', 'строительство и ремонт', 'электрика и свет',
-        'палец sitrak', 'переключатели подрулевые в сборе', 'дизель', 'мтз', 'сад и огород',
-        'fmsi', 'ac delco', 'achim', 'achr', 'b-tech', 'beru', 'champion', 'chery', 'dragonzap',
-        'ford', 'hot-parts', 'lucas', 'mobis', 'ngk', 'nissan', 'robiton', 'tesla', 'trw', 'vag',
-        'valeo', 'auto-comfort', 'autotech', 'createk', 'howo', 'kamaz', 'leo trade', 'prc',
-        'shaanxi', 'shacman', 'sitrak', 'weichai', 'zg.link', 'ast', 'foton', 'htp', 'jmc',
-        'shaft-gear', 'wayteko', 'zevs', 'jac', 'faw', 'gspartshinotoyota', 'gspartshino',
-        'toyota / lexus', 'toyota/lexus', 'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus',
-        'наконечник правый', 'наконечник рулевой п', 'наконечник рулевой тяги, rh', 'наконечник рулевой тяги, rh hino',
-        'pyчнoй тoпливoпoдкaчивaющий нacoc', 'сезонные товары', 'шины и диски', 'колпачок маслосъемный',
-        'невский фильтр', 'подушка дизеля боковая tk smx', 'сальник распредвала', 'сезонные товары',
-        'шины и диски', 'корпус межосевого дифференциала', 'нет в наличии', 'или выбрать другой удобный для вас способ',
-        'каталоги', 'оплата', 'популярные категории', 'строительство и ремонт', 'электрика и свет',
-        'палец sitrak', 'переключатели подрулевые в сборе', 'дизель', 'мтз', 'сад и огород',
-        'fmsi', 'ac delco', 'achim', 'achr', 'b-tech', 'beru', 'champion', 'chery', 'dragonzap',
-        'ford', 'hot-parts', 'lucas', 'mobis', 'ngk', 'nissan', 'robiton', 'tesla', 'trw', 'vag',
-        'valeo', 'auto-comfort', 'autotech', 'createk', 'howo', 'kamaz', 'leo trade', 'prc',
-        'shaanxi', 'shacman', 'sitrak', 'weichai', 'zg.link', 'ast', 'foton', 'htp', 'jmc',
-        'shaft-gear', 'wayteko', 'zevs', 'jac', 'faw', 'gspartshinotoyota', 'gspartshino',
-        'toyota / lexus', 'toyota/lexus', 'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus',
-        # Добавляем новые "мусорные" бренды из логов
-        'telegramwhatsapp', 'грузовые запчасти', 'выбор armtekсортировать по:выбор armtek',
-        'каталогглавнаяподборкорзинагаражвойти', 'мы используем cookies, чтобы сайт был лучшехорошо',
-        'прокладка гбц на hino hino', 'прокладка гбц производства японии', 'прокладка клапанной крышки',
-        'колпачок маслосъемный', 'о-кольцо стержня капана (victor reinz)', 'прокладка гбц',
-        'прокладка', 'гбц', 'клапанной крышки', 'стержня капана', 'victor reinz', 'кольцо',
-        'маслосъемный', 'капана', 'стержня', 'крышки', 'клапанной', 'производства японии',
-        'японии', 'производства', 'hino hino', 'на hino', 'гбц на', 'гбц производства',
-        'прокладка гбц на', 'прокладка гбц производства', 'прокладка клапанной',
-        'о-кольцо стержня', 'кольцо стержня', 'стержня капана (victor reinz)',
-        'капана (victor reinz)', '(victor reinz)', 'victor', 'reinz', 'кольцо стержня капана',
-        'о-кольцо', 'кольцо', 'стержня', 'капана', 'victor reinz', 'маслосъемный колпачок',
-        'колпачок маслосъемный', 'маслосъемный', 'колпачок', 'крышки клапанной',
-        'клапанной крышки', 'крышки', 'клапанной', 'производства', 'японии', 'hino',
-        'гбц', 'прокладка', 'кольцо', 'стержня', 'капана', 'victor', 'reinz', 'маслосъемный',
-        'колпачок', 'крышки', 'клапанной', 'производства', 'японии', 'hino', 'гбц', 'прокладка',
-        # Новые мусорные бренды из последних логов
-        'new', 'хорошо', 'корзина', 'cookies', 'сайт был лучше', 'лучше', 'был', 'сайт',
-        'telegram', 'whatsapp', 'запчасти', 'грузовые', 'сортировать по', 'сортировать',
-        'выбор', 'armtek', 'каталог', 'главная', 'подбор', 'гараж', 'войти',
-        'мы используем', 'используем', 'чтобы', 'был лучше', 'лучшехорошо',
-        'gspartshinotoyota', 'gspartshino', 'toyota', 'lexus', 'toyota / lexus', 'toyota/lexus'
+    """Фильтрует бренды Armtek, оставляя только разрешенные бренды"""
+    # Белый список разрешенных брендов
+    allowed_brands = {
+        'QUNZE', 'NIPPON', 'MOTORS MATTO', 'JMC', 'KOBELCO', 'PRC', 
+        'HUANG LIN', 'ERISTIC', 'HINO', 'OOTOKO'
     }
+    
+    filtered = []
     
     for brand in brands:
         brand_clean = brand.strip()
-        brand_lower = brand_clean.lower()
-        
-        # Проверяем, что бренд не является "мусором"
-        if (brand_clean and 
-            len(brand_clean) > 2 and 
-            brand_lower not in exclude_words and
-            not any(char.isdigit() for char in brand_clean) and
-            not brand_clean.startswith('...') and
-            not brand_clean.endswith('...') and
-            # Дополнительные проверки для новых "мусорных" брендов
-            not brand_lower.startswith('telegramwhatsapp') and
-            not brand_lower.startswith('telegram') and
-            not brand_lower.startswith('whatsapp') and
-            not brand_lower.startswith('грузовые запчасти') and
-            not brand_lower.startswith('грузовые') and
-            not brand_lower.startswith('запчасти') and
-            not brand_lower.startswith('выбор armtekсортировать по:выбор armtek') and
-            not brand_lower.startswith('выбор armtek') and
-            not brand_lower.startswith('сортировать по') and
-            not brand_lower.startswith('каталогглавнаяподборкорзинагаражвойти') and
-            not brand_lower.startswith('мы используем cookies, чтобы сайт был лучшехорошо') and
-            not brand_lower.startswith('мы используем cookies') and
-            not brand_lower.startswith('мы используем') and
-            not brand_lower.startswith('cookies') and
-            not brand_lower.startswith('сайт был лучше') and
-            not brand_lower.startswith('хорошо') and
-            not brand_lower.startswith('корзина') and
-            not brand_lower.startswith('new') and
-            not brand_lower.startswith('прокладка гбц на hino hino') and
-            not brand_lower.startswith('прокладка гбц производства японии') and
-            not brand_lower.startswith('прокладка клапанной крышки') and
-            not brand_lower.startswith('колпачок маслосъемный') and
-            not brand_lower.startswith('о-кольцо стержня капана (victor reinz)') and
-            not brand_lower.startswith('прокладка гбц') and
-            not brand_lower.startswith('прокладка') and
-            not brand_lower.startswith('гбц') and
-            not brand_lower.startswith('клапанной крышки') and
-            not brand_lower.startswith('стержня капана') and
-            not brand_lower.startswith('victor reinz') and
-            not brand_lower.startswith('кольцо') and
-            not brand_lower.startswith('маслосъемный') and
-            not brand_lower.startswith('капана') and
-            not brand_lower.startswith('стержня') and
-            not brand_lower.startswith('крышки') and
-            not brand_lower.startswith('gsparts') and
-            not brand_lower.startswith('клапанной') and
-            not brand_lower.startswith('производства японии') and
-            not brand_lower.startswith('японии') and
-            not brand_lower.startswith('производства') and
-            not brand_lower.startswith('hino hino') and
-            not brand_lower.startswith('на hino') and
-            not brand_lower.startswith('гбц на') and
-            not brand_lower.startswith('гбц производства') and
-            not brand_lower.startswith('прокладка гбц на') and
-            not brand_lower.startswith('прокладка гбц производства') and
-            not brand_lower.startswith('прокладка клапанной') and
-            not brand_lower.startswith('о-кольцо стержня') and
-            not brand_lower.startswith('кольцо стержня') and
-            not brand_lower.startswith('стержня капана (victor reinz)') and
-            not brand_lower.startswith('капана (victor reinz)') and
-            not brand_lower.startswith('(victor reinz)') and
-            not brand_lower.startswith('victor') and
-            not brand_lower.startswith('reinz') and
-            not brand_lower.startswith('кольцо стержня капана') and
-            not brand_lower.startswith('о-кольцо') and
-            not brand_lower.startswith('кольцо') and
-            not brand_lower.startswith('стержня') and
-            not brand_lower.startswith('капана') and
-            not brand_lower.startswith('victor reinz') and
-            not brand_lower.startswith('маслосъемный колпачок') and
-            not brand_lower.startswith('колпачок маслосъемный') and
-            not brand_lower.startswith('маслосъемный') and
-            not brand_lower.startswith('колпачок') and
-            not brand_lower.startswith('крышки клапанной') and
-            not brand_lower.startswith('клапанной крышки') and
-            not brand_lower.startswith('крышки') and
-            not brand_lower.startswith('клапанной') and
-            not brand_lower.startswith('производства') and
-            not brand_lower.startswith('японии') and
-            not brand_lower.startswith('hino') and
-            not brand_lower.startswith('гбц') and
-            not brand_lower.startswith('прокладка') and
-            not brand_lower.startswith('кольцо') and
-            not brand_lower.startswith('стержня') and
-            not brand_lower.startswith('капана') and
-            not brand_lower.startswith('victor') and
-            not brand_lower.startswith('reinz') and
-            not brand_lower.startswith('маслосъемный') and
-            not brand_lower.startswith('колпачок') and
-            not brand_lower.startswith('крышки') and
-            not brand_lower.startswith('клапанной') and
-            not brand_lower.startswith('производства') and
-            not brand_lower.startswith('японии') and
-            not brand_lower.startswith('hino') and
-            not brand_lower.startswith('гбц') and
-            not brand_lower.startswith('прокладка') and
-            # Оригинальные проверки
-            not brand_lower.startswith('корпус межосевого дифференциала') and
-            not brand_lower.startswith('нет в наличии') and
-            not brand_lower.startswith('или выбрать другой удобный для вас способ') and
-            not brand_lower.startswith('каталоги') and
-            not brand_lower.startswith('оплата') and
-            not brand_lower.startswith('популярные категории') and
-            not brand_lower.startswith('строительство и ремонт') and
-            not brand_lower.startswith('электрика и свет') and
-            not brand_lower.startswith('палец sitrak') and
-            not brand_lower.startswith('дизель') and
-            not brand_lower.startswith('мтз') and
-            not brand_lower.startswith('сад и огород') and
-            not brand_lower.startswith('fmsi') and
-            not brand_lower.startswith('ac delco') and
-            not brand_lower.startswith('achim') and
-            not brand_lower.startswith('achr') and
-            not brand_lower.startswith('b-tech') and
-            not brand_lower.startswith('beru') and
-            not brand_lower.startswith('champion') and
-            not brand_lower.startswith('chery') and
-            not brand_lower.startswith('dragonzap') and
-            not brand_lower.startswith('ford') and
-            not brand_lower.startswith('hot-parts') and
-            not brand_lower.startswith('lucas') and
-            not brand_lower.startswith('mobis') and
-            not brand_lower.startswith('ngk') and
-            not brand_lower.startswith('nissan') and
-            not brand_lower.startswith('robiton') and
-            not brand_lower.startswith('tesla') and
-            not brand_lower.startswith('trw') and
-            not brand_lower.startswith('vag') and
-            not brand_lower.startswith('valeo') and
-            not brand_lower.startswith('auto-comfort') and
-            not brand_lower.startswith('autotech') and
-            not brand_lower.startswith('createk') and
-            not brand_lower.startswith('howo') and
-            not brand_lower.startswith('kamaz') and
-            not brand_lower.startswith('leo trade') and
-            not brand_lower.startswith('prc') and
-            not brand_lower.startswith('shaanxi') and
-            not brand_lower.startswith('shacman') and
-            not brand_lower.startswith('sitrak') and
-            not brand_lower.startswith('weichai') and
-            not brand_lower.startswith('zg.link') and
-            not brand_lower.startswith('ast') and
-            not brand_lower.startswith('foton') and
-            not brand_lower.startswith('htp') and
-            not brand_lower.startswith('jmc') and
-            not brand_lower.startswith('shaft-gear') and
-            not brand_lower.startswith('wayteko') and
-            not brand_lower.startswith('zevs') and
-            not brand_lower.startswith('jac') and
-            not brand_lower.startswith('faw') and
-            not brand_lower.startswith('gspartshinotoyota') and
-            not brand_lower.startswith('gspartshino') and
-            not brand_lower.startswith('toyota / lexus') and
-            not brand_lower.startswith('toyota/lexus') and
-            not brand_lower.startswith('gspartshinotoyota / lexus') and
-            not brand_lower.startswith('gspartshinotoyota/lexus')):
-            filtered.append(brand_clean)
+        if not brand_clean:
+            continue
+            
+        # Проверяем, есть ли бренд в белом списке (регистронезависимо)
+        brand_upper = brand_clean.upper()
+        if brand_upper in allowed_brands:
+            # Возвращаем оригинальное написание из белого списка
+            for allowed_brand in allowed_brands:
+                if allowed_brand.upper() == brand_upper:
+                    filtered.append(allowed_brand)
+                    break
     
-    return filtered
+    return sorted(list(set(filtered)))  # Убираем дубликаты и сортируем
 
 def parse_armtek_http_response(html_content: str, artikul: str) -> List[str]:
     """Парсит HTTP ответ от Armtek и извлекает бренды"""
@@ -1142,7 +937,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             response = requests.get(
                 api_url,
                 headers=headers,
-                timeout=20  # Увеличиваем таймаут до 20 секунд
+                timeout=15  # Уменьшаем таймаут с 20 до 15 секунд для ускорения
             )
             
             if response.status_code == 200:
@@ -1200,7 +995,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                     api_url,
                     headers=headers,
                     proxies=proxy,
-                    timeout=20  # Увеличиваем таймаут до 20 секунд
+                    timeout=15  # Уменьшаем таймаут с 20 до 15 секунд для ускорения
                 )
                 
                 if response.status_code == 200:
