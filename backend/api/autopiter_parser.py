@@ -933,7 +933,8 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             "Referer": f"https://emex.ru/products/{encoded_artikul}",
             "x-requested-with": "XMLHttpRequest",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Accept-Encoding": "gzip, deflate, br",
+            # Исключаем br, чтобы не получать brotli-сжатый ответ, который requests не распакует без доп. зависимостей
+            "Accept-Encoding": "gzip, deflate",
             "Connection": "keep-alive",
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
@@ -997,17 +998,14 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                                                 if brand and brand.strip():
                                                     brands.add(brand.strip())
                                                     log_debug(f"Emex API: добавлен бренд '{brand}' для {artikul}")
+                                    # Дополнительно берём бренд из searchResult.make, если он есть
+                                    sr_make = search_result.get("make")
+                                    if isinstance(sr_make, str) and sr_make.strip():
+                                        brands.add(sr_make.strip())
+                                        log_debug(f"Emex API: добавлен бренд из searchResult.make '{sr_make}' для {artikul}")
                                 
                                 # Если не нашли в makes, проверяем details
-                                if not brands:
-                                    details_list = search_result.get("details", [])
-                                    log_debug(f"Emex API: найдено {len(details_list)} details для {artikul}")
-                                    for detail in details_list:
-                                        if isinstance(detail, dict) and "make" in detail:
-                                            brand = detail["make"]
-                                            if brand and brand.strip():
-                                                brands.add(brand.strip())
-                                                log_debug(f"Emex API: добавлен бренд из details '{brand}' для {artikul}")
+                                # Для этого эндпоинта бренды находятся в makes.list и в searchResult.make
                                 
                                 # Если все еще нет брендов, ищем в других полях
                                 if not brands:
