@@ -275,28 +275,33 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             if brand and len(brand) > 2 and not brand.isdigit():
                 brands.add(brand)
 
-    # Целенаправленно вытягиваем из строки с меткой "Производители"
+    # Целенаправленно вытягиваем из строки с меткой "Производители" (табличный блок на странице)
     if not brands:
         try:
-            # Ищем узел с текстом "Производител" и поднимаемся к контейнеру строки
-            label_node = soup.find(string=re.compile(r"Производител", re.IGNORECASE))
-            if label_node:
-                row_container = label_node
-                # Поднимаемся максимум на 4 уровня вверх, чтобы найти контейнер, где лежат значения
-                for _ in range(4):
-                    if hasattr(row_container, 'find_all'):
-                        # Собираем span[title] внутри строки
-                        span_nodes = row_container.find_all('span')
-                        for s in span_nodes:
-                            text_title = s.get('title')
-                            text_value = s.get_text(strip=True)
-                            candidate = (text_title or text_value or '').strip()
-                            if candidate and len(candidate) > 1 and not candidate.isdigit():
-                                brands.add(candidate)
-                    if hasattr(row_container, 'parent') and row_container.parent is not None:
-                        row_container = row_container.parent
-                    else:
-                        break
+            table = soup.select_one('div[class*="Table__table"]')
+            if table:
+                rows = table.select('div[class*="IndividualTableRow__row"]') or table.find_all('div', recursive=False)
+                for row in rows:
+                    title_col = None
+                    info_col = None
+                    # ищем колонки по классам
+                    for child in row.find_all('div', recursive=False):
+                        cls = ' '.join(child.get('class', []))
+                        if 'IndividualTableRow__titleColumn' in cls:
+                            title_col = child
+                        if 'IndividualTableRow__infoColumn' in cls:
+                            info_col = child
+                    title_text = (title_col.get_text(strip=True) if title_col else '').lower()
+                    if 'производител' in title_text and info_col:
+                        # Бренды в правой колонке обычно как span[title]
+                        for sp in info_col.select('span[title], span span span span'):
+                            val = sp.get('title') or sp.get_text(strip=True)
+                            if val:
+                                val = val.strip()
+                                if val and len(val) > 1 and not val.isdigit():
+                                    brands.add(val)
+                        if brands:
+                            break
         except Exception:
             pass
     
