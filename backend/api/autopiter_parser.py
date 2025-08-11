@@ -1051,8 +1051,10 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                                                             if brand and brand.strip():
                                                                 brands.add(brand.strip())
                                                                 log_debug(f"Emex API: добавлен бренд после исправления кодировки '{brand}' для {artikul}")
-                                    
-                                    if brands:
+                                        except Exception:
+                                            pass
+                                    # Возврат, если удалось собрать бренды
+                                    if 'brands' in locals() and brands:
                                         log_debug(f"Emex API: найдено {len(brands)} брендов после исправления кодировки для {artikul}")
                                         return sorted(list(brands))
                                 except:

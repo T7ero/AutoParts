@@ -112,7 +112,7 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
 def process_parsing_task(self, task_id):
     # Проверяем, не завершена ли уже задача
     try:
-        task = ParsingTask.objects.get(id=task_id)
+    task = ParsingTask.objects.get(id=task_id)
         if task.status == 'completed':
             log_debug(f"Task {task_id} уже завершена, пропускаем повторную обработку")
             return None
@@ -410,11 +410,11 @@ def process_parsing_task(self, task_id):
                 
                 # Обновляем прогресс каждые 3 строки для более частого обновления
                 if (index + 1) % 3 == 0 or index == total_rows - 1:
-                    progress = int((index + 1) / total_rows * 100)
-                    task.progress = progress
+                progress = int((index + 1) / total_rows * 100)
+                task.progress = progress
                     task.log = '\n'.join(log_messages[-100:])  # Ограничиваем лог
                     task.status = 'in_progress'
-                    task.save()
+                task.save()
                     ws_send()
                     
                     # Принудительная очистка памяти
@@ -515,4 +515,4 @@ def process_parsing_task(self, task_id):
         task.save()
         ws_send()
         cleanup_chrome_processes()
-        raise
+        raise 
