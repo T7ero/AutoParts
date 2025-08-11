@@ -243,309 +243,83 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
         return []
 
 def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
-    """Парсит ответ от Autopiter и извлекает бренды"""
-    soup = BeautifulSoup(html_content, "html.parser")
+    """
+    Парсит ответ Autopiter и извлекает бренды используя точный селектор
+    """
     brands = set()
     
-    # Ищем бренды в различных элементах
-    brand_selectors = [
-        '.product-card .brand-name',
-        '.product-card__brand',
-        '[itemprop="brand"]',
-        '.catalog-item__brand',
-        '.brand-name',
-        '.product-brand',
-        'span[data-brand]',
-        '.item-brand',
-        '.brand__name',
-        '.manufacturer-name',
-        '.vendor-title',
-        '.product-item .brand',
-        '.item .brand',
-        '.product-info .brand',
-        '.goods-info .brand',
-        # Блок "Производители:" на странице товара
-        'div:contains("Производители") a',
-        'div:contains("Производитель") a'
-    ]
-    
-    for selector in brand_selectors:
-        for tag in soup.select(selector):
-            brand = tag.get_text(strip=True)
-            if brand and len(brand) > 2 and not brand.isdigit():
-                brands.add(brand)
-
-    # Целенаправленно вытягиваем из строки с меткой "Производители" (табличный блок на странице)
-    if not brands:
-        try:
-            # Ищем таблицу с информацией о товаре
-            table = soup.select_one('div[class*="Table__table"]')
-            if table:
-                # Ищем строку с "Производители" и извлекаем бренды
-                rows = table.select('div[class*="IndividualTableRow"]')
-                for row in rows:
-                    # Ищем заголовок строки
-                    title_elem = row.select_one('div[class*="titleColumn"], div[class*="title"]')
-                    if title_elem:
-                        title_text = title_elem.get_text(strip=True).lower()
-                        if 'производител' in title_text:
-                            # Нашли строку с производителями, извлекаем бренды из infoColumn
-                            info_elem = row.select_one('div[class*="infoColumn"], div[class*="info"]')
-                            if info_elem:
-                                # Ищем все span элементы с брендами
-                                brand_spans = info_elem.select('span[title], span span span span')
-                                for span in brand_spans:
-                                    brand = span.get('title') or span.get_text(strip=True)
-                                    if brand and len(brand) > 1 and not brand.isdigit():
-                                        # Фильтруем только реальные бренды, исключаем "Часто ищут"
-                                        if not any(exclude in brand.lower() for exclude in [
-                                            'сверла', 'свечи', 'автошина', 'заклепка', 'игла', 
-                                            'лейка', 'лента', 'помпа', 'поплавок', 'ремень', 
-                                            'фильтр', 'хомут', 'шина', 'щетка', 'кольцо',
-                                            'комплект', 'костюм', 'стартер', 'шайба', 'деталь'
-                                        ]):
-                                            brands.add(brand)
-                            break
-                        
-                # Если не нашли строку "Производители", ищем бренды во всех infoColumn
-                if not brands:
-                    for row in rows:
-                        info_elem = row.select_one('div[class*="infoColumn"], div[class*="info"]')
-                        if info_elem:
-                            # Ищем span с title (это бренды)
-                            brand_spans = info_elem.select('span[title]')
-                            for span in brand_spans:
-                                brand = span.get('title')
-                                if brand and len(brand) > 1 and not brand.isdigit():
-                                    # Фильтруем только реальные бренды
-                                    if not any(exclude in brand.lower() for exclude in [
-                                        'сверла', 'свечи', 'автошина', 'заклепка', 'игла', 
-                                        'лейка', 'лента', 'помпа', 'поплавок', 'ремень', 
-                                        'фильтр', 'хомут', 'шина', 'щетка', 'кольцо',
-                                        'комплект', 'костюм', 'стартер', 'шайба', 'деталь'
-                                    ]):
-                                        brands.add(brand)
-                
-                # Дополнительный поиск по точному селектору из DevTools
-                if not brands:
-                    try:
-                        # Используем точный селектор: #main-content > div > div > div.Table__table > div > div.IndividualTableRow__infoColumn > span > span > span > span
-                        main_content = soup.select_one('#main-content')
-                        if main_content:
-                            table = main_content.select_one('div[class*="Table__table"]')
-                            if table:
-                                rows = table.select('div[class*="IndividualTableRow"]')
-                                for row in rows:
-                                    info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
-                                    if info_column:
-                                        # Ищем span с title (это бренды)
-                                        brand_spans = info_column.select('span[title]')
-                                        for span in brand_spans:
-                                            brand = span.get('title')
-                                            if brand and len(brand) > 1 and not brand.isdigit():
-                                                brands.add(brand)
-                    except Exception as e:
-                        print(f"Ошибка при дополнительном поиске брендов Autopiter: {e}")
-                        pass
-        except Exception as e:
-            print(f"Ошибка при парсинге брендов Autopiter: {e}")
-            pass
-    
-    # Жестко ограничиваем: никакого общего текстового поиска, чтобы не тащить блок "Часто ищут"
-    
-    # Фильтрация брендов - убираем весь мусор
-    filtered_brands = set()
-    exclude_words = {
-        'to content', 'zapros@autopiter.ru', 'автомасла', 'автопитер', 'ваз, газ, камаз', 
-        'вакансии', 'возврат товара', 'восстановление пароля', 'все категории', 'вход', 
-        'долгопрудный', 'доставка заказа', 'запчасти ваз, газ, камаз', 'запчасти для то', 
-        'или выбрать другой удобный для вас способ', 'каталоги', 'каталоги запчастей', 
-        'контакты', 'конфиденциальность', 'корзина', 'неоригинальные', 'неоригинальные запчасти', 
-        'новости', 'о компании', 'оплата заказа', 'оплатить все товары можно', 'оптовикам', 
-        'оптовым клиентам', 'оригинальные', 'оригинальные каталоги по vin', 'оферта', 
-        'перейти в версию для смартфонов', 'помощь', 'помощь по сайту', 'поставщикам', 
-        'производители:', 'реквизиты', 'рекомендуем', 'спецтехника', 'фильтры hebel kraft',
-        'долгопрудныйвходкорзина', 'все категориикаталоги запчастей', 'офертаконфиденциальность',
-        'производители:дизель', 'производители:jacjashisollersзапчастькитайрааз', 'jacjashisollersзапчастькитайрааз',
-        'выбор armtekсортировать по:выбор armtek', 'мы используем cookies, чтобы сайт был лучше',
-        'мы используем cookies, чтобы сайт был лучшехорошо', 'мы принимаем к оплате:', 'о компании',
-        'оптовым покупателям', 'планировщик выгрузки', 'подбор', 'поиск по результату', 'покупателям',
-        'правовая информация', 'программа лояльности', 'работа в компании', 'реклама на сайте',
-        'сортировать по:выбор armtek', 'срок отгрузки', 'срок отгрузкидней', 'хорошо', 'цена',
-        'ценаотдо', 'этна', 'отдо', 'заявку на подбор', 'vin или марке авто', 'аксессуары',
-        'акции', 'в корзину', 'возврат', 'возможные замены', 'войти', 'выбор armtek', 'гараж',
-        'гарантийная политика', 'главная', 'дней', 'доставка', 'инструмент', 'искомый товар',
-        'как сделать заказ', 'каталог', 'лучшее предложение', 'магазины', 'мы в социальных сетях',
-        'кислородный датчик', 'кислородный датчик, шт', 'датчик кислорода jac', 'запчасть', 'китай', 'рааз',
-        'или выбрать другой удобный для\xa0вас способ', 'ка\x00талоги', 'оплата',
-        # Новые исключения для Autopiter
-        'ки\x00тай', 'к\x00итай', 'товары на autopiter market', 'переключатели подрулевые, в сборе',
-        'переключатели подрулевые в сборе', 'переключатели подрулевые', 'подрулевые', 'в сборе',
-        'рессорный палец', 'палец', 'рессорный', 'автокомпонент', 'россия', 'камаз', 'автокомпонент плюс',
-        'автодеталь', 'четырнадцать', 'автокомпонент плюс', 'автодеталь', 'четырнадцать',
-        'motul.', 'motul', 'faw', 'foton', 'hande axle', 'leo trade', 'onashi', 'prc', 'shaanxi/shacman',
-        'sinotruk', 'sitrak', 'weichai', 'zg.link', 'автокомпонент', 'камаз', 'рессорный палец', 'россия',
-        'ast', 'ast silver', 'ast smart', 'autotech', 'avto-tech', 'component', 'createk', 'howo',
-        'kolbenschmidt', 'leo', 'peugeot-citroen', 'prc', 'shaanxi/shacman', 'sinotruk', 'sitrak',
-        'автокомпонент', 'камаз', 'рессорный палец', 'россия', 'bosch', 'jac', 'автокомпонент', 'камаз',
-        'переключатели подрулевые, в сборе', 'россия', 'autocomponent', 'component', 'howo', 'prc',
-        'shaanxi', 'shacman', 'sinotruk', 'sitrak', 'автодеталь', 'автокомпонент плюс', 'камаз',
-        'четырнадцать', 'autocomponent', 'component', 'createk', 'shacman', 'автодеталь', 'автокомпонент плюс',
-        'четырнадцать', 'autocomponent', 'component', 'leo trade', 'prc', 'автодеталь', 'автокомпонент плюс',
-        'четырнадцать', 'autocomponent', 'component', 'howo', 'prc', 'sinotruk', 'sitrak', 'автодеталь',
-        'автокомпонент плюс', 'четырнадцать', 'autocomponent', 'component', 'howo', 'prc', 'sinotruk',
-        'sitrak', 'автодеталь', 'автокомпонент плюс', 'четырнадцать', 'autocomponent', 'component', 'howo',
-        'prc', 'sinotruk', 'sitrak', 'автодеталь', 'автокомпонент плюс', 'четырнадцать', 'jac', 'prc',
-        'автокомпонент', 'камаз', 'корпус межосевого дифференциала', 'нет в наличии', 'или выбрать другой удобный для вас способ',
-        'каталоги', 'оплата', 'популярные категории', 'строительство и ремонт', 'электрика и свет',
-        'палец sitrak', 'переключатели подрулевые в сборе', 'мтз', 'сад и огород',
-        'fmsi', 'ac delco', 'achim', 'achr', 'b-tech', 'beru', 'champion', 'chery', 'dragonzap',
-        'ford', 'hot-parts', 'lucas', 'mobis', 'ngk', 'nissan', 'robiton', 'tesla', 'trw', 'vag',
-        'valeo', 'auto-comfort', 'autotech', 'createk', 'howo', 'kamaz', 'leo trade', 'prc',
-        'shaanxi', 'shacman', 'sitrak', 'weichai', 'zg.link', 'ast', 'foton', 'htp', 'jmc',
-        'shaft-gear', 'wayteko', 'zevs', 'jac', 'faw', 'gspartshinotoyota', 'gspartshino',
-        'toyota / lexus', 'toyota/lexus', 'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus',
-        # Новые мусорные бренды из последних логов
-        'new', 'хорошо', 'корзина', 'cookies', 'сайт был лучше', 'лучше', 'был', 'сайт',
-        'telegram', 'whatsapp', 'запчасти', 'грузовые', 'сортировать по', 'сортировать',
-        'выбор', 'armtek', 'каталог', 'главная', 'подбор', 'гараж', 'войти',
-        'мы используем', 'используем', 'чтобы', 'был лучше', 'лучшехорошо',
-        'telegramwhatsapp', 'грузовые запчасти', 'выбор armtek', 'сортировать по:выбор armtek',
-        'каталогглавнаяподборкорзинагаражвойти', 'мы используем cookies, чтобы сайт был лучшехорошо'
-    }
-    
-    for brand in brands:
-        brand_clean = brand.strip()
-        brand_lower = brand_clean.lower()
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
         
-        # Проверяем, что бренд не является "мусором"
-        if (len(brand_clean) > 2 and len(brand_clean) < 50 and
-            brand_lower not in exclude_words and
-            not any(word in brand_lower for word in exclude_words) and
-            not brand_lower.startswith('©') and
-            not brand_lower.startswith('zapros') and
-            not brand_lower.startswith('to content') and
-            not brand_lower.startswith('автомасла') and
-            not brand_lower.startswith('автопитер') and
-            not brand_lower.startswith('ваз, газ, камаз') and
-            not brand_lower.startswith('запчасти') and
-            not brand_lower.startswith('каталоги') and
-            not brand_lower.startswith('контакты') and
-            not brand_lower.startswith('корзина') and
-            not brand_lower.startswith('новости') and
-            not brand_lower.startswith('о компании') and
-            not brand_lower.startswith('оплата') and
-            not brand_lower.startswith('помощь') and
-            not brand_lower.startswith('производители:') and
-            not brand_lower.startswith('реквизиты') and
-            not brand_lower.startswith('спецтехника') and
-            not brand_lower.startswith('фильтры') and
-            not brand_lower.startswith('аксессуары') and
-            not brand_lower.startswith('акции') and
-            not brand_lower.startswith('в корзину') and
-            not brand_lower.startswith('возврат') and
-            not brand_lower.startswith('возможные замены') and
-            not brand_lower.startswith('войти') and
-            not brand_lower.startswith('выбор armtek') and
-            not brand_lower.startswith('гараж') and
-            not brand_lower.startswith('гарантийная политика') and
-            not brand_lower.startswith('главная') and
-            not brand_lower.startswith('дней') and
-            not brand_lower.startswith('доставка') and
-            not brand_lower.startswith('инструмент') and
-            not brand_lower.startswith('искомый товар') and
-            not brand_lower.startswith('как сделать заказ') and
-            not brand_lower.startswith('каталог') and
-            not brand_lower.startswith('лучшее предложение') and
-            not brand_lower.startswith('магазины') and
-            not brand_lower.startswith('мы в социальных сетях') and
-            not brand_lower.startswith('кислородный датчик') and
-            not brand_lower.startswith('датчик кислорода') and
-            not brand_lower.startswith('запчасть') and
-            not brand_lower.startswith('китай') and
-            not brand_lower.startswith('рааз') and
-            not brand_lower.startswith('или выбрать другой удобный для') and
-            not brand_lower.startswith('каталоги') and
-            not brand_lower.startswith('оплата') and
-            not brand_lower.startswith('корпус межосевого дифференциала') and
-            not brand_lower.startswith('нет в наличии') and
-            not brand_lower.startswith('популярные категории') and
-            not brand_lower.startswith('строительство и ремонт') and
-            not brand_lower.startswith('электрика и свет') and
-            not brand_lower.startswith('палец sitrak') and
-            not brand_lower.startswith('дизель') and
-            not brand_lower.startswith('мтз') and
-            not brand_lower.startswith('сад и огород') and
-            not brand_lower.startswith('fmsi') and
-            not brand_lower.startswith('ac delco') and
-            not brand_lower.startswith('achim') and
-            not brand_lower.startswith('achr') and
-            not brand_lower.startswith('b-tech') and
-            not brand_lower.startswith('beru') and
-            not brand_lower.startswith('champion') and
-            not brand_lower.startswith('chery') and
-            not brand_lower.startswith('dragonzap') and
-            not brand_lower.startswith('ford') and
-            not brand_lower.startswith('hot-parts') and
-            not brand_lower.startswith('lucas') and
-            not brand_lower.startswith('mobis') and
-            not brand_lower.startswith('ngk') and
-            not brand_lower.startswith('nissan') and
-            not brand_lower.startswith('robiton') and
-            not brand_lower.startswith('tesla') and
-            not brand_lower.startswith('trw') and
-            not brand_lower.startswith('vag') and
-            not brand_lower.startswith('valeo') and
-            not brand_lower.startswith('auto-comfort') and
-            not brand_lower.startswith('autotech') and
-            not brand_lower.startswith('createk') and
-            not brand_lower.startswith('howo') and
-            not brand_lower.startswith('kamaz') and
-            not brand_lower.startswith('leo trade') and
-            not brand_lower.startswith('prc') and
-            not brand_lower.startswith('shaanxi') and
-            not brand_lower.startswith('shacman') and
-            not brand_lower.startswith('sitrak') and
-            not brand_lower.startswith('weichai') and
-            not brand_lower.startswith('zg.link') and
-            not brand_lower.startswith('ast') and
-            not brand_lower.startswith('foton') and
-            not brand_lower.startswith('htp') and
-            not brand_lower.startswith('jmc') and
-            not brand_lower.startswith('shaft-gear') and
-            not brand_lower.startswith('wayteko') and
-            not brand_lower.startswith('zevs') and
-            not brand_lower.startswith('jac') and
-            not brand_lower.startswith('faw') and
-            not brand_lower.startswith('gspartshinotoyota') and
-            not brand_lower.startswith('gspartshino') and
-            not brand_lower.startswith('toyota / lexus') and
-            not brand_lower.startswith('toyota/lexus') and
-            not brand_lower.startswith('gspartshinotoyota / lexus') and
-            not brand_lower.startswith('gspartshinotoyota/lexus') and
-            # Новые проверки для мусорных брендов из логов
-            not brand_lower.startswith('new') and
-            not brand_lower.startswith('хорошо') and
-            not brand_lower.startswith('telegram') and
-            not brand_lower.startswith('whatsapp') and
-            not brand_lower.startswith('telegramwhatsapp') and
-            not brand_lower.startswith('грузовые') and
-            not brand_lower.startswith('сортировать') and
-            not brand_lower.startswith('выбор') and
-            not brand_lower.startswith('armtek') and
-            not brand_lower.startswith('подбор') and
-            not brand_lower.startswith('мы используем') and
-            not brand_lower.startswith('используем') and
-            not brand_lower.startswith('cookies') and
-            not brand_lower.startswith('сайт был') and
-            not brand_lower.startswith('лучше') and
-            not brand_lower.startswith('был') and
-            not brand_lower.startswith('сайт') and
-            not brand_lower.startswith('чтобы') and
-            not brand_lower.startswith('лучшехорошо')):
-            filtered_brands.add(brand_clean)
+        # Используем ТОЛЬКО точный селектор из DevTools
+        # #main-content > div > div > div.Table__table____693a7dea7e60fe92 > div > div.IndividualTableRow__infoColumn___b7ecc9b28c9245b4 > span > span > span
+        
+        # Ищем main-content
+        main_content = soup.select_one('#main-content')
+        if not main_content:
+            log_debug(f"Autopiter: не найден #main-content для {artikul}")
+            return []
+        
+        # Ищем таблицу с классом, содержащим Table__table
+        table = main_content.select_one('div[class*="Table__table"]')
+        if not table:
+            log_debug(f"Autopiter: не найдена таблица Table__table для {artikul}")
+            return []
+        
+        # Ищем строки IndividualTableRow
+        rows = table.select('div[class*="IndividualTableRow"]')
+        if not rows:
+            log_debug(f"Autopiter: не найдены строки IndividualTableRow для {artikul}")
+            return []
+        
+        # Проходим по всем строкам и ищем infoColumn
+        for row in rows:
+            info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
+            if info_column:
+                # Ищем span элементы с title (это бренды)
+                brand_spans = info_column.select('span[title]')
+                for span in brand_spans:
+                    brand = span.get('title')
+                    if brand and len(brand) > 1 and not brand.isdigit():
+                        # Дополнительная проверка - бренд должен быть в разумных пределах
+                        if len(brand) < 50 and not any(exclude in brand.lower() for exclude in [
+                            'сверла', 'свечи', 'автошина', 'заклепка', 'игла', 
+                            'лейка', 'лента', 'помпа', 'поплавок', 'ремень', 
+                            'фильтр', 'хомут', 'шина', 'щетка', 'кольцо',
+                            'комплект', 'костюм', 'стартер', 'шайба', 'деталь',
+                            'накладка', 'тормозная', 'задняя', 'комплект', 'колесо'
+                        ]):
+                            brands.add(brand)
+                            log_debug(f"Autopiter: найден бренд '{brand}' для {artikul}")
+        
+        # Если не нашли бренды через title, пробуем через текст span
+        if not brands:
+            for row in rows:
+                info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
+                if info_column:
+                    # Ищем span элементы с текстом (fallback)
+                    brand_spans = info_column.select('span')
+                    for span in brand_spans:
+                        brand = span.get_text(strip=True)
+                        if brand and len(brand) > 1 and len(brand) < 50 and not brand.isdigit():
+                            # Проверяем, что это не мусор
+                            if not any(exclude in brand.lower() for exclude in [
+                                'сверла', 'свечи', 'автошина', 'заклепка', 'игла', 
+                                'лейка', 'лента', 'помпа', 'поплавок', 'ремень', 
+                                'фильтр', 'хомут', 'шина', 'щетка', 'кольцо',
+                                'комплект', 'костюм', 'стартер', 'шайба', 'деталь',
+                                'накладка', 'тормозная', 'задняя', 'комплект', 'колесо',
+                                'производители', 'часто ищут', 'рекомендуем'
+                            ]):
+                                brands.add(brand)
+                                log_debug(f"Autopiter: найден бренд через текст '{brand}' для {artikul}")
+        
+        log_debug(f"Autopiter: итого найдено {len(brands)} брендов для {artikul}")
+        
+    except Exception as e:
+        log_debug(f"Ошибка при парсинге брендов Autopiter для {artikul}: {e}")
     
-    return sorted(list(filtered_brands))
+    return sorted(list(brands))
 
 def split_combined_brands(brands: List[str]) -> List[str]:
     """Разделяет объединенные бренды на отдельные"""
