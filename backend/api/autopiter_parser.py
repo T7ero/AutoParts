@@ -263,7 +263,10 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
         '.product-item .brand',
         '.item .brand',
         '.product-info .brand',
-        '.goods-info .brand'
+        '.goods-info .brand',
+        # Блок "Производители:" на странице товара
+        'div:contains("Производители") a',
+        'div:contains("Производитель") a'
     ]
     
     for selector in brand_selectors:
@@ -326,7 +329,7 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
         'prc', 'sinotruk', 'sitrak', 'автодеталь', 'автокомпонент плюс', 'четырнадцать', 'jac', 'prc',
         'автокомпонент', 'камаз', 'корпус межосевого дифференциала', 'нет в наличии', 'или выбрать другой удобный для вас способ',
         'каталоги', 'оплата', 'популярные категории', 'строительство и ремонт', 'электрика и свет',
-        'палец sitrak', 'переключатели подрулевые в сборе', 'дизель', 'мтз', 'сад и огород',
+        'палец sitrak', 'переключатели подрулевые в сборе', 'мтз', 'сад и огород',
         'fmsi', 'ac delco', 'achim', 'achr', 'b-tech', 'beru', 'champion', 'chery', 'dragonzap',
         'ford', 'hot-parts', 'lucas', 'mobis', 'ngk', 'nissan', 'robiton', 'tesla', 'trw', 'vag',
         'valeo', 'auto-comfort', 'autotech', 'createk', 'howo', 'kamaz', 'leo trade', 'prc',
@@ -868,7 +871,9 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
         'QUNZE', 'NIPPON', 'MOTORS MATTO', 'JMC', 'KOBELCO', 'PRC', 
         'HUANG LIN', 'ERISTIC', 'HINO', 'OOTOKO', 'MITSUBISHI', 'TOYOTA',
         'AUTOKAT', 'ZEVS', 'PITWORK', 'HITACHI', 'NISSAN', 'DETOOL', 'CHEMIPRO',
-        'STELLOX', 'FURO', 'EDCON', 'REPARTS'
+        'STELLOX', 'FURO', 'EDCON', 'REPARTS',
+        # Добавлено из пожеланий: считать брендами
+        'HTP', 'FVR', 'ISUZU', 'G-BRAKE', 'АККОР', 'ДИЗЕЛЬ'
     }
     
     filtered = []
@@ -943,6 +948,10 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Dest": "empty",
             "DNT": "1",
+            "Host": "emex.ru",
+            "Sec-Ch-Ua": '"Chromium";v="139", "Not=A?Brand";v="99"',
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Ch-Ua-Mobile": "?0",
         }
         
         # Готовим сессию и прогреваем куки/регион и CSRF
