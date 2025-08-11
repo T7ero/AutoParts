@@ -265,7 +265,6 @@ def process_parsing_task(self, task_id):
                     continue
                 
                 log(f"Обрабатываем строку {index + 1}: {len(numbers_to_parse)} артикулов")
-                used_pairs = set()
                 
                 # Обрабатываем каждый артикул отдельно для создания отдельных строк
                 for current_number in numbers_to_parse:
@@ -289,18 +288,15 @@ def process_parsing_task(self, task_id):
                         
                         # Обрабатываем результаты Autopiter для текущего артикула
                         for (b1, pn1, n1, b2, pn2, src) in filtered_autopiter:
-                            key = (b1, pn1, n1, b2, pn2, src)
-                            if key not in used_pairs:
-                                d = {
-                                    'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                                    'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                    'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
-                                    'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
-                                    'Источник': src
-                                }
-                                results_autopiter.append(d)
-                                used_pairs.add(key)
+                            d = {
+                                'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                                'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                                'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                                'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
+                                'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                'Источник': src
+                            }
+                            results_autopiter.append(d)
                         
                         # Фильтруем мусорные бренды из результатов Emex
                         filtered_emex = []
@@ -315,18 +311,15 @@ def process_parsing_task(self, task_id):
                         
                         # Обрабатываем результаты Emex для текущего артикула
                         for (b1, pn1, n1, b2, pn2, src) in filtered_emex:
-                            key = (b1, pn1, n1, b2, pn2, src)
-                            if key not in used_pairs:
-                                d = {
-                                    'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                                    'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                    'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
-                                    'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
-                                    'Источник': src
-                                }
-                                results_emex.append(d)
-                                used_pairs.add(key)
+                            d = {
+                                'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                                'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                                'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                                'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
+                                'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                'Источник': src
+                            }
+                            results_emex.append(d)
                         
                         # Armtek (Selenium) - с прокси для текущего артикула
                         def parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b):
@@ -374,17 +367,14 @@ def process_parsing_task(self, task_id):
                         armtek_results = parse_armtek_parallel([current_number], brand_from_e, part_number_from_f, name_from_b)
                         
                         for (b1, pn1, n1, b2, pn2, src) in armtek_results:
-                            key = (b1, pn1, n1, b2, pn2, src)
-                            if key not in used_pairs:
-                                results_armtek.append({
-                                    'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                                    'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                    'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
-                                    'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
-                                    'Источник': src
-                                })
-                                used_pairs.add(key)
+                            results_armtek.append({
+                                'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                                'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                                'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                                'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
+                                'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                'Источник': src
+                            })
                     
                     except Exception as e:
                         log(f"Ошибка при обработке артикула {current_number} в строке {index + 1}: {str(e)}")
@@ -392,21 +382,6 @@ def process_parsing_task(self, task_id):
                 
                 # Увеличиваем счетчик обработанных строк
                 task._processed_rows += 1
-                
-                # Создаем файл Armtek даже если нет результатов
-                if results_armtek:
-                    log(f"Armtek: найдено {len(results_armtek)} результатов")
-                else:
-                    log("Armtek: результатов не найдено, создаем пустой файл")
-                    # Создаем пустой результат для отображения файла
-                    results_armtek.append({
-                        'Бренд № 1': '',
-                        'Артикул по Бренду № 1': '',
-                        'Наименование': '',
-                        'Бренд № 2': '',
-                        'Артикул по Бренду № 2': '',
-                        'Источник': 'armtek'
-                    })
                 
                 # Обновляем прогресс каждые 3 строки для более частого обновления
                 if (index + 1) % 3 == 0 or index == total_rows - 1:
