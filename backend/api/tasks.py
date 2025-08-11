@@ -56,7 +56,7 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
         'невский фильтр', 'подушка дизеля боковая', 'сальник распредвала',
         'корпус межосевого дифференциала', 'нет в наличии', 'или выбрать другой удобный для вас способ',
         'каталоги', 'популярные категории', 'строительство и ремонт', 'электрика и свет',
-        'палец sitrak', 'переключатели подрулевые в сборе', 'дизель', 'мтз', 'сад и огород',
+        'палец sitrak', 'переключатели подрулевые в сборе', 'мтз', 'сад и огород',
         'fmsi', 'ac delco', 'achim', 'achr', 'b-tech', 'beru', 'champion', 'chery', 'dragonzap',
         'ford', 'hot-parts', 'lucas', 'mobis', 'ngk', 'nissan', 'robiton', 'tesla', 'trw', 'vag',
         'valeo', 'auto-comfort', 'autotech', 'createk', 'howo', 'kamaz', 'leo trade', 'prc',
@@ -189,6 +189,7 @@ def process_parsing_task(self, task_id):
                             time.sleep(0.1)  # Уменьшаем задержку для ускорения
                             brands = parser_func(num, proxy)
                             log(f"{site}: {num} → {brands}")
+                            # Возвращаем список кортежей для каждого бренда
                             return [(brand, part_number, name, b, num, site) for b in brands]
                         except Exception as e:
                             log(f"Error parsing {site} for {num} (attempt {attempt + 1}): {str(e)}")
@@ -199,28 +200,19 @@ def process_parsing_task(self, task_id):
                                 return []
                 return inner
             
-            # Оптимизируем количество потоков для ускорения
-            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:  # Увеличиваем потоки для ускорения
-                # Autopiter
-                fut_autopiter = {executor.submit(parse_one('autopiter', get_brands_by_artikul), num): num for num in numbers}
-                
-                # Обрабатываем результаты с таймаутом
-                for fut in concurrent.futures.as_completed(fut_autopiter, timeout=120):  # Уменьшаем таймаут для ускорения
-                    try:
-                        for res in fut.result():
-                            results['autopiter'].append(res)
-                    except Exception as e:
-                        log(f"Ошибка обработки Autopiter: {str(e)}")
-                
-                # Emex
-                fut_emex = {executor.submit(parse_one('emex', get_brands_by_artikul_emex), num): num for num in numbers}
-                
-                for fut in concurrent.futures.as_completed(fut_emex, timeout=120):  # Уменьшаем таймаут для ускорения
-                    try:
-                        for res in fut.result():
-                            results['emex'].append(res)
-                    except Exception as e:
-                        log(f"Ошибка обработки Emex: {str(e)}")
+            # Обрабатываем каждый артикул отдельно для Autopiter и Emex
+            for num in numbers:
+                try:
+                    # Autopiter для текущего артикула
+                    autopiter_results = parse_one('autopiter', get_brands_by_artikul)(num)
+                    results['autopiter'].extend(autopiter_results)
+                    
+                    # Emex для текущего артикула
+                    emex_results = parse_one('emex', get_brands_by_artikul_emex)(num)
+                    results['emex'].extend(emex_results)
+                    
+                except Exception as e:
+                    log(f"Ошибка обработки артикула {num}: {str(e)}")
             
             return results
         
@@ -275,51 +267,61 @@ def process_parsing_task(self, task_id):
                         # Параллельно Autopiter, Emex для текущего артикула
                         parallel_results = parse_all_parallel([current_number], brand_from_e, part_number_from_f, name_from_b)
                         
-                        # Фильтруем мусорные бренды из результатов Autopiter
-                        filtered_autopiter = []
+                        # Обрабатываем результаты Autopiter для текущего артикула
                         for (b1, pn1, n1, b2, pn2, src) in parallel_results['autopiter']:
                             # Фильтруем бренд № 2 (результат парсинга)
                             if b2 and b2.strip():
                                 filtered_brands = filter_garbage_brands([b2])
                                 if filtered_brands:
-                                    filtered_autopiter.append((b1, pn1, n1, filtered_brands[0], pn2, src))
+                                    # Создаем отдельную запись для каждого отфильтрованного бренда
+                                    for filtered_brand in filtered_brands:
+                                        d = {
+                                            'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                                            'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                                            'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                                            'Бренд № 2': clean_excel_string(filtered_brand),  # Результат парсинга
+                                            'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                            'Источник': src
+                                        }
+                                        results_autopiter.append(d)
                             else:
-                                filtered_autopiter.append((b1, pn1, n1, b2, pn2, src))
+                                d = {
+                                    'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                                    'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                                    'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
+                                    'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                    'Источник': src
+                                }
+                                results_autopiter.append(d)
                         
-                        # Обрабатываем результаты Autopiter для текущего артикула
-                        for (b1, pn1, n1, b2, pn2, src) in filtered_autopiter:
-                            d = {
-                                'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                                'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                                'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
-                                'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
-                                'Источник': src
-                            }
-                            results_autopiter.append(d)
-                        
-                        # Фильтруем мусорные бренды из результатов Emex
-                        filtered_emex = []
+                        # Обрабатываем результаты Emex для текущего артикула
                         for (b1, pn1, n1, b2, pn2, src) in parallel_results['emex']:
                             # Фильтруем бренд № 2 (результат парсинга)
                             if b2 and b2.strip():
                                 filtered_brands = filter_garbage_brands([b2])
                                 if filtered_brands:
-                                    filtered_emex.append((b1, pn1, n1, filtered_brands[0], pn2, src))
+                                    # Создаем отдельную запись для каждого отфильтрованного бренда
+                                    for filtered_brand in filtered_brands:
+                                        d = {
+                                            'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                                            'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                                            'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                                            'Бренд № 2': clean_excel_string(filtered_brand),  # Результат парсинга
+                                            'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                            'Источник': src
+                                        }
+                                        results_emex.append(d)
                             else:
-                                filtered_emex.append((b1, pn1, n1, b2, pn2, src))
-                        
-                        # Обрабатываем результаты Emex для текущего артикула
-                        for (b1, pn1, n1, b2, pn2, src) in filtered_emex:
-                            d = {
-                                'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                                'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                                'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
-                                'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
-                                'Источник': src
-                            }
-                            results_emex.append(d)
+                                d = {
+                                    'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                                    'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                                    'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
+                                    'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                    'Источник': src
+                                }
+                                results_emex.append(d)
                         
                         # Armtek (Selenium) - с прокси для текущего артикула
                         def parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b):
