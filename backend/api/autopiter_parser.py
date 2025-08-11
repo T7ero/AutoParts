@@ -289,7 +289,7 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                     if title_elem:
                         title_text = title_elem.get_text(strip=True).lower()
                         if 'производител' in title_text:
-                            # Нашли строку с производителями, извлекаем бренды
+                            # Нашли строку с производителями, извлекаем бренды из infoColumn
                             info_elem = row.select_one('div[class*="infoColumn"], div[class*="info"]')
                             if info_elem:
                                 # Ищем все span элементы с брендами
@@ -306,6 +306,47 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                                         ]):
                                             brands.add(brand)
                             break
+                        
+                # Если не нашли строку "Производители", ищем бренды во всех infoColumn
+                if not brands:
+                    for row in rows:
+                        info_elem = row.select_one('div[class*="infoColumn"], div[class*="info"]')
+                        if info_elem:
+                            # Ищем span с title (это бренды)
+                            brand_spans = info_elem.select('span[title]')
+                            for span in brand_spans:
+                                brand = span.get('title')
+                                if brand and len(brand) > 1 and not brand.isdigit():
+                                    # Фильтруем только реальные бренды
+                                    if not any(exclude in brand.lower() for exclude in [
+                                        'сверла', 'свечи', 'автошина', 'заклепка', 'игла', 
+                                        'лейка', 'лента', 'помпа', 'поплавок', 'ремень', 
+                                        'фильтр', 'хомут', 'шина', 'щетка', 'кольцо',
+                                        'комплект', 'костюм', 'стартер', 'шайба', 'деталь'
+                                    ]):
+                                        brands.add(brand)
+                
+                # Дополнительный поиск по точному селектору из DevTools
+                if not brands:
+                    try:
+                        # Используем точный селектор: #main-content > div > div > div.Table__table > div > div.IndividualTableRow__infoColumn > span > span > span > span
+                        main_content = soup.select_one('#main-content')
+                        if main_content:
+                            table = main_content.select_one('div[class*="Table__table"]')
+                            if table:
+                                rows = table.select('div[class*="IndividualTableRow"]')
+                                for row in rows:
+                                    info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
+                                    if info_column:
+                                        # Ищем span с title (это бренды)
+                                        brand_spans = info_column.select('span[title]')
+                                        for span in brand_spans:
+                                            brand = span.get('title')
+                                            if brand and len(brand) > 1 and not brand.isdigit():
+                                                brands.add(brand)
+                    except Exception as e:
+                        print(f"Ошибка при дополнительном поиске брендов Autopiter: {e}")
+                        pass
         except Exception as e:
             print(f"Ошибка при парсинге брендов Autopiter: {e}")
             pass
