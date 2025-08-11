@@ -938,8 +938,26 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             "Connection": "keep-alive",
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
+            "Origin": "https://emex.ru",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty",
         }
         
+        # Готовим сессию и прогреваем куки/регион
+        session = requests.Session()
+        session.headers.update(headers)
+        # Ставим региональные куки явно
+        try:
+            session.cookies.set("regionId", "263", domain="emex.ru")
+            session.cookies.set("locationId", "263", domain="emex.ru")
+        except Exception:
+            pass
+        try:
+            session.get(f"https://emex.ru/products/{encoded_artikul}", timeout=10)
+        except Exception:
+            pass
+
         # Сначала пробуем без прокси
         try:
             log_debug(f"[API] Emex: попытка 1 для {artikul}")
@@ -949,7 +967,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                 try:
                     if attempt == 0:
                         # Первая попытка с обычными заголовками
-                        response = requests.get(
+                        response = session.get(
                             api_url,
                             headers=headers,
                             timeout=20
@@ -958,7 +976,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                         # Вторая попытка с отключенным сжатием
                         headers_no_compression = headers.copy()
                         headers_no_compression['Accept-Encoding'] = 'identity'
-                        response = requests.get(
+                        response = session.get(
                             api_url,
                             headers=headers_no_compression,
                             timeout=20
@@ -1067,6 +1085,31 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                 if attempt < 1:
                     time.sleep(1)
         
+            # Дополнительная попытка: showAll=true
+            if 'brands' not in locals() or not brands:
+                try:
+                    alt_api_url = f"https://emex.ru/api/search/search?detailNum={encoded_artikul}&locationId=263&showAll=true&isHeaderSearch=true"
+                    response = session.get(alt_api_url, headers=headers, timeout=20)
+                    if response.status_code == 200 and 'application/json' in response.headers.get('content-type','').lower():
+                        data = response.json()
+                        brands = set()
+                        search_result = data.get("searchResult", {})
+                        makes = (search_result or {}).get("makes", {})
+                        makes_list = (makes or {}).get("list", [])
+                        for item in makes_list:
+                            if isinstance(item, dict):
+                                brand = item.get("make")
+                                if brand and brand.strip():
+                                    brands.add(brand.strip())
+                        sr_make = search_result.get("make") if isinstance(search_result, dict) else None
+                        if isinstance(sr_make, str) and sr_make.strip():
+                            brands.add(sr_make.strip())
+                        if brands:
+                            log_debug(f"Emex API (showAll=true): найдено {len(brands)} брендов для {artikul}")
+                            return sorted(list(brands))
+                except Exception as e:
+                    log_debug(f"Emex API (showAll=true): ошибка {str(e)}")
+
         except Exception as e:
             log_debug(f"Emex API: внешняя ошибка при обращении к API без прокси: {str(e)}")
 
