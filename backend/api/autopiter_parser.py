@@ -251,8 +251,8 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
         
-        # Используем ТОЛЬКО точный селектор из DevTools
-        # #main-content > div > div > div.Table__table____693a7dea7e60fe92 > div > div.IndividualTableRow__infoColumn___b7ecc9b28c9245b4 > span > span > span
+        # Используем ТОЧНЫЙ селектор из DevTools пользователя
+        # #main-content > div > div > div.Table__table____693a7dea7e60fe92 > div > div.IndividualTableRow__infoColumn___b7ecc9b28c9245b4 > span > span > span > span
         
         # Ищем main-content
         main_content = soup.select_one('#main-content')
@@ -272,47 +272,58 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             log_debug(f"Autopiter: не найдены строки IndividualTableRow для {artikul}")
             return []
         
-        # Проходим по всем строкам и ищем infoColumn
+        # Проходим по всем строкам и ищем infoColumn с точным селектором
         for row in rows:
             info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
             if info_column:
-                # Ищем span элементы с title (это бренды)
-                brand_spans = info_column.select('span[title]')
+                # Используем точный селектор: span > span > span > span
+                brand_spans = info_column.select('span > span > span > span')
                 for span in brand_spans:
-                    brand = span.get('title')
+                    brand = span.get_text(strip=True)
                     if brand and len(brand) > 1 and not brand.isdigit():
-                        # Дополнительная проверка - бренд должен быть в разумных пределах
-                        if len(brand) < 50 and not any(exclude in brand.lower() for exclude in [
-                            'сверла', 'свечи', 'автошина', 'заклепка', 'игла', 
-                            'лейка', 'лента', 'помпа', 'поплавок', 'ремень', 
-                            'фильтр', 'хомут', 'шина', 'щетка', 'кольцо',
-                            'комплект', 'костюм', 'стартер', 'шайба', 'деталь',
-                            'накладка', 'тормозная', 'задняя', 'комплект', 'колесо'
-                        ]):
-                            brands.add(brand)
-                            log_debug(f"Autopiter: найден бренд '{brand}' для {artikul}")
-        
-        # Если не нашли бренды через title, пробуем через текст span
-        if not brands:
-            for row in rows:
-                info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
-                if info_column:
-                    # Ищем span элементы с текстом (fallback)
-                    brand_spans = info_column.select('span')
-                    for span in brand_spans:
-                        brand = span.get_text(strip=True)
-                        if brand and len(brand) > 1 and len(brand) < 50 and not brand.isdigit():
-                            # Проверяем, что это не мусор
-                            if not any(exclude in brand.lower() for exclude in [
+                        # Дополнительная проверка - исключаем мусор и данные из "Часто ищут"
+                        if (len(brand) < 50 and 
+                            not any(exclude in brand.lower() for exclude in [
                                 'сверла', 'свечи', 'автошина', 'заклепка', 'игла', 
                                 'лейка', 'лента', 'помпа', 'поплавок', 'ремень', 
                                 'фильтр', 'хомут', 'шина', 'щетка', 'кольцо',
                                 'комплект', 'костюм', 'стартер', 'шайба', 'деталь',
                                 'накладка', 'тормозная', 'задняя', 'комплект', 'колесо',
-                                'производители', 'часто ищут', 'рекомендуем'
-                            ]):
+                                'производители', 'часто ищут', 'рекомендуем', 'сверла техмаш',
+                                'тестовый', 'клиента', 'без артикула', 'оригинальная'
+                            ]) and
+                            not brand.lower().startswith('12643') and  # Исключаем артикулы
+                            not brand.lower().startswith('d-') and
+                            not any(char.isdigit() for char in brand[:3])  # Исключаем артикулы в начале
+                        ):
+                            brands.add(brand)
+                            log_debug(f"Autopiter: найден бренд '{brand}' для {artikul}")
+        
+        # Если не нашли бренды через точный селектор, пробуем через title
+        if not brands:
+            for row in rows:
+                info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
+                if info_column:
+                    brand_spans = info_column.select('span[title]')
+                    for span in brand_spans:
+                        brand = span.get('title')
+                        if brand and len(brand) > 1 and not brand.isdigit():
+                            if (len(brand) < 50 and 
+                                not any(exclude in brand.lower() for exclude in [
+                                    'сверла', 'свечи', 'автошина', 'заклепка', 'игла', 
+                                    'лейка', 'лента', 'помпа', 'поплавок', 'ремень', 
+                                    'фильтр', 'хомут', 'шина', 'щетка', 'кольцо',
+                                    'комплект', 'костюм', 'стартер', 'шайба', 'деталь',
+                                    'накладка', 'тормозная', 'задняя', 'комплект', 'колесо',
+                                    'производители', 'часто ищут', 'рекомендуем', 'сверла техмаш',
+                                    'тестовый', 'клиента', 'без артикула', 'оригинальная'
+                                ]) and
+                                not brand.lower().startswith('12643') and
+                                not brand.lower().startswith('d-') and
+                                not any(char.isdigit() for char in brand[:3])
+                            ):
                                 brands.add(brand)
-                                log_debug(f"Autopiter: найден бренд через текст '{brand}' для {artikul}")
+                                log_debug(f"Autopiter: найден бренд через title '{brand}' для {artikul}")
         
         log_debug(f"Autopiter: итого найдено {len(brands)} брендов для {artikul}")
         
@@ -588,7 +599,9 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
         soup = BeautifulSoup(page_source, 'html.parser')
         
         brand_selectors = [
-            # Специфичные селекторы для Armtek
+            # Точный селектор из DevTools пользователя
+            'body > app-root > div > mp-main > search-result > div > div > project-ui-search-result-with-filters > div > div.results.has-filter-on-desktop > project-ui-search-result > div > div > div.results-list__items.ng-star-inserted > div > div:nth-child(2) > project-ui-article-card > project-ui-article-card-with-suggestions > div > div.content > div.row.ng-star-inserted > div > div.item.item-mobile > span.font__body2.brand--selecting',
+            # Альтернативные селекторы для Armtek
             'span.font__body2.brand--selecting',
             '.brand--selecting',
             '.font__body2.brand--selecting',
@@ -723,7 +736,9 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
         # Добавлено из пожеланий: считать брендами
         'HTP', 'FVR', 'ISUZU', 'G-BRAKE', 'АККОР', 'ДИЗЕЛЬ',
         # Новые бренды из логов
-        'EMEK', 'HOT-PARTS', 'CARMECH', 'JAPACO', 'AUTOCOMPONENT'
+        'EMEK', 'HOT-PARTS', 'CARMECH', 'JAPACO', 'AUTOCOMPONENT',
+        # Дополнительные бренды, которые должны быть найдены
+        'EMEK', 'HOT-PARTS', 'ISUZU', 'CARMECH', 'G-BRAKE'
     }
     
     filtered = []
@@ -743,9 +758,14 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
                     break
         # Также добавляем бренды, которые содержат ключевые слова
         elif any(keyword in brand_upper for keyword in [
-            'EMEK', 'HOT', 'PARTS', 'CARMECH', 'JAPACO', 'AUTO', 'COMPONENT'
+            'EMEK', 'HOT', 'PARTS', 'CARMECH', 'JAPACO', 'AUTO', 'COMPONENT', 'ISUZU', 'G-BRAKE'
         ]):
             filtered.append(brand_clean)
+        # Специальная обработка для составных брендов
+        elif 'HOT-PARTS' in brand_upper or 'HOT_PARTS' in brand_upper:
+            filtered.append('HOT-PARTS')
+        elif 'G-BRAKE' in brand_upper or 'GBRAKE' in brand_upper:
+            filtered.append('G-BRAKE')
     
     return sorted(list(set(filtered)))  # Убираем дубликаты и сортируем
 
