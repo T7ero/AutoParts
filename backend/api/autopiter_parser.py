@@ -1059,8 +1059,6 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                                         return sorted(list(brands))
                                 except:
                                     pass
-                        except:
-                            pass
                         log_debug(f"Emex API: ответ для {artikul}: {response.text[:500]}...")
                 except requests.exceptions.Timeout:
                     log_debug(f"Emex API: таймаут для {artikul} (попытка {attempt + 1})")
@@ -1071,6 +1069,9 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                 if attempt < 1:
                     time.sleep(1)
         
+        except Exception as e:
+            log_debug(f"Emex API: внешняя ошибка при обращении к API без прокси: {str(e)}")
+
         # Fallback: пробуем HTTP scraping если API не работает
         try:
             log_debug(f"Emex: пробуем HTTP fallback для {artikul}")
