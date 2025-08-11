@@ -928,7 +928,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
         api_url = f"https://emex.ru/api/search/search?detailNum={encoded_artikul}&locationId=263&showAll=false&isHeaderSearch=true"
         
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*",
             "Referer": f"https://emex.ru/search?detailNum={encoded_artikul}",
             "X-Requested-With": "XMLHttpRequest",
@@ -970,6 +970,20 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
         )
         if xsrf_token:
             session.headers.update({"X-XSRF-TOKEN": xsrf_token})
+
+        # Подготовим варианты записи артикула: как есть, без тире/пробелов, в верхнем регистре
+        try:
+            raw_num = artikul.strip()
+            candidate_nums = list(dict.fromkeys([
+                raw_num,
+                raw_num.upper(),
+                raw_num.replace('-', ''),
+                raw_num.replace('-', '').upper(),
+                raw_num.replace(' ', ''),
+                raw_num.replace(' ', '').upper(),
+            ]))
+        except Exception:
+            candidate_nums = [artikul]
 
         # Сначала пробуем без прокси
         try:
@@ -1098,43 +1112,46 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                 if attempt < 1:
                     time.sleep(1)
         
-            # Дополнительные попытки с разными параметрами
+            # Дополнительные попытки с разными параметрами и вариантами артикула
             if 'brands' not in locals() or not brands:
                 alt_variants = [
+                    {"showAll": "false", "isHeaderSearch": "true"},
                     {"showAll": "true", "isHeaderSearch": "true"},
                     {"showAll": "false", "isHeaderSearch": "false"},
                     {"showAll": "true", "isHeaderSearch": "false"},
                 ]
-                for params in alt_variants:
-                    try:
-                        alt_api_url = (
-                            f"https://emex.ru/api/search/search?detailNum={encoded_artikul}"
-                            f"&locationId=263&showAll={params['showAll']}&isHeaderSearch={params['isHeaderSearch']}"
-                        )
-                        response = session.get(alt_api_url, headers=headers, timeout=20)
-                        if response.status_code == 200 and 'application/json' in response.headers.get('content-type','').lower():
-                            data = response.json()
-                            brands = set()
-                            search_result = data.get("searchResult", {})
-                            makes = (search_result or {}).get("makes", {})
-                            makes_list = (makes or {}).get("list", [])
-                            for item in makes_list:
-                                if isinstance(item, dict):
-                                    brand = item.get("make")
-                                    if brand and brand.strip():
-                                        brands.add(brand.strip())
-                            sr_make = search_result.get("make") if isinstance(search_result, dict) else None
-                            if isinstance(sr_make, str) and sr_make.strip():
-                                brands.add(sr_make.strip())
-                            if brands:
-                                log_debug(
-                                    f"Emex API (alt {params['showAll']}/{params['isHeaderSearch']}): найдено {len(brands)} брендов для {artikul}"
-                                )
-                                return sorted(list(brands))
-                    except Exception as e:
-                        log_debug(
-                            f"Emex API (alt {params['showAll']}/{params['isHeaderSearch']}): ошибка {str(e)}"
-                        )
+                for num in candidate_nums:
+                    num_enc = quote(num)
+                    for params in alt_variants:
+                        try:
+                            alt_api_url = (
+                                f"https://emex.ru/api/search/search?detailNum={num_enc}"
+                                f"&locationId=263&showAll={params['showAll']}&isHeaderSearch={params['isHeaderSearch']}"
+                            )
+                            response = session.get(alt_api_url, headers=headers, timeout=20)
+                            if response.status_code == 200 and 'application/json' in response.headers.get('content-type','').lower():
+                                data = response.json()
+                                brands = set()
+                                search_result = data.get("searchResult", {})
+                                makes = (search_result or {}).get("makes", {})
+                                makes_list = (makes or {}).get("list", [])
+                                for item in makes_list:
+                                    if isinstance(item, dict):
+                                        brand = item.get("make")
+                                        if brand and brand.strip():
+                                            brands.add(brand.strip())
+                                sr_make = search_result.get("make") if isinstance(search_result, dict) else None
+                                if isinstance(sr_make, str) and sr_make.strip():
+                                    brands.add(sr_make.strip())
+                                if brands:
+                                    log_debug(
+                                        f"Emex API (alt {params['showAll']}/{params['isHeaderSearch']} num={num}): найдено {len(brands)} брендов для {artikul}"
+                                    )
+                                    return sorted(list(brands))
+                        except Exception as e:
+                            log_debug(
+                                f"Emex API (alt {params['showAll']}/{params['isHeaderSearch']} num={num}): ошибка {str(e)}"
+                            )
 
         except Exception as e:
             log_debug(f"Emex API: внешняя ошибка при обращении к API без прокси: {str(e)}")
