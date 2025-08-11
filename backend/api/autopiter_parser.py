@@ -933,7 +933,6 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             "Referer": f"https://emex.ru/products/{encoded_artikul}",
             "X-Requested-With": "XMLHttpRequest",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-            # Исключаем br, чтобы не получать brotli-сжатый ответ, который requests не распакует без доп. зависимостей
             "Accept-Encoding": "gzip, deflate",
             "Connection": "keep-alive",
             "Cache-Control": "no-cache",
@@ -944,194 +943,111 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             "Sec-Fetch-Dest": "empty",
         }
         
-        # Готовим сессию и прогреваем куки/регион
+        # Настройка прокси
+        proxies = None
+        if proxy:
+            try:
+                if '@' in proxy:
+                    proxy_parts = proxy.split('@')
+                    proxy_url = proxy_parts[0]
+                    auth_parts = proxy_parts[1].split(':')
+                    username = auth_parts[0]
+                    password = auth_parts[1]
+                    
+                    proxies = {
+                        'http': f'http://{username}:{password}@{proxy_url}',
+                        'https': f'http://{username}:{password}@{proxy_url}'
+                    }
+                else:
+                    proxies = {
+                        'http': f'http://{proxy}',
+                        'https': f'http://{proxy}'
+                    }
+            except Exception as e:
+                log_debug(f"Ошибка настройки прокси для Emex: {str(e)}")
+
+        # Создаем сессию и устанавливаем куки региона
         session = requests.Session()
         session.headers.update(headers)
-        # Ставим региональные куки явно
+        
         try:
             session.cookies.set("regionId", "263", domain="emex.ru")
             session.cookies.set("locationId", "263", domain="emex.ru")
-        except Exception:
-            pass
-        try:
-            session.get(f"https://emex.ru/products/{encoded_artikul}", timeout=10)
-        except Exception:
-            pass
-
-        # Сначала пробуем без прокси
-        try:
-            log_debug(f"[API] Emex: попытка 1 для {artikul}")
-            
-            # Пробуем разные конфигурации запроса
-            for attempt in range(2):
-                try:
-                    if attempt == 0:
-                        # Первая попытка с обычными заголовками
-                        response = session.get(
-                            api_url,
-                            headers=headers,
-                            timeout=20
-                        )
-                    else:
-                        # Вторая попытка с отключенным сжатием
-                        headers_no_compression = headers.copy()
-                        headers_no_compression['Accept-Encoding'] = 'identity'
-                        response = session.get(
-                            api_url,
-                            headers=headers_no_compression,
-                            timeout=20
-                        )
-                    
-                    log_debug(f"Emex API: попытка {attempt + 1}, статус {response.status_code} для {artikul}")
-                    log_debug(f"Emex API: content-type: {response.headers.get('content-type', 'unknown')}")
-                    log_debug(f"Emex API: content-encoding: {response.headers.get('content-encoding', 'none')}")
-                    
-                    if response.status_code == 200:
-                        # Проверяем content-type
-                        content_type = response.headers.get('content-type', '').lower()
-                        if 'application/json' in content_type:
-                            try:
-                                # Пробуем декодировать JSON с обработкой сжатия
-                                data = response.json()
-                                brands = set()
-                                
-                                # Подробное логирование структуры ответа
-                                log_debug(f"Emex API: структура ответа для {artikul}: {list(data.keys()) if isinstance(data, dict) else 'не dict'}")
-                                
-                                # Обработка структуры ответа Emex
-                                search_result = data.get("searchResult", {})
-                                if search_result:
-                                    log_debug(f"Emex API: searchResult ключи: {list(search_result.keys())}")
-                                    
-                                    # Проверяем makes - это основной источник брендов
-                                    makes = search_result.get("makes", {})
-                                    if makes:
-                                        makes_list = makes.get("list", [])
-                                        log_debug(f"Emex API: найдено {len(makes_list)} makes для {artikul}")
-                                        
-                                        for item in makes_list:
-                                            if isinstance(item, dict):
-                                                # Извлекаем бренд из поля "make"
-                                                brand = item.get("make")
-                                                if brand and brand.strip():
-                                                    brands.add(brand.strip())
-                                                    log_debug(f"Emex API: добавлен бренд '{brand}' для {artikul}")
-                                    # Дополнительно берём бренд из searchResult.make, если он есть
-                                    sr_make = search_result.get("make")
-                                    if isinstance(sr_make, str) and sr_make.strip():
-                                        brands.add(sr_make.strip())
-                                        log_debug(f"Emex API: добавлен бренд из searchResult.make '{sr_make}' для {artikul}")
-                                
-                                # Если не нашли в makes, проверяем details
-                                # Для этого эндпоинта бренды находятся в makes.list и в searchResult.make
-                                
-                                # Если все еще нет брендов, ищем в других полях
-                                if not brands:
-                                    log_debug(f"Emex API: поиск брендов в других полях для {artikul}")
-                                    for key, value in data.items():
-                                        if isinstance(value, dict):
-                                            for sub_key, sub_value in value.items():
-                                                if isinstance(sub_value, list):
-                                                    for item in sub_value:
-                                                        if isinstance(item, dict) and "make" in item:
-                                                            brand = item["make"]
-                                                            if brand and brand.strip():
-                                                                brands.add(brand.strip())
-                                                                log_debug(f"Emex API: добавлен бренд из {key}.{sub_key} '{brand}' для {artikul}")
-                                
-                                log_debug(f"Emex API: итого найдено {len(brands)} брендов для {artikul}")
-                                if brands:
-                                    return sorted(list(brands))
-                                
-                            except json.JSONDecodeError as e:
-                                log_debug(f"Emex API: ошибка декодирования JSON для {artikul} (попытка {attempt + 1}): {str(e)}")
-                                # Пробуем декодировать как текст и посмотреть что получилось
-                                try:
-                                    text_content = response.text
-                                    log_debug(f"Emex API: первые 200 символов ответа для {artikul}: {text_content[:200]}")
-                                    if text_content.startswith('{'):
-                                        # Возможно это JSON, но с проблемами кодировки
-                                        log_debug(f"Emex API: ответ начинается с {{, пробуем исправить кодировку")
-                                        # Пробуем исправить кодировку
-                                        try:
-                                            data = json.loads(text_content)
-                                            brands = set()
-                                            search_result = data.get("searchResult", {})
-                                            if search_result:
-                                                makes = search_result.get("makes", {})
-                                                if makes:
-                                                    makes_list = makes.get("list", [])
-                                                    for item in makes_list:
-                                                        if isinstance(item, dict):
-                                                            brand = item.get("make")
-                                                            if brand and brand.strip():
-                                                                brands.add(brand.strip())
-                                                                log_debug(f"Emex API: добавлен бренд после исправления кодировки '{brand}' для {artikul}")
-                                        except Exception:
-                                            pass
-                                    # Возврат, если удалось собрать бренды
-                                    if 'brands' in locals() and brands:
-                                        log_debug(f"Emex API: найдено {len(brands)} брендов после исправления кодировки для {artikul}")
-                                        return sorted(list(brands))
-                                except:
-                                    pass
-                        log_debug(f"Emex API: ответ для {artikul}: {response.text[:500]}...")
-                except requests.exceptions.Timeout:
-                    log_debug(f"Emex API: таймаут для {artikul} (попытка {attempt + 1})")
-                except requests.exceptions.RequestException as e:
-                    log_debug(f"Emex API: ошибка запроса для {artikul} (попытка {attempt + 1}): {str(e)}")
-                
-                # Если это не последняя попытка, ждем немного
-                if attempt < 1:
-                    time.sleep(1)
-        
-            # Дополнительные попытки с разными параметрами
-            if 'brands' not in locals() or not brands:
-                alt_variants = [
-                    {"showAll": "true", "isHeaderSearch": "true"},
-                    {"showAll": "false", "isHeaderSearch": "false"},
-                    {"showAll": "true", "isHeaderSearch": "false"},
-                ]
-                for params in alt_variants:
-                    try:
-                        alt_api_url = (
-                            f"https://emex.ru/api/search/search?detailNum={encoded_artikul}"
-                            f"&locationId=263&showAll={params['showAll']}&isHeaderSearch={params['isHeaderSearch']}"
-                        )
-                        response = session.get(alt_api_url, headers=headers, timeout=20)
-                        if response.status_code == 200 and 'application/json' in response.headers.get('content-type','').lower():
-                            data = response.json()
-                            brands = set()
-                            search_result = data.get("searchResult", {})
-                            makes = (search_result or {}).get("makes", {})
-                            makes_list = (makes or {}).get("list", [])
-                            for item in makes_list:
-                                if isinstance(item, dict):
-                                    brand = item.get("make")
-                                    if brand and brand.strip():
-                                        brands.add(brand.strip())
-                            sr_make = search_result.get("make") if isinstance(search_result, dict) else None
-                            if isinstance(sr_make, str) and sr_make.strip():
-                                brands.add(sr_make.strip())
-                            if brands:
-                                log_debug(
-                                    f"Emex API (alt {params['showAll']}/{params['isHeaderSearch']}): найдено {len(brands)} брендов для {artikul}"
-                                )
-                                return sorted(list(brands))
-                    except Exception as e:
-                        log_debug(
-                            f"Emex API (alt {params['showAll']}/{params['isHeaderSearch']}): ошибка {str(e)}"
-                        )
-
+            # Предварительный запрос для установки сессии
+            session.get(f"https://emex.ru/products/{encoded_artikul}", 
+                      timeout=10, proxies=proxies)
         except Exception as e:
-            log_debug(f"Emex API: внешняя ошибка при обращении к API без прокси: {str(e)}")
+            log_debug(f"Emex: ошибка установки сессии: {str(e)}")
 
-        # Строгая политика: если API не вернул бренды – возвращаем пустой список (без HTTP fallback)
-        return []
-        
+        try:
+            log_debug(f"Emex API: запрос для {artikul}")
+            response = session.get(api_url, headers=headers, 
+                                 timeout=20, proxies=proxies)
+            
+            if response.status_code == 200:
+                content_type = response.headers.get('content-type', '').lower()
+                if 'application/json' in content_type:
+                    try:
+                        data = response.json()
+                        brands = set()
+                        
+                        # Основные бренды из структуры ответа
+                        search_result = data.get("searchResult", {})
+                        if isinstance(search_result, dict):
+                            # Бренд из основного поля make
+                            main_brand = search_result.get("make")
+                            if main_brand and isinstance(main_brand, str):
+                                brands.add(main_brand.strip())
+                            
+                            # Бренды из списка makes
+                            makes = search_result.get("makes", {})
+                            if isinstance(makes, dict):
+                                makes_list = makes.get("list", [])
+                                if isinstance(makes_list, list):
+                                    for item in makes_list:
+                                        if isinstance(item, dict):
+                                            brand = item.get("make")
+                                            if brand and isinstance(brand, str):
+                                                brands.add(brand.strip())
+                        
+                        # Фильтрация брендов
+                        filtered_brands = []
+                        exclude_brands = {}
+                        
+                        for brand in brands:
+                            brand_clean = brand.strip()
+                            brand_lower = brand_clean.lower()
+                            
+                            # Проверяем, что бренд не в списке исключений
+                            if (brand_clean and len(brand_clean) > 2 and
+                                not any(exclude in brand_lower 
+                                      for exclude in exclude_brands) and
+                                not brand_clean.isdigit()):
+                                filtered_brands.append(brand_clean)
+                        
+                        log_debug(f"Emex: найдены бренды {filtered_brands} для {artikul}")
+                        return filtered_brands
+                    
+                    except json.JSONDecodeError as e:
+                        log_debug(f"Emex: ошибка декодирования JSON: {str(e)}")
+                        log_debug(f"Emex: ответ: {response.text[:500]}...")
+                else:
+                    log_debug(f"Emex: неверный content-type: {content_type}")
+                    log_debug(f"Emex: ответ: {response.text[:500]}...")
+            else:
+                log_debug(f"Emex: HTTP статус {response.status_code}")
+                
+        except requests.exceptions.Timeout:
+            log_debug(f"Emex: таймаут для {artikul}")
+        except requests.exceptions.RequestException as e:
+            log_debug(f"Emex: ошибка запроса: {str(e)}")
+        except Exception as e:
+            log_debug(f"Emex: неожиданная ошибка: {str(e)}")
+            
     except Exception as e:
         log_debug(f"Ошибка Emex для {artikul}: {str(e)}")
-        return []
+    
+    return []
 
 # Инициализация прокси при импорте модуля
 load_proxies_from_file()
