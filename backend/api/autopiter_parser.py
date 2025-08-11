@@ -922,10 +922,10 @@ def parse_armtek_http_response(html_content: str, artikul: str) -> List[str]:
     return filter_armtek_brands(list(brands))
 
 def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> List[str]:
-    """Получает бренды с Emex по артикулу"""
+    """Получает бренды с Emex по артикулу с улучшенным парсингом JSON"""
     try:
         encoded_artikul = quote(artikul)
-        api_url = f"https://emex.ru/api/search/search?detailNum={encoded_artikul}&locationId=263&showAll=false&isHeaderSearch=true"
+        api_url = f"https://emex.ru/api/search/search?detailNum={encoded_artikul}&locationId=263&showAll=true&isHeaderSearch=true"
         
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -942,9 +942,11 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Dest": "empty",
         }
+
+        # Настройка сессии с прокси
+        session = requests.Session()
+        session.headers.update(headers)
         
-        # Настройка прокси
-        proxies = None
         if proxy:
             try:
                 if '@' in proxy:
@@ -963,26 +965,23 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                         'http': f'http://{proxy}',
                         'https': f'http://{proxy}'
                     }
+                session.proxies.update(proxies)
             except Exception as e:
-                log_debug(f"Ошибка настройки прокси для Emex: {str(e)}")
+                log_debug(f"Emex: ошибка настройки прокси: {str(e)}")
 
-        # Создаем сессию и устанавливаем куки региона
-        session = requests.Session()
-        session.headers.update(headers)
-        
+        # Установка кук региона
+        session.cookies.set("regionId", "263", domain="emex.ru")
+        session.cookies.set("locationId", "263", domain="emex.ru")
+
         try:
-            session.cookies.set("regionId", "263", domain="emex.ru")
-            session.cookies.set("locationId", "263", domain="emex.ru")
             # Предварительный запрос для установки сессии
-            session.get(f"https://emex.ru/products/{encoded_artikul}", 
-                      timeout=10, proxies=proxies)
-        except Exception as e:
-            log_debug(f"Emex: ошибка установки сессии: {str(e)}")
+            session.get(f"https://emex.ru/products/{encoded_artikul}", timeout=10)
+        except:
+            pass
 
         try:
             log_debug(f"Emex API: запрос для {artikul}")
-            response = session.get(api_url, headers=headers, 
-                                 timeout=20, proxies=proxies)
+            response = session.get(api_url, timeout=20)
             
             if response.status_code == 200:
                 content_type = response.headers.get('content-type', '').lower()
@@ -990,16 +989,15 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                     try:
                         data = response.json()
                         brands = set()
-                        
-                        # Основные бренды из структуры ответа
+
+                        # 1. Основной бренд из searchResult.make
                         search_result = data.get("searchResult", {})
                         if isinstance(search_result, dict):
-                            # Бренд из основного поля make
                             main_brand = search_result.get("make")
-                            if main_brand and isinstance(main_brand, str):
+                            if isinstance(main_brand, str) and main_brand.strip():
                                 brands.add(main_brand.strip())
-                            
-                            # Бренды из списка makes
+
+                            # 2. Бренды из searchResult.makes.list
                             makes = search_result.get("makes", {})
                             if isinstance(makes, dict):
                                 makes_list = makes.get("list", [])
@@ -1007,27 +1005,44 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                                     for item in makes_list:
                                         if isinstance(item, dict):
                                             brand = item.get("make")
-                                            if brand and isinstance(brand, str):
+                                            if isinstance(brand, str) and brand.strip():
                                                 brands.add(brand.strip())
-                        
-                        # Фильтрация брендов
+
+                        # 3. Дополнительные проверки если бренды не найдены
+                        if not brands:
+                            # Проверяем альтернативные места в структуре
+                            for key in data.keys():
+                                if isinstance(data[key], dict):
+                                    for sub_key in data[key].keys():
+                                        if isinstance(data[key][sub_key], list):
+                                            for item in data[key][sub_key]:
+                                                if isinstance(item, dict):
+                                                    if "make" in item:
+                                                        brand = item["make"]
+                                                        if isinstance(brand, str) and brand.strip():
+                                                            brands.add(brand.strip())
+
+                        # Фильтрация результатов
                         filtered_brands = []
-                        exclude_brands = {}
-                        
+                        exclude_brands = {
+                            'дизель', 'diesel', 'неоригинал', 'noname', 
+                            'no name', 'unknown', 'аналог', 'original',
+                            'оригинал', 'замена', 'аналоги', 'универсальный'
+                        }
+
                         for brand in brands:
                             brand_clean = brand.strip()
                             brand_lower = brand_clean.lower()
                             
-                            # Проверяем, что бренд не в списке исключений
-                            if (brand_clean and len(brand_clean) > 2 and
-                                not any(exclude in brand_lower 
-                                      for exclude in exclude_brands) and
-                                not brand_clean.isdigit()):
+                            if (len(brand_clean) > 2 and
+                                not any(exclude in brand_lower for exclude in exclude_brands) and
+                                not brand_clean.isdigit() and
+                                not brand_lower.startswith(('запчасти', 'авто', 'детали'))):
                                 filtered_brands.append(brand_clean)
-                        
+
                         log_debug(f"Emex: найдены бренды {filtered_brands} для {artikul}")
                         return filtered_brands
-                    
+
                     except json.JSONDecodeError as e:
                         log_debug(f"Emex: ошибка декодирования JSON: {str(e)}")
                         log_debug(f"Emex: ответ: {response.text[:500]}...")
@@ -1036,17 +1051,18 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                     log_debug(f"Emex: ответ: {response.text[:500]}...")
             else:
                 log_debug(f"Emex: HTTP статус {response.status_code}")
-                
+                log_debug(f"Emex: ответ: {response.text[:500]}...")
+
         except requests.exceptions.Timeout:
             log_debug(f"Emex: таймаут для {artikul}")
         except requests.exceptions.RequestException as e:
             log_debug(f"Emex: ошибка запроса: {str(e)}")
         except Exception as e:
             log_debug(f"Emex: неожиданная ошибка: {str(e)}")
-            
+
     except Exception as e:
         log_debug(f"Ошибка Emex для {artikul}: {str(e)}")
-    
+
     return []
 
 # Инициализация прокси при импорте модуля
