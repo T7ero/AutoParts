@@ -865,7 +865,7 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
     # Белый список разрешенных брендов
     allowed_brands = {
         'QUNZE', 'NIPPON', 'MOTORS MATTO', 'JMC', 'KOBELCO', 'PRC', 
-        'HUANG LIN', 'ERISTIC', 'HINO', 'OOTOKO'
+        'HUANG LIN', 'ERISTIC', 'HINO', 'OOTOKO', 'Mitsubishi', 'Дизель', 'Toyota'
     }
     
     filtered = []
