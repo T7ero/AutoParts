@@ -278,31 +278,36 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
     # Целенаправленно вытягиваем из строки с меткой "Производители" (табличный блок на странице)
     if not brands:
         try:
+            # Ищем таблицу с информацией о товаре
             table = soup.select_one('div[class*="Table__table"]')
             if table:
-                rows = table.select('div[class*="IndividualTableRow__row"]') or table.find_all('div', recursive=False)
+                # Ищем строку с "Производители" и извлекаем бренды
+                rows = table.select('div[class*="IndividualTableRow"]')
                 for row in rows:
-                    title_col = None
-                    info_col = None
-                    # ищем колонки по классам
-                    for child in row.find_all('div', recursive=False):
-                        cls = ' '.join(child.get('class', []))
-                        if 'IndividualTableRow__titleColumn' in cls:
-                            title_col = child
-                        if 'IndividualTableRow__infoColumn' in cls:
-                            info_col = child
-                    title_text = (title_col.get_text(strip=True) if title_col else '').lower()
-                    if 'производител' in title_text and info_col:
-                        # Бренды в правой колонке обычно как span[title]
-                        for sp in info_col.select('span[title], span span span span'):
-                            val = sp.get('title') or sp.get_text(strip=True)
-                            if val:
-                                val = val.strip()
-                                if val and len(val) > 1 and not val.isdigit():
-                                    brands.add(val)
-                        if brands:
+                    # Ищем заголовок строки
+                    title_elem = row.select_one('div[class*="titleColumn"], div[class*="title"]')
+                    if title_elem:
+                        title_text = title_elem.get_text(strip=True).lower()
+                        if 'производител' in title_text:
+                            # Нашли строку с производителями, извлекаем бренды
+                            info_elem = row.select_one('div[class*="infoColumn"], div[class*="info"]')
+                            if info_elem:
+                                # Ищем все span элементы с брендами
+                                brand_spans = info_elem.select('span[title], span span span span')
+                                for span in brand_spans:
+                                    brand = span.get('title') or span.get_text(strip=True)
+                                    if brand and len(brand) > 1 and not brand.isdigit():
+                                        # Фильтруем только реальные бренды, исключаем "Часто ищут"
+                                        if not any(exclude in brand.lower() for exclude in [
+                                            'сверла', 'свечи', 'автошина', 'заклепка', 'игла', 
+                                            'лейка', 'лента', 'помпа', 'поплавок', 'ремень', 
+                                            'фильтр', 'хомут', 'шина', 'щетка', 'кольцо',
+                                            'комплект', 'костюм', 'стартер', 'шайба', 'деталь'
+                                        ]):
+                                            brands.add(brand)
                             break
-        except Exception:
+        except Exception as e:
+            print(f"Ошибка при парсинге брендов Autopiter: {e}")
             pass
     
     # Жестко ограничиваем: никакого общего текстового поиска, чтобы не тащить блок "Часто ищут"
@@ -768,6 +773,11 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
         soup = BeautifulSoup(page_source, 'html.parser')
         
         brand_selectors = [
+            # Специфичные селекторы для Armtek
+            'span.font__body2.brand--selecting',
+            '.brand--selecting',
+            '.font__body2.brand--selecting',
+            # Общие селекторы
             '.product-card .brand-name',
             '.product-card__brand',
             '.catalog-item .brand',
@@ -889,14 +899,16 @@ def parse_armtek_http(artikul: str, proxies: Optional[Dict] = None) -> List[str]
 
 def filter_armtek_brands(brands: List[str]) -> List[str]:
     """Фильтрует бренды Armtek, оставляя только разрешенные бренды"""
-    # Белый список разрешенных брендов
+    # Расширенный белый список разрешенных брендов
     allowed_brands = {
         'QUNZE', 'NIPPON', 'MOTORS MATTO', 'JMC', 'KOBELCO', 'PRC', 
         'HUANG LIN', 'ERISTIC', 'HINO', 'OOTOKO', 'MITSUBISHI', 'TOYOTA',
         'AUTOKAT', 'ZEVS', 'PITWORK', 'HITACHI', 'NISSAN', 'DETOOL', 'CHEMIPRO',
         'STELLOX', 'FURO', 'EDCON', 'REPARTS',
         # Добавлено из пожеланий: считать брендами
-        'HTP', 'FVR', 'ISUZU', 'G-BRAKE', 'АККОР', 'ДИЗЕЛЬ'
+        'HTP', 'FVR', 'ISUZU', 'G-BRAKE', 'АККОР', 'ДИЗЕЛЬ',
+        # Новые бренды из логов
+        'EMEK', 'HOT-PARTS', 'CARMECH', 'JAPACO', 'AUTOCOMPONENT'
     }
     
     filtered = []
@@ -914,6 +926,11 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
                 if allowed_brand.upper() == brand_upper:
                     filtered.append(allowed_brand)
                     break
+        # Также добавляем бренды, которые содержат ключевые слова
+        elif any(keyword in brand_upper for keyword in [
+            'EMEK', 'HOT', 'PARTS', 'CARMECH', 'JAPACO', 'AUTO', 'COMPONENT'
+        ]):
+            filtered.append(brand_clean)
     
     return sorted(list(set(filtered)))  # Убираем дубликаты и сортируем
 
