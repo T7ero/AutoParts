@@ -274,15 +274,33 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             brand = tag.get_text(strip=True)
             if brand and len(brand) > 2 and not brand.isdigit():
                 brands.add(brand)
-    
-    # Поиск по тексту
+
+    # Целенаправленно вытягиваем из строки с меткой "Производители"
     if not brands:
-        brand_pattern = re.compile(r'(бренд|производитель|brand|manufacturer)', re.IGNORECASE)
-        for tag in soup.find_all(['span', 'div', 'a', 'h3']):
-            text = tag.get_text(strip=True)
-            if text and len(text) > 2 and len(text) < 50:
-                if not brand_pattern.search(text) and not any(char.isdigit() for char in text):
-                    brands.add(text)
+        try:
+            # Ищем узел с текстом "Производител" и поднимаемся к контейнеру строки
+            label_node = soup.find(string=re.compile(r"Производител", re.IGNORECASE))
+            if label_node:
+                row_container = label_node
+                # Поднимаемся максимум на 4 уровня вверх, чтобы найти контейнер, где лежат значения
+                for _ in range(4):
+                    if hasattr(row_container, 'find_all'):
+                        # Собираем span[title] внутри строки
+                        span_nodes = row_container.find_all('span')
+                        for s in span_nodes:
+                            text_title = s.get('title')
+                            text_value = s.get_text(strip=True)
+                            candidate = (text_title or text_value or '').strip()
+                            if candidate and len(candidate) > 1 and not candidate.isdigit():
+                                brands.add(candidate)
+                    if hasattr(row_container, 'parent') and row_container.parent is not None:
+                        row_container = row_container.parent
+                    else:
+                        break
+        except Exception:
+            pass
+    
+    # Жестко ограничиваем: никакого общего текстового поиска, чтобы не тащить блок "Часто ищут"
     
     # Фильтрация брендов - убираем весь мусор
     filtered_brands = set()
@@ -952,6 +970,8 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             "Sec-Ch-Ua": '"Chromium";v="139", "Not=A?Brand";v="99"',
             "Sec-Ch-Ua-Platform": '"Windows"',
             "Sec-Ch-Ua-Mobile": "?0",
+            # Часто требуется для API в SPA
+            "Content-Type": "application/json",
         }
         
         # Готовим сессию и прогреваем куки/регион и CSRF
