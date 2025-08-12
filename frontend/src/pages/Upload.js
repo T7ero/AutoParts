@@ -6,6 +6,11 @@ function Upload() {
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [selectedSources, setSelectedSources] = useState({
+    autopiter: true,
+    emex: true,
+    armtek: true
+  });
   const navigate = useNavigate();
 
   const handleFileChange = (event) => {
@@ -19,15 +24,30 @@ function Upload() {
     }
   };
 
+  const handleSourceChange = (source) => {
+    setSelectedSources(prev => ({
+      ...prev,
+      [source]: !prev[source]
+    }));
+  };
+
   const handleSubmit = async (event) => {
     event.preventDefault();
     if (!file) return;
+
+    // Проверяем, что выбран хотя бы один источник
+    const activeSources = Object.keys(selectedSources).filter(source => selectedSources[source]);
+    if (activeSources.length === 0) {
+      setError('Выберите хотя бы один источник для парсинга');
+      return;
+    }
 
     setLoading(true);
     setError(null);
 
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('sources', JSON.stringify(activeSources));
 
     try {
       const response = await axios.post('/api/parsing-tasks/create/', formData, {
@@ -97,6 +117,55 @@ function Upload() {
                 Выбран файл: {file.name}
               </div>
             )}
+            
+            {/* Выбор источников */}
+            <div className="mt-6">
+              <h4 className="text-sm font-medium text-gray-900 mb-3">
+                Выберите источники для парсинга:
+              </h4>
+              <div className="space-y-3">
+                <div className="flex items-center">
+                  <input
+                    id="autopiter"
+                    name="autopiter"
+                    type="checkbox"
+                    checked={selectedSources.autopiter}
+                    onChange={() => handleSourceChange('autopiter')}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  />
+                  <label htmlFor="autopiter" className="ml-2 block text-sm text-gray-900">
+                    Autopiter
+                  </label>
+                </div>
+                <div className="flex items-center">
+                  <input
+                    id="emex"
+                    name="emex"
+                    type="checkbox"
+                    checked={selectedSources.emex}
+                    onChange={() => handleSourceChange('emex')}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  />
+                  <label htmlFor="emex" className="ml-2 block text-sm text-gray-900">
+                    Emex
+                  </label>
+                </div>
+                <div className="flex items-center">
+                  <input
+                    id="armtek"
+                    name="armtek"
+                    type="checkbox"
+                    checked={selectedSources.armtek}
+                    onChange={() => handleSourceChange('armtek')}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  />
+                  <label htmlFor="armtek" className="ml-2 block text-sm text-gray-900">
+                    Armtek
+                  </label>
+                </div>
+              </div>
+            </div>
+            
             {error && (
               <div className="mt-4 text-sm text-red-600">
                 {error}

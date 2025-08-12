@@ -78,6 +78,7 @@ class ParsingTask(models.Model):
     error_message = models.TextField(null=True, blank=True)
     log = models.TextField(null=True, blank=True, verbose_name="Лог задачи")
     result_files = JSONField(null=True, blank=True, verbose_name="Ссылки на все файлы")
+    sources = JSONField(null=True, blank=True, verbose_name="Выбранные источники")
 
     class Meta:
         verbose_name = "Задача парсинга"

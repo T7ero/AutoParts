@@ -46,11 +46,25 @@ def create_parsing_task(request):
         else:
             return Response({'error': 'Требуется токен аутентификации'}, status=status.HTTP_401_UNAUTHORIZED)
         
+        # Получаем выбранные источники из POST данных
+        sources = request.POST.get('sources')
+        if sources:
+            try:
+                # Пытаемся распарсить JSON
+                sources_data = json.loads(sources)
+            except json.JSONDecodeError:
+                # Если не JSON, то это строка с разделителями
+                sources_data = [s.strip() for s in sources.split(',') if s.strip()]
+        else:
+            # По умолчанию все источники
+            sources_data = ['autopiter', 'emex', 'armtek']
+        
         task = ParsingTask.objects.create(
             user=user,
             file=file,
             status='pending',
-            progress=0
+            progress=0,
+            sources=sources_data
         )
         
         # Запускаем задачу в фоне

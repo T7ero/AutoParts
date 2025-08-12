@@ -21,6 +21,7 @@ import queue
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from typing import List, Dict, Optional
+from celery.utils.log import get_task_logger
 
 def clean_excel_string(s):
     if not isinstance(s, str):
@@ -133,6 +134,7 @@ def process_parsing_task(self, task_id):
     task.save()
     
     log_messages = []
+    logger = get_task_logger(__name__)
     channel_layer = get_channel_layer()
     
     def ws_send():
@@ -168,6 +170,15 @@ def process_parsing_task(self, task_id):
         results_armtek = []
         results_emex = []
 
+        def log(msg: str):
+            # Пишем в память, stdout и celery-лог
+            log_messages.append(msg)
+            try:
+                logger.info(msg)
+            except Exception:
+                pass
+            print(msg)
+
         # Чтение выбранных источников (autopiter, emex, armtek) из полей задачи, если есть
         selected_sources = {"autopiter", "emex", "armtek"}
         try:
@@ -192,14 +203,11 @@ def process_parsing_task(self, task_id):
                 sel = set(str(s).strip().lower() for s in parsed)
                 allowed = {"autopiter", "emex", "armtek"}
                 selected_sources = sel.intersection(allowed) or selected_sources
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"Ошибка чтения источников из задачи: {e}")
+
         log(f"Выбранные источники: {sorted(selected_sources)}")
-        
-        def log(msg):
-            log_messages.append(msg)
-            print(msg)
-        
+
         log(f"Начинаем обработку {total_rows} строк")
         # Батч-обработка: по 50 строк с промежуточным сохранением результатов
         batch_size = 50
