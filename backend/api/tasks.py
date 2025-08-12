@@ -183,8 +183,11 @@ def process_parsing_task(self, task_id):
                     for attempt in range(max_retries):
                         try:
                             if attempt == 0:
-                                proxy = None
-                                log(f"{site.capitalize()}: попытка {attempt+1} без прокси для {num}")
+                                if site == 'emex' and proxy:
+                                    log(f"{site.capitalize()}: попытка {attempt+1} с прокси для {num}")
+                                else:
+                                    proxy = None
+                                    log(f"{site.capitalize()}: попытка {attempt+1} без прокси для {num}")
                             else:
                                 proxy = get_next_proxy()
                                 log(f"{site.capitalize()}: попытка {attempt+1} с прокси для {num}")
@@ -210,13 +213,12 @@ def process_parsing_task(self, task_id):
                     autopiter_results = parse_one('autopiter', get_brands_by_artikul)(num)
                     results['autopiter'].extend(autopiter_results)
                     
-                    # Emex с ротацией прокси каждые 10 запросов для обхода блокировок
-                    if i % 10 == 0 and i > 0:
-                        # Принудительно получаем новый прокси каждые 10 запросов
-                        proxy = get_proxy_string()
-                        log(f"Emex: ротация прокси после {i} запросов")
+                    # Emex с принудительным использованием прокси
+                    proxy = get_proxy_string()
+                    if proxy:
+                        log(f"Emex: использование прокси для артикула {num}")
                     else:
-                        proxy = None
+                        log(f"Emex: прокси недоступен для артикула {num}")
                     
                     # Emex с ограниченным временем выполнения
                     try:
@@ -237,9 +239,9 @@ def process_parsing_task(self, task_id):
                         worker_thread.daemon = True
                         worker_thread.start()
                         
-                        # Ждем результат максимум 20 секунд
+                        # Ждем результат максимум 30 секунд (увеличиваем для работы с прокси)
                         try:
-                            result_type, result_data = result_queue.get(timeout=20)
+                            result_type, result_data = result_queue.get(timeout=30)
                             if result_type == 'success':
                                 results['emex'].extend(result_data)
                             else:

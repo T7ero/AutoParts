@@ -863,11 +863,11 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
         except Exception:
             candidate_nums = [artikul]
 
-        # Создаем сессию с прокси, если доступен
+        # Создаем сессию с прокси
         session = requests.Session()
         session.headers.update(headers)
         
-        # Настройка прокси
+        # Настройка прокси - принудительно используем прокси для Emex
         proxies = None
         if proxy:
             try:
@@ -885,6 +885,17 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                 log_debug(f"Emex: использование прокси {proxy}")
             except Exception as e:
                 log_debug(f"Emex: ошибка настройки прокси {proxy}: {str(e)}")
+        else:
+            # Если прокси не передан, получаем его автоматически
+            try:
+                proxy_dict = get_next_proxy()
+                if proxy_dict:
+                    session.proxies.update(proxy_dict)
+                    log_debug(f"Emex: автоматически получен прокси")
+                else:
+                    log_debug(f"Emex: прокси недоступен, пробуем без прокси")
+            except Exception as e:
+                log_debug(f"Emex: ошибка получения прокси: {str(e)}")
         
         # Устанавливаем куки
         try:
@@ -895,9 +906,11 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
         
         # Прогрев сессии (сокращенный)
         try:
+            log_debug(f"Emex: прогрев сессии с прокси: {proxies is not None}")
             session.get("https://emex.ru/", timeout=5, proxies=proxies)
             time.sleep(0.5)  # Небольшая пауза между запросами
-        except Exception:
+        except Exception as e:
+            log_debug(f"Emex: ошибка прогрева сессии: {str(e)}")
             pass
         
         # Получаем XSRF токен
@@ -918,7 +931,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
         
         # Счетчик попыток для предотвращения бесконечных циклов
         total_attempts = 0
-        max_total_attempts = 6  # Ограничиваем общее количество попыток
+        max_total_attempts = 8  # Увеличиваем количество попыток для Emex
         
         for num in candidate_nums:
             num_enc = quote(num)
@@ -1004,13 +1017,31 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                             if total_attempts >= max_total_attempts:
                                 log_debug(f"Emex API: слишком много таймаутов для {artikul}, пропускаем")
                                 break
+                            # При таймауте пробуем сменить прокси
+                            if not proxy:
+                                try:
+                                    new_proxy_dict = get_next_proxy()
+                                    if new_proxy_dict:
+                                        session.proxies.update(new_proxy_dict)
+                                        log_debug(f"Emex API: смена прокси после таймаута")
+                                except Exception:
+                                    pass
                             continue
                         except requests.exceptions.RequestException as e:
                             log_debug(f"Emex API: ошибка запроса для {artikul}: {str(e)}")
+                            # При ошибке запроса тоже пробуем сменить прокси
+                            if not proxy:
+                                try:
+                                    new_proxy_dict = get_next_proxy()
+                                    if new_proxy_dict:
+                                        session.proxies.update(new_proxy_dict)
+                                        log_debug(f"Emex API: смена прокси после ошибки")
+                                except Exception:
+                                    pass
                             continue
                         
                         # Уменьшенная пауза между попытками
-                        time.sleep(0.1)
+                        time.sleep(0.2)  # Увеличиваем паузу для стабильности
                 
                 except Exception as e:
                     log_debug(f"Emex API: ошибка для {artikul}: {str(e)}")
