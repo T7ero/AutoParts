@@ -49,6 +49,8 @@ FAILED_REQUESTS_CACHE = {}
 # Глобальная переменная для хранения прокси
 PROXY_LIST = []
 PROXY_INDEX = 0
+# Набор проблемных прокси, которые следует временно исключать
+BAD_PROXIES = set()
 
 def log_debug(message):
     print(f"[DEBUG] {message}")
@@ -68,43 +70,63 @@ def load_proxies_from_file(file_path: str = "proxies.txt") -> List[str]:
     return PROXY_LIST
 
 def get_next_proxy() -> Optional[Dict[str, str]]:
-    """Возвращает следующий прокси из списка с улучшенной обработкой"""
-    global PROXY_INDEX, PROXY_LIST
-    
+    """Возвращает следующий прокси из списка с улучшенной обработкой и исключением проблемных"""
+    global PROXY_INDEX, PROXY_LIST, BAD_PROXIES
+
     if not PROXY_LIST:
         load_proxies_from_file()
-    
+
     if not PROXY_LIST:
         return None
-    
-    # Получаем прокси с ротацией
-    proxy_str = PROXY_LIST[PROXY_INDEX % len(PROXY_LIST)]
-    PROXY_INDEX += 1
-    
+
+    # Перебираем список, пропуская известные проблемные
+    attempts = 0
+    while attempts < len(PROXY_LIST):
+        proxy_str = PROXY_LIST[PROXY_INDEX % len(PROXY_LIST)]
+        PROXY_INDEX += 1
+        attempts += 1
+
+        if proxy_str in BAD_PROXIES:
+            continue
+
+        try:
+            # Формат: ip:port@login:password
+            if '@' in proxy_str:
+                auth_part, proxy_part = proxy_str.split('@')
+                login, password = auth_part.split(':')
+                ip, port = proxy_part.split(':')
+
+                proxy_dict = {
+                    'http': f'http://{login}:{password}@{ip}:{port}',
+                    'https': f'http://{login}:{password}@{ip}:{port}'
+                }
+            else:
+                # Формат: ip:port
+                ip, port = proxy_str.split(':')
+                proxy_dict = {
+                    'http': f'http://{ip}:{port}',
+                    'https': f'http://{ip}:{port}'
+                }
+
+            log_debug(f"Используется прокси: {ip}:{port}")
+            return proxy_dict
+        except Exception as e:
+            log_debug(f"Ошибка парсинга прокси {proxy_str}: {e}")
+            BAD_PROXIES.add(proxy_str)
+            continue
+
+    log_debug("Нет доступных рабочих прокси (все помечены проблемными)")
+    return None
+
+def mark_proxy_bad(proxy_repr: str) -> None:
+    """Помечает прокси как проблемный, чтобы временно его не использовать"""
     try:
-        # Формат: ip:port@login:password
-        if '@' in proxy_str:
-            auth_part, proxy_part = proxy_str.split('@')
-            login, password = auth_part.split(':')
-            ip, port = proxy_part.split(':')
-            
-            proxy_dict = {
-                'http': f'http://{login}:{password}@{ip}:{port}',
-                'https': f'http://{login}:{password}@{ip}:{port}'
-            }
-        else:
-            # Формат: ip:port
-            ip, port = proxy_str.split(':')
-            proxy_dict = {
-                'http': f'http://{ip}:{port}',
-                'https': f'http://{ip}:{port}'
-            }
-        
-        log_debug(f"Используется прокси: {ip}:{port}")
-        return proxy_dict
-    except Exception as e:
-        log_debug(f"Ошибка парсинга прокси {proxy_str}: {e}")
-        return None
+        if proxy_repr.startswith('http://'):
+            proxy_repr = proxy_repr[7:]
+    except Exception:
+        pass
+    BAD_PROXIES.add(proxy_repr)
+    log_debug(f"Прокси помечен как проблемный: {proxy_repr}")
 
 def get_proxy_string() -> Optional[str]:
     """Возвращает строку прокси для использования в парсерах"""
@@ -1009,8 +1031,19 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                                 log_debug(f"Emex API: Rate limit для {artikul}, пропускаем")
                                 break  # Выходим из цикла при rate limit
                             elif response.status_code == 403:  # Forbidden
-                                log_debug(f"Emex API: 403 Forbidden для {artikul}, пропускаем")
-                                break  # Выходим из цикла при forbidden
+                                log_debug(f"Emex API: 403 Forbidden для {artikul}, помечаем прокси как проблемный и пробуем следующий")
+                                try:
+                                    # Помечаем текущий прокси как плохой
+                                    current_http = session.proxies.get('http') or ''
+                                    if current_http:
+                                        mark_proxy_bad(current_http)
+                                except Exception:
+                                    pass
+                                # Меняем прокси
+                                new_proxy = get_next_proxy()
+                                if new_proxy:
+                                    session.proxies.update(new_proxy)
+                                break  # Переходим к следующей конфигурации
                             
                         except requests.exceptions.Timeout:
                             log_debug(f"Emex API: таймаут для {artikul} (попытка {total_attempts})")
@@ -1032,6 +1065,15 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                             # При ошибке запроса тоже пробуем сменить прокси
                             if not proxy:
                                 try:
+                                    # Если это ProxyError или 502, помечаем текущий прокси как проблемный
+                                    try:
+                                        from requests.exceptions import ProxyError as _ProxyError
+                                        if isinstance(e, _ProxyError) or '502 Bad Gateway' in str(e):
+                                            current_http = session.proxies.get('http') or ''
+                                            if current_http:
+                                                mark_proxy_bad(current_http)
+                                    except Exception:
+                                        pass
                                     new_proxy_dict = get_next_proxy()
                                     if new_proxy_dict:
                                         session.proxies.update(new_proxy_dict)
@@ -1048,8 +1090,55 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                     total_attempts += 1
                     continue
 
-        # Если все попытки не удались, возвращаем пустой список
-        log_debug(f"Emex API: не удалось получить бренды для {artikul}")
+        # Если все попытки не удались, пробуем SeleniumFallback (ограниченный)
+        log_debug(f"Emex API: не удалось получить бренды для {artikul}, пробуем Selenium fallback")
+        try:
+            # Легкий парсинг страницы поиска: бренды часто присутствуют в блоке фильтров/подсказок
+            from selenium.webdriver.common.by import By as _By
+            brands = set()
+            opts = Options()
+            opts.add_argument('--headless=new')
+            opts.add_argument('--no-sandbox')
+            opts.add_argument('--disable-dev-shm-usage')
+            opts.add_argument('--blink-settings=imagesEnabled=false')
+            tmp_dir = tempfile.mkdtemp(prefix=f"chrome_emex_{uuid.uuid4().hex[:8]}_")
+            opts.add_argument(f'--user-data-dir={tmp_dir}')
+            drv = webdriver.Chrome(options=opts)
+            drv.set_page_load_timeout(15)
+            try:
+                search_url = f"https://emex.ru/search?detailNum={quote(artikul)}"
+                drv.get(search_url)
+                WebDriverWait(drv, 10).until(lambda d: d.execute_script('return document.readyState') == 'complete')
+                # Ищем бренды в фильтрах или в блоке makes
+                possible_selectors = [
+                    'div.makes-list span',
+                    '[data-qa="makes-filter"] span',
+                    'div[data-qa="brand-name"]',
+                ]
+                for sel in possible_selectors:
+                    try:
+                        elems = drv.find_elements(_By.CSS_SELECTOR, sel)
+                        for el in elems:
+                            txt = el.text.strip()
+                            if txt and len(txt) > 1 and not txt.isdigit():
+                                brands.add(txt)
+                    except Exception:
+                        continue
+            finally:
+                try:
+                    drv.quit()
+                except Exception:
+                    pass
+                try:
+                    import shutil
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                except Exception:
+                    pass
+            if brands:
+                log_debug(f"Emex Selenium fallback: найдено {len(brands)} брендов для {artikul}")
+                return sorted(list(brands))
+        except Exception as _e:
+            log_debug(f"Emex Selenium fallback ошибка: {str(_e)}")
         return []
         
     except Exception as e:

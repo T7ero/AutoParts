@@ -111,7 +111,7 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
     
     return filtered
 
-@shared_task(bind=True, time_limit=28800, soft_time_limit=27000)  # 8 часов максимум, 7.5 часа мягкий лимит
+@shared_task(bind=True, time_limit=86400, soft_time_limit=82800)  # 24 часа максимум, 23 часа мягкий лимит
 def process_parsing_task(self, task_id):
     # Проверяем, не завершена ли уже задача
     try:
@@ -167,16 +167,47 @@ def process_parsing_task(self, task_id):
         results_autopiter = []
         results_armtek = []
         results_emex = []
+
+        # Чтение выбранных источников (autopiter, emex, armtek) из полей задачи, если есть
+        selected_sources = {"autopiter", "emex", "armtek"}
+        try:
+            raw_sources = None
+            for attr in ("sources", "source_list", "options", "meta", "params"):
+                val = getattr(task, attr, None)
+                if val:
+                    raw_sources = val
+                    break
+            if isinstance(raw_sources, str):
+                # Пытаемся распарсить JSON, либо разделенный запятыми список
+                import json as _json
+                try:
+                    parsed = _json.loads(raw_sources)
+                except Exception:
+                    parsed = [s.strip() for s in raw_sources.split(',') if s.strip()]
+            else:
+                parsed = raw_sources
+            if isinstance(parsed, dict) and 'sources' in parsed:
+                parsed = parsed['sources']
+            if isinstance(parsed, (list, set, tuple)):
+                sel = set(str(s).strip().lower() for s in parsed)
+                allowed = {"autopiter", "emex", "armtek"}
+                selected_sources = sel.intersection(allowed) or selected_sources
+        except Exception:
+            pass
+        log(f"Выбранные источники: {sorted(selected_sources)}")
         
         def log(msg):
             log_messages.append(msg)
             print(msg)
         
         log(f"Начинаем обработку {total_rows} строк")
+        # Батч-обработка: по 50 строк с промежуточным сохранением результатов
+        batch_size = 50
         
         # Оптимизированная функция для параллельного парсинга с таймаутами и прокси
         def parse_all_parallel(numbers, brand, part_number, name):
             results = {'autopiter': [], 'emex': []}
+            state = {"emex_disabled": False, "emex_failures": 0}
             
             def parse_one(site, parser_func, max_retries=1):
                 def inner(num, proxy=None):
@@ -209,51 +240,59 @@ def process_parsing_task(self, task_id):
             # Оптимизированная обработка с ротацией прокси для Emex
             for i, num in enumerate(numbers):
                 try:
-                    # Autopiter для текущего артикула
-                    autopiter_results = parse_one('autopiter', get_brands_by_artikul)(num)
-                    results['autopiter'].extend(autopiter_results)
+                    # Autopiter для текущего артикула (если выбран)
+                    if 'autopiter' in selected_sources:
+                        autopiter_results = parse_one('autopiter', get_brands_by_artikul)(num)
+                        results['autopiter'].extend(autopiter_results)
                     
-                    # Emex с принудительным использованием прокси
-                    proxy = get_proxy_string()
-                    if proxy:
-                        log(f"Emex: использование прокси для артикула {num}")
-                    else:
-                        log(f"Emex: прокси недоступен для артикула {num}")
-                    
-                    # Emex с ограниченным временем выполнения
-                    try:
-                        import threading
-                        import queue
-                        
-                        result_queue = queue.Queue()
-                        
-                        def emex_worker():
-                            try:
-                                emex_results = parse_one('emex', get_brands_by_artikul_emex)(num)
-                                result_queue.put(('success', emex_results))
-                            except Exception as e:
-                                result_queue.put(('error', str(e)))
-                        
-                        # Запускаем Emex в отдельном потоке с таймаутом
-                        worker_thread = threading.Thread(target=emex_worker)
-                        worker_thread.daemon = True
-                        worker_thread.start()
-                        
-                        # Ждем результат максимум 30 секунд (увеличиваем для работы с прокси)
+                    # Emex с ограниченным временем выполнения (если выбран и не отключен)
+                    if 'emex' in selected_sources and not state['emex_disabled']:
+                        proxy = get_proxy_string()
+                        if proxy:
+                            log(f"Emex: использование прокси для артикула {num}")
+                        else:
+                            log(f"Emex: прокси недоступен для артикула {num}")
+
                         try:
-                            result_type, result_data = result_queue.get(timeout=30)
-                            if result_type == 'success':
-                                results['emex'].extend(result_data)
-                            else:
-                                log(f"Emex: ошибка для артикула {num}: {result_data}")
-                                results['emex'].extend([])
-                        except queue.Empty:
-                            log(f"Emex: таймаут для артикула {num}, пропускаем")
-                            results['emex'].extend([])
-                        
-                    except Exception as e:
-                        log(f"Emex: критическая ошибка для артикула {num}: {str(e)}")
-                        results['emex'].extend([])
+                            import threading
+                            import queue
+
+                            result_queue = queue.Queue()
+
+                            def emex_worker():
+                                try:
+                                    emex_results = parse_one('emex', get_brands_by_artikul_emex)(num, proxy)
+                                    result_queue.put(('success', emex_results))
+                                except Exception as e:
+                                    result_queue.put(('error', str(e)))
+
+                            worker_thread = threading.Thread(target=emex_worker)
+                            worker_thread.daemon = True
+                            worker_thread.start()
+
+                            # Ждем результат максимум 30 секунд (увеличиваем для работы с прокси)
+                            try:
+                                result_type, result_data = result_queue.get(timeout=30)
+                                if result_type == 'success':
+                                    if result_data:
+                                        state['emex_failures'] = 0
+                                    else:
+                                        state['emex_failures'] += 1
+                                    results['emex'].extend(result_data)
+                                else:
+                                    state['emex_failures'] += 1
+                                    log(f"Emex: ошибка для артикула {num}: {result_data}")
+                            except queue.Empty:
+                                state['emex_failures'] += 1
+                                log(f"Emex: таймаут для артикула {num}, пропускаем")
+                            
+                            # Если подряд 5 неудач, отключаем Emex до конца строки/партии
+                            if state['emex_failures'] >= 5:
+                                state['emex_disabled'] = True
+                                log("Emex: слишком много неудач подряд, временно отключаем Emex для этой партии")
+                        except Exception as e:
+                            state['emex_failures'] += 1
+                            log(f"Emex: критическая ошибка для артикула {num}: {str(e)}")
                     
                     # Уменьшенная пауза между артикулами
                     if i % 5 == 0 and i > 0:
@@ -371,7 +410,7 @@ def process_parsing_task(self, task_id):
                                 }
                                 results_emex.append(d)
                         
-                        # Armtek (Selenium) - оптимизированная версия
+                        # Armtek (Selenium) - оптимизированная версия (если выбран)
                         def parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b):
                             results = []
                             log(f"Armtek: начало обработки {len(numbers)} артикулов")
@@ -413,17 +452,17 @@ def process_parsing_task(self, task_id):
                             log(f"Armtek: завершена обработка, найдено {len(results)} результатов")
                             return results
                         
-                        armtek_results = parse_armtek_parallel([current_number], brand_from_e, part_number_from_f, name_from_b)
-                        
-                        for (b1, pn1, n1, b2, pn2, src) in armtek_results:
-                            results_armtek.append({
-                                'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                                'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                                'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
-                                'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
-                                'Источник': src
-                            })
+                        if 'armtek' in selected_sources:
+                            armtek_results = parse_armtek_parallel([current_number], brand_from_e, part_number_from_f, name_from_b)
+                            for (b1, pn1, n1, b2, pn2, src) in armtek_results:
+                                results_armtek.append({
+                                    'Бренд № 1': clean_excel_string(brand_from_e),
+                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
+                                    'Наименование': clean_excel_string(name_from_b),
+                                    'Бренд № 2': clean_excel_string(b2),
+                                    'Артикул по Бренду № 2': clean_excel_string(pn2),
+                                    'Источник': src
+                                })
                     
                     except Exception as e:
                         log(f"Ошибка при обработке артикула {current_number} в строке {index + 1}: {str(e)}")
@@ -451,6 +490,32 @@ def process_parsing_task(self, task_id):
                             log("Performed periodic Chrome cleanup")
                         except Exception as e:
                             log(f"Error during Chrome cleanup: {str(e)}")
+
+                # Чекпоинт каждые batch_size строк — записываем на диск промежуточные результаты
+                if (index + 1) % batch_size == 0:
+                    try:
+                        if results_autopiter:
+                            df_autopiter = pd.DataFrame(results_autopiter)
+                            autopiter_file = f'media/results/autopiter_results_{task.id}.xlsx'
+                            df_autopiter.to_excel(autopiter_file, index=False, engine='openpyxl')
+                            task.result_files = task.result_files or {}
+                            task.result_files['autopiter'] = autopiter_file
+                        if results_armtek:
+                            df_armtek = pd.DataFrame(results_armtek)
+                            armtek_file = f'media/results/armtek_results_{task.id}.xlsx'
+                            df_armtek.to_excel(armtek_file, index=False, engine='openpyxl')
+                            task.result_files = task.result_files or {}
+                            task.result_files['armtek'] = armtek_file
+                        if results_emex:
+                            df_emex = pd.DataFrame(results_emex)
+                            emex_file = f'media/results/emex_results_{task.id}.xlsx'
+                            df_emex.to_excel(emex_file, index=False, engine='openpyxl')
+                            task.result_files = task.result_files or {}
+                            task.result_files['emex'] = emex_file
+                        task.save()
+                        log("Чекпоинт: промежуточные файлы результатов сохранены")
+                    except Exception as e:
+                        log(f"Ошибка чекпоинта сохранения файлов: {str(e)}")
                 
             except Exception as e:
                 log(f"Error processing row {index + 1}: {str(e)}")
