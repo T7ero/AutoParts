@@ -8,6 +8,7 @@ from .autopiter_parser import (
     get_brands_by_artikul_emex, 
     cleanup_chrome_processes,
     get_next_proxy,
+    get_proxy_string,
     load_proxies_from_file,
     log_debug
 )
@@ -175,7 +176,7 @@ def process_parsing_task(self, task_id):
         def parse_all_parallel(numbers, brand, part_number, name):
             results = {'autopiter': [], 'emex': []}
             
-            def parse_one(site, parser_func, max_retries=1):  # Уменьшаем попытки для ускорения
+            def parse_one(site, parser_func, max_retries=1):
                 def inner(num, proxy=None):
                     for attempt in range(max_retries):
                         try:
@@ -186,30 +187,41 @@ def process_parsing_task(self, task_id):
                                 proxy = get_next_proxy()
                                 log(f"{site.capitalize()}: попытка {attempt+1} с прокси для {num}")
                             
-                            time.sleep(0.1)  # Уменьшаем задержку для ускорения
+                            # Уменьшаем задержку для ускорения
+                            time.sleep(0.05 if site == 'autopiter' else 0.1)
                             brands = parser_func(num, proxy)
                             log(f"{site}: {num} → {brands}")
-                            # Возвращаем список кортежей для каждого бренда
                             return [(brand, part_number, name, b, num, site) for b in brands]
                         except Exception as e:
                             log(f"Error parsing {site} for {num} (attempt {attempt + 1}): {str(e)}")
                             if attempt < max_retries - 1:
-                                time.sleep(0.5)  # Уменьшаем время ожидания для ускорения
+                                time.sleep(0.3)  # Уменьшаем время ожидания
                             else:
                                 log(f"Failed to parse {site} for {num} after {max_retries} attempts")
                                 return []
                 return inner
             
-            # Обрабатываем каждый артикул отдельно для Autopiter и Emex
-            for num in numbers:
+            # Оптимизированная обработка с ротацией прокси для Emex
+            for i, num in enumerate(numbers):
                 try:
                     # Autopiter для текущего артикула
                     autopiter_results = parse_one('autopiter', get_brands_by_artikul)(num)
                     results['autopiter'].extend(autopiter_results)
                     
-                    # Emex для текущего артикула
+                    # Emex с ротацией прокси каждые 10 запросов для обхода блокировок
+                    if i % 10 == 0 and i > 0:
+                        # Принудительно получаем новый прокси каждые 10 запросов
+                        proxy = get_proxy_string()
+                        log(f"Emex: ротация прокси после {i} запросов")
+                    else:
+                        proxy = None
+                    
                     emex_results = parse_one('emex', get_brands_by_artikul_emex)(num)
                     results['emex'].extend(emex_results)
+                    
+                    # Небольшая пауза между артикулами для снижения нагрузки
+                    if i % 5 == 0 and i > 0:
+                        time.sleep(0.2)
                     
                 except Exception as e:
                     log(f"Ошибка обработки артикула {num}: {str(e)}")
@@ -323,40 +335,39 @@ def process_parsing_task(self, task_id):
                                 }
                                 results_emex.append(d)
                         
-                        # Armtek (Selenium) - с прокси для текущего артикула
+                        # Armtek (Selenium) - оптимизированная версия
                         def parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b):
                             results = []
                             log(f"Armtek: начало обработки {len(numbers)} артикулов")
                             
                             def parse_one(num):
-                                max_retries = 1  # Уменьшаем количество попыток для ускорения
+                                max_retries = 1
                                 for attempt in range(max_retries):
                                     try:
-                                        # Сначала пробуем без прокси, потом с прокси
                                         if attempt == 0:
-                                            proxy = None  # Первая попытка без прокси
+                                            proxy = None
                                             log(f"Armtek: попытка {attempt+1} без прокси для {num}")
                                         else:
                                             proxy = get_next_proxy()
                                             log(f"Armtek: попытка {attempt+1} с прокси для {num}")
                                         
-                                        # Уменьшаем задержку для Selenium
-                                        time.sleep(0.2)  # Уменьшаем задержку для ускорения
+                                        # Уменьшаем задержку для ускорения
+                                        time.sleep(0.1)
                                         brands = get_brands_by_artikul_armtek(num, proxy)
                                         log(f"armtek: {num} → {brands}")
                                         return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in brands]
                                     except Exception as e:
                                         log(f"Error parsing armtek for {num} (attempt {attempt + 1}): {str(e)}")
                                         if attempt < max_retries - 1:
-                                            time.sleep(1.0)  # Уменьшаем время ожидания для ускорения
+                                            time.sleep(0.5)
                                         else:
                                             log(f"Failed to parse armtek for {num} after {max_retries} attempts")
                                             return []
                             
-                            # Используем 2 потока для Selenium для ускорения
-                            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                            # Увеличиваем количество потоков для ускорения
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                                 futs = {executor.submit(parse_one, num): num for num in numbers}
-                                for fut in concurrent.futures.as_completed(futs, timeout=300):  # Уменьшаем таймаут для ускорения
+                                for fut in concurrent.futures.as_completed(futs, timeout=240):  # Уменьшаем таймаут
                                     try:
                                         for res in fut.result():
                                             results.append(res)

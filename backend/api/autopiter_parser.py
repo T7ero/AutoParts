@@ -36,10 +36,10 @@ HEADERS = {
     "Sec-Fetch-User": "?1",
     "Upgrade-Insecure-Requests": "1",
 }
-# Уменьшаем таймауты для ускорения работы
-TIMEOUT = 10  # Уменьшаем с 15 до 10 секунд для ускорения
-SELENIUM_TIMEOUT = 10  # Уменьшаем с 15 до 10 секунд для ускорения
-PAGE_LOAD_TIMEOUT = 10  # Уменьшаем с 15 до 10 секунд для ускорения
+# Оптимизированные таймауты для ускорения работы
+TIMEOUT = 8  # Уменьшаем для ускорения
+SELENIUM_TIMEOUT = 8  # Уменьшаем для ускорения
+PAGE_LOAD_TIMEOUT = 8  # Уменьшаем для ускорения
 
 # Кеширование
 REQUEST_CACHE = {}
@@ -68,7 +68,7 @@ def load_proxies_from_file(file_path: str = "proxies.txt") -> List[str]:
     return PROXY_LIST
 
 def get_next_proxy() -> Optional[Dict[str, str]]:
-    """Возвращает следующий прокси из списка"""
+    """Возвращает следующий прокси из списка с улучшенной обработкой"""
     global PROXY_INDEX, PROXY_LIST
     
     if not PROXY_LIST:
@@ -77,6 +77,7 @@ def get_next_proxy() -> Optional[Dict[str, str]]:
     if not PROXY_LIST:
         return None
     
+    # Получаем прокси с ротацией
     proxy_str = PROXY_LIST[PROXY_INDEX % len(PROXY_LIST)]
     PROXY_INDEX += 1
     
@@ -99,10 +100,21 @@ def get_next_proxy() -> Optional[Dict[str, str]]:
                 'https': f'http://{ip}:{port}'
             }
         
+        log_debug(f"Используется прокси: {ip}:{port}")
         return proxy_dict
     except Exception as e:
         log_debug(f"Ошибка парсинга прокси {proxy_str}: {e}")
         return None
+
+def get_proxy_string() -> Optional[str]:
+    """Возвращает строку прокси для использования в парсерах"""
+    proxy_dict = get_next_proxy()
+    if proxy_dict:
+        # Извлекаем строку прокси из словаря
+        proxy_url = proxy_dict.get('http', '')
+        if proxy_url.startswith('http://'):
+            return proxy_url[7:]  # Убираем 'http://'
+    return None
 
 def cleanup_chrome_processes():
     """Принудительно очищает процессы Chrome и временные директории"""
@@ -802,18 +814,25 @@ def parse_armtek_http_response(html_content: str, artikul: str) -> List[str]:
     return filter_armtek_brands(list(brands))
 
 def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> List[str]:
-    """Получает бренды с Emex по артикулу"""
+    """Получает бренды с Emex по артикулу с улучшенной обработкой блокировок"""
     try:
         encoded_artikul = quote(artikul)
-        api_url = f"https://emex.ru/api/search/search?detailNum={encoded_artikul}&locationId=263&showAll=false&isHeaderSearch=true"
+        
+        # Ротация User-Agent для обхода блокировок
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
+        ]
         
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+            "User-Agent": random.choice(user_agents),
             "Accept": "application/json, text/plain, */*",
             "Referer": f"https://emex.ru/search?detailNum={encoded_artikul}",
             "X-Requested-With": "XMLHttpRequest",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-            # Исключаем br, чтобы не получать brotli-сжатый ответ, который requests не распакует без доп. зависимостей
             "Accept-Encoding": "gzip, deflate",
             "Connection": "keep-alive",
             "Cache-Control": "no-cache",
@@ -827,37 +846,10 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             "Sec-Ch-Ua": '"Chromium";v="139", "Not=A?Brand";v="99"',
             "Sec-Ch-Ua-Platform": '"Windows"',
             "Sec-Ch-Ua-Mobile": "?0",
-            # Часто требуется для API в SPA
             "Content-Type": "application/json",
         }
         
-        # Готовим сессию и прогреваем куки/регион и CSRF
-        session = requests.Session()
-        session.headers.update(headers)
-        # Ставим региональные куки явно
-        try:
-            session.cookies.set("regionId", "263", domain="emex.ru")
-            session.cookies.set("locationId", "263", domain="emex.ru")
-        except Exception:
-            pass
-        try:
-            # Прогрев главной и страницы поиска, чтобы получить XSRF-TOKEN и прочие необходимые куки
-            session.get("https://emex.ru/", timeout=10)
-            session.get(f"https://emex.ru/search?detailNum={encoded_artikul}", timeout=10)
-            session.get(f"https://emex.ru/products/{encoded_artikul}", timeout=10)
-        except Exception:
-            pass
-        # Пробуем добавить XSRF токен, если он есть в куках
-        xsrf_token = (
-            session.cookies.get("XSRF-TOKEN")
-            or session.cookies.get("xsrf-token")
-            or session.cookies.get("X_XSRF_TOKEN")
-            or session.cookies.get("csrf-token")
-        )
-        if xsrf_token:
-            session.headers.update({"X-XSRF-TOKEN": xsrf_token})
-
-        # Подготовим варианты записи артикула: как есть, без тире/пробелов, в верхнем регистре
+        # Подготовим варианты записи артикула
         try:
             raw_num = artikul.strip()
             candidate_nums = list(dict.fromkeys([
@@ -871,178 +863,152 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
         except Exception:
             candidate_nums = [artikul]
 
-        # Сначала пробуем без прокси
-        try:
-            log_debug(f"[API] Emex: попытка 1 для {artikul}")
-            
-            # Пробуем разные конфигурации запроса
-            for attempt in range(2):
-                try:
-                    if attempt == 0:
-                        # Первая попытка с обычными заголовками
-                        response = session.get(
-                            api_url,
-                            headers=headers,
-                            timeout=20
-                        )
-                    else:
-                        # Вторая попытка с отключенным сжатием
-                        headers_no_compression = headers.copy()
-                        headers_no_compression['Accept-Encoding'] = 'identity'
-                        response = session.get(
-                            api_url,
-                            headers=headers_no_compression,
-                            timeout=20
-                        )
-                    
-                    log_debug(f"Emex API: попытка {attempt + 1}, статус {response.status_code} для {artikul}")
-                    log_debug(f"Emex API: content-type: {response.headers.get('content-type', 'unknown')}")
-                    log_debug(f"Emex API: content-encoding: {response.headers.get('content-encoding', 'none')}")
-                    
-                    if response.status_code == 200:
-                        # Проверяем content-type
-                        content_type = response.headers.get('content-type', '').lower()
-                        if 'application/json' in content_type:
-                            try:
-                                # Пробуем декодировать JSON с обработкой сжатия
-                                data = response.json()
-                                brands = set()
-                                
-                                # Подробное логирование структуры ответа
-                                log_debug(f"Emex API: структура ответа для {artikul}: {list(data.keys()) if isinstance(data, dict) else 'не dict'}")
-                                
-                                # Обработка структуры ответа Emex
-                                search_result = data.get("searchResult", {})
-                                if search_result:
-                                    log_debug(f"Emex API: searchResult ключи: {list(search_result.keys())}")
-                                    
-                                    # Проверяем makes - это основной источник брендов
-                                    makes = search_result.get("makes", {})
-                                    if makes:
-                                        makes_list = makes.get("list", [])
-                                        log_debug(f"Emex API: найдено {len(makes_list)} makes для {artikul}")
-                                        
-                                        for item in makes_list:
-                                            if isinstance(item, dict):
-                                                # Извлекаем бренд из поля "make"
-                                                brand = item.get("make")
-                                                if brand and brand.strip():
-                                                    brands.add(brand.strip())
-                                                    log_debug(f"Emex API: добавлен бренд '{brand}' для {artikul}")
-                                    # Дополнительно берём бренд из searchResult.make, если он есть
-                                    sr_make = search_result.get("make")
-                                    if isinstance(sr_make, str) and sr_make.strip():
-                                        brands.add(sr_make.strip())
-                                        log_debug(f"Emex API: добавлен бренд из searchResult.make '{sr_make}' для {artikul}")
-                                
-                                # Если не нашли в makes, проверяем details
-                                # Для этого эндпоинта бренды находятся в makes.list и в searchResult.make
-                                
-                                # Если все еще нет брендов, ищем в других полях
-                                if not brands:
-                                    log_debug(f"Emex API: поиск брендов в других полях для {artikul}")
-                                    for key, value in data.items():
-                                        if isinstance(value, dict):
-                                            for sub_key, sub_value in value.items():
-                                                if isinstance(sub_value, list):
-                                                    for item in sub_value:
-                                                        if isinstance(item, dict) and "make" in item:
-                                                            brand = item["make"]
-                                                            if brand and brand.strip():
-                                                                brands.add(brand.strip())
-                                                                log_debug(f"Emex API: добавлен бренд из {key}.{sub_key} '{brand}' для {artikul}")
-                                
-                                log_debug(f"Emex API: итого найдено {len(brands)} брендов для {artikul}")
-                                if brands:
-                                    return sorted(list(brands))
-                                
-                            except json.JSONDecodeError as e:
-                                log_debug(f"Emex API: ошибка декодирования JSON для {artikul} (попытка {attempt + 1}): {str(e)}")
-                                # Пробуем декодировать как текст и посмотреть что получилось
-                                try:
-                                    text_content = response.text
-                                    log_debug(f"Emex API: первые 200 символов ответа для {artikul}: {text_content[:200]}")
-                                    if text_content.startswith('{'):
-                                        # Возможно это JSON, но с проблемами кодировки
-                                        log_debug(f"Emex API: ответ начинается с {{, пробуем исправить кодировку")
-                                        # Пробуем исправить кодировку
-                                        try:
-                                            data = json.loads(text_content)
-                                            brands = set()
-                                            search_result = data.get("searchResult", {})
-                                            if search_result:
-                                                makes = search_result.get("makes", {})
-                                                if makes:
-                                                    makes_list = makes.get("list", [])
-                                                    for item in makes_list:
-                                                        if isinstance(item, dict):
-                                                            brand = item.get("make")
-                                                            if brand and brand.strip():
-                                                                brands.add(brand.strip())
-                                                                log_debug(f"Emex API: добавлен бренд после исправления кодировки '{brand}' для {artikul}")
-                                        except Exception:
-                                            pass
-                                    # Возврат, если удалось собрать бренды
-                                    if 'brands' in locals() and brands:
-                                        log_debug(f"Emex API: найдено {len(brands)} брендов после исправления кодировки для {artikul}")
-                                        return sorted(list(brands))
-                                except:
-                                    pass
-                        log_debug(f"Emex API: ответ для {artikul}: {response.text[:500]}...")
-                except requests.exceptions.Timeout:
-                    log_debug(f"Emex API: таймаут для {artikul} (попытка {attempt + 1})")
-                except requests.exceptions.RequestException as e:
-                    log_debug(f"Emex API: ошибка запроса для {artikul} (попытка {attempt + 1}): {str(e)}")
-                
-                # Если это не последняя попытка, ждем немного
-                if attempt < 1:
-                    time.sleep(1)
+        # Создаем сессию с прокси, если доступен
+        session = requests.Session()
+        session.headers.update(headers)
         
-            # Дополнительные попытки с разными параметрами и вариантами артикула
-            if 'brands' not in locals() or not brands:
-                alt_variants = [
-                    {"showAll": "false", "isHeaderSearch": "true"},
-                    {"showAll": "true", "isHeaderSearch": "true"},
-                    {"showAll": "false", "isHeaderSearch": "false"},
-                    {"showAll": "true", "isHeaderSearch": "false"},
-                ]
-                for num in candidate_nums:
-                    num_enc = quote(num)
-                    for params in alt_variants:
+        # Настройка прокси
+        proxies = None
+        if proxy:
+            try:
+                # Если proxy - это строка, преобразуем в словарь
+                if isinstance(proxy, str):
+                    if proxy.startswith('http://'):
+                        proxy = proxy[7:]  # Убираем 'http://'
+                    proxies = {
+                        'http': f'http://{proxy}',
+                        'https': f'http://{proxy}'
+                    }
+                else:
+                    proxies = proxy
+                session.proxies.update(proxies)
+                log_debug(f"Emex: использование прокси {proxy}")
+            except Exception as e:
+                log_debug(f"Emex: ошибка настройки прокси {proxy}: {str(e)}")
+        
+        # Устанавливаем куки
+        try:
+            session.cookies.set("regionId", "263", domain="emex.ru")
+            session.cookies.set("locationId", "263", domain="emex.ru")
+        except Exception:
+            pass
+        
+        # Прогрев сессии (сокращенный)
+        try:
+            session.get("https://emex.ru/", timeout=5, proxies=proxies)
+            time.sleep(0.5)  # Небольшая пауза между запросами
+        except Exception:
+            pass
+        
+        # Получаем XSRF токен
+        xsrf_token = (
+            session.cookies.get("XSRF-TOKEN")
+            or session.cookies.get("xsrf-token")
+            or session.cookies.get("X_XSRF_TOKEN")
+            or session.cookies.get("csrf-token")
+        )
+        if xsrf_token:
+            session.headers.update({"X-XSRF-TOKEN": xsrf_token})
+
+        # Основные попытки с разными параметрами
+        api_variants = [
+            {"showAll": "false", "isHeaderSearch": "true"},
+            {"showAll": "true", "isHeaderSearch": "true"},
+            {"showAll": "false", "isHeaderSearch": "false"},
+            {"showAll": "true", "isHeaderSearch": "false"},
+        ]
+        
+        for num in candidate_nums:
+            num_enc = quote(num)
+            
+            for params in api_variants:
+                try:
+                    api_url = (
+                        f"https://emex.ru/api/search/search?detailNum={num_enc}"
+                        f"&locationId=263&showAll={params['showAll']}&isHeaderSearch={params['isHeaderSearch']}"
+                    )
+                    
+                    log_debug(f"Emex API: попытка для {artikul} с параметрами {params}")
+                    
+                    # Пробуем с разными заголовками сжатия
+                    for compression_headers in [
+                        {"Accept-Encoding": "gzip, deflate"},
+                        {"Accept-Encoding": "identity"},
+                        {"Accept-Encoding": "gzip"}
+                    ]:
                         try:
-                            alt_api_url = (
-                                f"https://emex.ru/api/search/search?detailNum={num_enc}"
-                                f"&locationId=263&showAll={params['showAll']}&isHeaderSearch={params['isHeaderSearch']}"
+                            current_headers = headers.copy()
+                            current_headers.update(compression_headers)
+                            
+                            response = session.get(
+                                api_url,
+                                headers=current_headers,
+                                timeout=15,  # Уменьшаем таймаут
+                                proxies=proxies
                             )
-                            response = session.get(alt_api_url, headers=headers, timeout=20)
-                            if response.status_code == 200 and 'application/json' in response.headers.get('content-type','').lower():
-                                data = response.json()
-                                brands = set()
-                                search_result = data.get("searchResult", {})
-                                makes = (search_result or {}).get("makes", {})
-                                makes_list = (makes or {}).get("list", [])
-                                for item in makes_list:
-                                    if isinstance(item, dict):
-                                        brand = item.get("make")
-                                        if brand and brand.strip():
-                                            brands.add(brand.strip())
-                                sr_make = search_result.get("make") if isinstance(search_result, dict) else None
-                                if isinstance(sr_make, str) and sr_make.strip():
-                                    brands.add(sr_make.strip())
-                                if brands:
-                                    log_debug(
-                                        f"Emex API (alt {params['showAll']}/{params['isHeaderSearch']} num={num}): найдено {len(brands)} брендов для {artikul}"
-                                    )
-                                    return sorted(list(brands))
-                        except Exception as e:
-                            log_debug(
-                                f"Emex API (alt {params['showAll']}/{params['isHeaderSearch']} num={num}): ошибка {str(e)}"
-                            )
+                            
+                            if response.status_code == 200:
+                                content_type = response.headers.get('content-type', '').lower()
+                                if 'application/json' in content_type:
+                                    try:
+                                        data = response.json()
+                                        brands = set()
+                                        
+                                        # Обработка структуры ответа Emex
+                                        search_result = data.get("searchResult", {})
+                                        if search_result:
+                                            # Проверяем makes - основной источник брендов
+                                            makes = search_result.get("makes", {})
+                                            if makes:
+                                                makes_list = makes.get("list", [])
+                                                for item in makes_list:
+                                                    if isinstance(item, dict):
+                                                        brand = item.get("make")
+                                                        if brand and brand.strip():
+                                                            brands.add(brand.strip())
+                                                            log_debug(f"Emex API: добавлен бренд '{brand}' для {artikul}")
+                                            
+                                            # Дополнительно берем бренд из searchResult.make
+                                            sr_make = search_result.get("make")
+                                            if isinstance(sr_make, str) and sr_make.strip():
+                                                brands.add(sr_make.strip())
+                                                log_debug(f"Emex API: добавлен бренд из searchResult.make '{sr_make}' для {artikul}")
+                                        
+                                        if brands:
+                                            log_debug(f"Emex API: найдено {len(brands)} брендов для {artikul}")
+                                            return sorted(list(brands))
+                                        
+                                    except json.JSONDecodeError as e:
+                                        log_debug(f"Emex API: ошибка JSON для {artikul}: {str(e)}")
+                                        continue
+                            
+                            elif response.status_code == 429:  # Rate limit
+                                log_debug(f"Emex API: Rate limit для {artikul}, ждем...")
+                                time.sleep(2)
+                                continue
+                            elif response.status_code == 403:  # Forbidden
+                                log_debug(f"Emex API: 403 Forbidden для {artikul}")
+                                # Пробуем сменить User-Agent
+                                session.headers.update({"User-Agent": random.choice(user_agents)})
+                                time.sleep(1)
+                                continue
+                            
+                        except requests.exceptions.Timeout:
+                            log_debug(f"Emex API: таймаут для {artikul}")
+                            continue
+                        except requests.exceptions.RequestException as e:
+                            log_debug(f"Emex API: ошибка запроса для {artikul}: {str(e)}")
+                            continue
+                        
+                        # Пауза между попытками
+                        time.sleep(0.3)
+                
+                except Exception as e:
+                    log_debug(f"Emex API: ошибка для {artikul}: {str(e)}")
+                    continue
 
-        except Exception as e:
-            log_debug(f"Emex API: внешняя ошибка при обращении к API без прокси: {str(e)}")
-
-        # Строгая политика: если API не вернул бренды – возвращаем пустой список (без HTTP fallback)
+        # Если все попытки не удались, возвращаем пустой список
+        log_debug(f"Emex API: не удалось получить бренды для {artikul}")
         return []
         
     except Exception as e:
