@@ -1,218 +1,190 @@
-# AutoParts - Система парсинга автозапчастей
+# Система парсинга автозапчастей
 
-Система для парсинга брендов автозапчастей с сайтов Autopiter, Armtek и Emex с поддержкой прокси.
-
-## Минимальные требования к серверу
-
-- **ОС:** Ubuntu 20.04+ / CentOS 7+ / Debian 10+
-- **CPU:** 1 ядро
-- **RAM:** 2 ГБ
-- **Диск:** 10 ГБ свободного места
-- **Docker:** 20.10+
-- **Docker Compose:** 2.0+
+Система для парсинга брендов автозапчастей с сайтов Autopiter, Emex и Armtek.
 
 ## Возможности
 
-- ✅ Парсинг брендов с Autopiter.ru
-- ✅ Парсинг брендов с Armtek.ru (через API, HTTP и Selenium)
-- ✅ Парсинг брендов с Emex.ru
-- ✅ Поддержка прокси с автоматической ротацией
-- ✅ Веб-интерфейс для управления прокси
-- ✅ Обработка больших файлов Excel
-- ✅ Реальное время обновления прогресса
-- ✅ Автоматическая очистка процессов Chrome
+- Парсинг брендов с трех источников: Autopiter, Emex, Armtek
+- Выбор источников для парсинга
+- Загрузка Excel-файлов с артикулами
+- Отслеживание прогресса в реальном времени
+- Сохранение результатов в Excel-файлы
+- Управление пользователями
+- Ротация прокси для обхода блокировок
 
-## Исправленные проблемы
+## Установка и запуск
 
-### ✅ Selenium ошибки
-- Уникальные user-data-dir для каждого запуска Chrome
-- Улучшенная очистка процессов Chrome
-- Дополнительные опции Chrome для стабильности
+### Через Docker (рекомендуется)
 
-### ✅ Неправильный парсинг Autopiter
-- Улучшенная фильтрация результатов
-- Исключение нерелевантных брендов
-- Правильное извлечение брендов из JSON данных
-
-### ✅ Неполная обработка файлов
-- Оптимизированные таймауты (60 минут максимум)
-- Улучшена обработка ошибок
-- Экономия ресурсов для серверов с ограниченной памятью
-
-### ✅ Поддержка прокси
-- Автоматическая загрузка из файла proxies.txt
-- Ротация прокси между запросами
-- Веб-интерфейс для управления прокси
-
-## Запуск системы
-
-### 1. Запуск Docker
-Убедитесь, что Docker и Docker Compose установлены и запущены.
-
-### 2. Запуск системы
 ```bash
-docker compose up -d --build
+# Клонирование репозитория
+git clone <repository-url>
+cd AutoParts
+
+# Запуск системы
+docker-compose up -d
+
+# Применение миграций
+docker-compose exec backend python manage.py migrate
+
+# Создание суперпользователя
+docker-compose exec backend python manage.py createsuperuser
 ```
 
-### 3. Проверка статуса
+### Локальная установка
+
 ```bash
-docker compose ps
+# Установка зависимостей
+pip install -r requirements.txt
+
+# Настройка базы данных
+python manage.py migrate
+
+# Создание суперпользователя
+python manage.py createsuperuser
+
+# Запуск сервера
+python manage.py runserver
 ```
 
-## Использование
+## Управление пользователями
 
-### 1. Загрузка файла
-- Откройте http://localhost в браузере
-- Загрузите Excel файл с колонками: Бренд, Артикул, Наименование, Кросс-номера
+### Через скрипт (рекомендуется)
 
-### 2. Управление прокси
-- Откройте http://localhost/proxy-manager
-- Загрузите файл с прокси в формате .txt
-- Формат прокси: `ip:port@login:password` или `ip:port`
+```bash
+# Создание нового пользователя
+python manage_users.py create username email password
 
-### 3. Мониторинг прогресса
-- Откройте http://localhost/tasks
-- Следите за прогрессом обработки в реальном времени
+# Просмотр списка пользователей
+python manage_users.py list
 
-## Структура файлов
+# Удаление пользователя
+python manage_users.py delete username
+
+# Изменение пароля
+python manage_users.py change_password username new_password
+
+# Справка
+python manage_users.py help
+```
+
+### Через Django admin
+
+```bash
+# Создание суперпользователя для доступа к админке
+python manage.py createsuperuser
+
+# Запуск сервера
+python manage.py runserver
+
+# Открыть http://localhost:8000/admin/
+```
+
+### Через Django shell
+
+```bash
+python manage.py shell
+
+# В shell:
+from django.contrib.auth.models import User
+user = User.objects.create_user('username', 'email@example.com', 'password')
+```
+
+## Использование системы
+
+1. **Вход в систему**
+   - Откройте http://localhost:3000 (или ваш домен)
+   - Войдите с созданными учетными данными
+
+2. **Загрузка файла**
+   - Перейдите на страницу "Загрузка"
+   - Выберите Excel-файл с артикулами
+   - Выберите источники для парсинга (Autopiter, Emex, Armtek)
+   - Нажмите "Начать обработку"
+
+3. **Отслеживание прогресса**
+   - Перейдите на страницу "Задачи"
+   - Следите за прогрессом в реальном времени
+   - Скачайте готовые файлы по завершении
+
+## Формат входного файла
+
+Excel-файл должен содержать колонки:
+- `brand` - бренд
+- `part_number` - номер детали  
+- `name` - название детали
+
+## Структура проекта
 
 ```
 AutoParts/
-├── backend/
-│   ├── api/
-│   │   ├── autopiter_parser.py  # Основной парсер
-│   │   ├── tasks.py             # Celery задачи
-│   │   ├── views.py             # API endpoints
-│   │   └── urls.py              # URL маршруты
-│   ├── Dockerfile               # Docker образ backend
-│   └── requirements.txt         # Python зависимости
-├── frontend/
-│   └── proxy-manager.html       # Интерфейс управления прокси
-├── nginx/
-│   └── nginx.conf              # Конфигурация nginx
-├── docker-compose.yml          # Docker Compose конфигурация
-├── proxies.txt                 # Файл с прокси (создается автоматически)
-└── README.md                   # Этот файл
+├── backend/                 # Django backend
+│   ├── api/                # API endpoints
+│   ├── core/               # Основные модели
+│   ├── manage_users.py     # Скрипт управления пользователями
+│   └── requirements.txt    # Python зависимости
+├── frontend/               # React frontend
+│   ├── src/
+│   │   ├── pages/         # Страницы приложения
+│   │   └── components/    # React компоненты
+│   └── package.json       # Node.js зависимости
+├── docker-compose.yml      # Docker конфигурация
+└── README.md              # Документация
 ```
 
-## API Endpoints
+## Поддерживаемые бренды
 
-### Парсинг
-- `GET /api/parsing-tasks/` - Список задач
-- `POST /api/parsing-tasks/create/` - Создать задачу
-- `GET /api/parsing-tasks/{id}/` - Статус задачи
-- `DELETE /api/parsing-tasks/{id}/delete/` - Удалить задачу
+### Armtek
+Система распознает следующие бренды:
+- QUNZE, NIPPON, MOTORS MATTO, JMC, KOBELCO, PRC
+- HUANG LIN, ERISTIC, HINO, OOTOKO, MITSUBISHI, TOYOTA
+- AUTOKAT, ZEVS, PITWORK, HITACHI, NISSAN, DETOOL
+- CHEMIPRO, STELLOX, FURO, EDCON, REPARTS
+- EMEK, HOT-PARTS, ISUZU, CARMECH, G-BRAKE
+- QINYAN, AMZ, ERREVI, PETERS, EMMERRE, SIMPECO
+- BPW, FEBI, AUGER, BKAVTO, MANSONS, EXOVO
+- ALON, AMR, AOSS, KONNOR, SAMPA, WABCO
+- И многие другие...
 
-### Прокси
-- `POST /api/proxies/upload/` - Загрузить прокси
-- `GET /api/proxies/status/` - Статус прокси
-- `POST /api/proxies/reset/` - Сбросить индекс прокси
+### Autopiter и Emex
+Используют черный список для фильтрации мусора и извлечения только реальных брендов.
 
-## Формат файла прокси
+## Настройка прокси
 
-Создайте файл `proxies.txt` в корне проекта:
+1. Создайте файл `proxies.txt` в корне проекта
+2. Добавьте прокси в формате `ip:port` (по одному на строку)
+3. Загрузите файл через веб-интерфейс на странице "Прокси"
 
-```
-# С аутентификацией
-192.168.1.100:8080@user1:pass1
-10.0.0.1:3128@user2:pass2
+## Мониторинг и логи
 
-# Без аутентификации
-172.16.0.1:8080
-192.168.0.1:3128
-```
-
-## Формат Excel файла
-
-Файл должен содержать следующие колонки:
-- **Бренд** - оригинальный бренд
-- **Артикул** - номер детали
-- **Наименование** - описание детали
-- **Кросс-номера** - дополнительные номера (опционально)
-
-## Результаты
-
-Система создает отдельные Excel файлы для каждого сайта:
-- `autopiter_results_{task_id}.xlsx`
-- `armtek_results_{task_id}.xlsx`
-- `emex_results_{task_id}.xlsx`
-
-## Мониторинг логов
-
-```bash
-# Логи всех сервисов
-docker compose logs -f
-
-# Логи только celery
-docker compose logs -f celery
-
-# Логи только backend
-docker compose logs -f backend
-```
+- Логи Celery: `docker-compose logs celery`
+- Логи Django: `docker-compose logs backend`
+- Логи Nginx: `docker-compose logs nginx`
 
 ## Устранение неполадок
 
-### Проблема: Docker не запускается
-**Решение:** Убедитесь, что Docker и Docker Compose установлены и работают корректно.
-
-### Проблема: Недостаточно памяти
-**Решение:** 
-- Увеличьте swap файл: `sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`
-- Добавьте в /etc/fstab: `/swapfile none swap sw 0 0`
-
-### Проблема: Selenium ошибки
-**Решение:** Система автоматически очищает процессы Chrome. Если проблемы продолжаются, перезапустите celery:
+### Проблемы с подключением к базе данных
 ```bash
-docker compose restart celery
+# Проверка статуса контейнеров
+docker-compose ps
+
+# Перезапуск базы данных
+docker-compose restart db
+
+# Применение миграций
+docker-compose exec backend python manage.py migrate
 ```
 
-### Проблема: Медленная обработка
-**Решение:** 
-- Добавьте больше прокси
-- Увеличьте ресурсы в docker-compose.yml (если позволяет сервер)
-- Проверьте стабильность интернет-соединения
-
-### Проблема: Не все артикулы обрабатываются
-**Решение:** 
-- Увеличьте таймауты в tasks.py
-- Добавьте больше памяти для celery
+### Проблемы с парсингом
+- Проверьте доступность прокси
+- Убедитесь, что сайты доступны
 - Проверьте логи на наличие ошибок
 
-## Технические детали
+### Проблемы с производительностью
+- Увеличьте лимиты памяти в docker-compose.yml
+- Настройте количество воркеров Celery
+- Оптимизируйте размер входных файлов
 
-### Ресурсы системы (оптимизировано для 2GB RAM)
-- **Backend:** 256MB RAM, 0.3 CPU
-- **Celery:** 1GB RAM, 0.8 CPU
-- **Database:** PostgreSQL 15
-- **Cache:** Redis 7
+## Лицензия
 
-### Таймауты
-- **Общий таймаут задачи:** 60 минут
-- **Мягкий таймаут:** 50 минут
-- **Таймаут HTTP запросов:** 20 секунд
-- **Таймаут Selenium:** 30 секунд
-
-### Прокси
-- Автоматическая ротация между запросами
-- Поддержка аутентификации
-- Обработка ошибок прокси
-- Fallback на прямые запросы
-
-## Обновления
-
-### v2.1 (текущая версия)
-- ✅ Оптимизация для серверов с ограниченными ресурсами
-- ✅ Исправлены Selenium ошибки
-- ✅ Улучшен парсинг Autopiter
-- ✅ Добавлена поддержка прокси
-- ✅ Оптимизированы таймауты
-- ✅ Улучшена обработка ошибок
-- ✅ Добавлен веб-интерфейс управления прокси
-
-## Поддержка
-
-При возникновении проблем:
-1. Проверьте логи: `docker compose logs`
-2. Убедитесь, что все сервисы запущены: `docker compose ps`
-3. Перезапустите систему: `docker compose restart`
-4. Проверьте ресурсы системы и интернет-соединение
+Проект разработан для внутреннего использования.

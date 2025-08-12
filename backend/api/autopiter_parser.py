@@ -772,7 +772,17 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
         # Новые бренды из логов
         'EMEK', 'HOT-PARTS', 'CARMECH', 'JAPACO', 'AUTOCOMPONENT',
         # Дополнительные бренды, которые должны быть найдены
-        'EMEK', 'HOT-PARTS', 'ISUZU', 'CARMECH', 'G-BRAKE'
+        'EMEK', 'HOT-PARTS', 'ISUZU', 'CARMECH', 'G-BRAKE',
+        # Новые бренды из списка пользователя
+        'QINYAN', 'AMZ', 'ERREVI', 'PETERS', 'EMMERRE', 'SIMPECO', 'BPW', 'FEBI', 
+        'AUGER', 'BKAVTO', 'MANSONS', 'EXOVO', 'ALON', 'AMR', 'AOSS', 'KONNOR', 
+        'SAMPA', 'WABCO', 'ТОНАР', 'SMB', 'SCHMITZ', 'INTERNATIONAL', 'НЕФАЗ', 
+        'SEIWA', 'AIC', 'MARSHALL', 'FACET', 'DDA', 'PEORA', 'METALCAUCHO', 
+        'SAF', 'MASUMA', 'VOLVO', 'NIGRIN', 'SPIDAN', 'RUVILLE', 'SITRAK', 
+        'AVTOSHTAMP', 'IVECO', 'MATADOR', 'LMI', 'RHIAG', 'VIKA', 'TRICO', 
+        'ROCK FORCE', 'HARLEY DAVIDSON', 'АДС', 'STEMOT', 'AYFAR', 
+        'SIGAM', 'QUICK BRAKE', 'GATES', 'FRECCIA', 'VENDOR', 'GTOOL', 'SIDAT', 
+        'BRECAV', 'РОСОМЗ', 'SPJ', 'DELTA'
     }
     
     filtered = []
@@ -792,7 +802,16 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
                     break
         # Также добавляем бренды, которые содержат ключевые слова
         elif any(keyword in brand_upper for keyword in [
-            'EMEK', 'HOT', 'PARTS', 'CARMECH', 'JAPACO', 'AUTO', 'COMPONENT', 'ISUZU', 'G-BRAKE'
+            'EMEK', 'HOT', 'PARTS', 'CARMECH', 'JAPACO', 'AUTO', 'COMPONENT', 'ISUZU', 'G-BRAKE',
+            'QINYAN', 'AMZ', 'ERREVI', 'PETERS', 'EMMERRE', 'SIMPECO', 'BPW', 'FEBI', 
+            'AUGER', 'BKAVTO', 'MANSONS', 'EXOVO', 'ALON', 'AMR', 'AOSS', 'KONNOR', 
+            'SAMPA', 'WABCO', 'ТОНАР', 'SMB', 'SCHMITZ', 'INTERNATIONAL', 'НЕФАЗ', 
+            'SEIWA', 'AIC', 'MARSHALL', 'FACET', 'DDA', 'PEORA', 'METALCAUCHO', 
+            'SAF', 'MASUMA', 'VOLVO', 'NIGRIN', 'SPIDAN', 'RUVILLE', 'SITRAK', 
+            'AVTOSHTAMP', 'IVECO', 'MATADOR', 'LMI', 'RHIAG', 'VIKA', 'TRICO', 
+            'ROCK FORCE', 'HARLEY DAVIDSON', 'АДС', 'STEMOT', 'AYFAR', 
+            'SIGAM', 'QUICK BRAKE', 'GATES', 'FRECCIA', 'VENDOR', 'GTOOL', 'SIDAT', 
+            'BRECAV', 'РОСОМЗ', 'SPJ', 'DELTA'
         ]):
             filtered.append(brand_clean)
         # Специальная обработка для составных брендов
@@ -800,6 +819,12 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
             filtered.append('HOT-PARTS')
         elif 'G-BRAKE' in brand_upper or 'GBRAKE' in brand_upper:
             filtered.append('G-BRAKE')
+        elif 'QUICK BRAKE' in brand_upper or 'QUICKBRAKE' in brand_upper:
+            filtered.append('QUICK BRAKE')
+        elif 'HARLEY DAVIDSON' in brand_upper or 'HARLEYDAVIDSON' in brand_upper:
+            filtered.append('HARLEY DAVIDSON')
+        elif 'ROCK FORCE' in brand_upper or 'ROCKFORCE' in brand_upper:
+            filtered.append('ROCK FORCE')
     
     return sorted(list(set(filtered)))  # Убираем дубликаты и сортируем
 
