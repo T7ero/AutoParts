@@ -910,32 +910,40 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
         if xsrf_token:
             session.headers.update({"X-XSRF-TOKEN": xsrf_token})
 
-        # Основные попытки с разными параметрами
+        # Основные попытки с разными параметрами (сокращенный список)
         api_variants = [
             {"showAll": "false", "isHeaderSearch": "true"},
             {"showAll": "true", "isHeaderSearch": "true"},
-            {"showAll": "false", "isHeaderSearch": "false"},
-            {"showAll": "true", "isHeaderSearch": "false"},
         ]
+        
+        # Счетчик попыток для предотвращения бесконечных циклов
+        total_attempts = 0
+        max_total_attempts = 6  # Ограничиваем общее количество попыток
         
         for num in candidate_nums:
             num_enc = quote(num)
             
             for params in api_variants:
+                if total_attempts >= max_total_attempts:
+                    log_debug(f"Emex API: достигнут лимит попыток для {artikul}, пропускаем")
+                    break
+                    
                 try:
                     api_url = (
                         f"https://emex.ru/api/search/search?detailNum={num_enc}"
                         f"&locationId=263&showAll={params['showAll']}&isHeaderSearch={params['isHeaderSearch']}"
                     )
                     
-                    log_debug(f"Emex API: попытка для {artikul} с параметрами {params}")
+                    log_debug(f"Emex API: попытка {total_attempts + 1} для {artikul} с параметрами {params}")
                     
-                    # Пробуем с разными заголовками сжатия
+                    # Пробуем с разными заголовками сжатия (сокращенный список)
                     for compression_headers in [
                         {"Accept-Encoding": "gzip, deflate"},
                         {"Accept-Encoding": "identity"},
-                        {"Accept-Encoding": "gzip"}
                     ]:
+                        if total_attempts >= max_total_attempts:
+                            break
+                            
                         try:
                             current_headers = headers.copy()
                             current_headers.update(compression_headers)
@@ -943,9 +951,11 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                             response = session.get(
                                 api_url,
                                 headers=current_headers,
-                                timeout=15,  # Уменьшаем таймаут
+                                timeout=10,  # Еще больше уменьшаем таймаут
                                 proxies=proxies
                             )
+                            
+                            total_attempts += 1
                             
                             if response.status_code == 200:
                                 content_type = response.headers.get('content-type', '').lower()
@@ -983,28 +993,28 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                                         continue
                             
                             elif response.status_code == 429:  # Rate limit
-                                log_debug(f"Emex API: Rate limit для {artikul}, ждем...")
-                                time.sleep(2)
-                                continue
+                                log_debug(f"Emex API: Rate limit для {artikul}, пропускаем")
+                                break  # Выходим из цикла при rate limit
                             elif response.status_code == 403:  # Forbidden
-                                log_debug(f"Emex API: 403 Forbidden для {artikul}")
-                                # Пробуем сменить User-Agent
-                                session.headers.update({"User-Agent": random.choice(user_agents)})
-                                time.sleep(1)
-                                continue
+                                log_debug(f"Emex API: 403 Forbidden для {artikul}, пропускаем")
+                                break  # Выходим из цикла при forbidden
                             
                         except requests.exceptions.Timeout:
-                            log_debug(f"Emex API: таймаут для {artikul}")
+                            log_debug(f"Emex API: таймаут для {artikul} (попытка {total_attempts})")
+                            if total_attempts >= max_total_attempts:
+                                log_debug(f"Emex API: слишком много таймаутов для {artikul}, пропускаем")
+                                break
                             continue
                         except requests.exceptions.RequestException as e:
                             log_debug(f"Emex API: ошибка запроса для {artikul}: {str(e)}")
                             continue
                         
-                        # Пауза между попытками
-                        time.sleep(0.3)
+                        # Уменьшенная пауза между попытками
+                        time.sleep(0.1)
                 
                 except Exception as e:
                     log_debug(f"Emex API: ошибка для {artikul}: {str(e)}")
+                    total_attempts += 1
                     continue
 
         # Если все попытки не удались, возвращаем пустой список

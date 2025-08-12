@@ -16,6 +16,8 @@ import re
 import concurrent.futures
 import time
 import gc
+import threading
+import queue
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from typing import List, Dict, Optional
@@ -188,14 +190,14 @@ def process_parsing_task(self, task_id):
                                 log(f"{site.capitalize()}: попытка {attempt+1} с прокси для {num}")
                             
                             # Уменьшаем задержку для ускорения
-                            time.sleep(0.05 if site == 'autopiter' else 0.1)
+                            time.sleep(0.05 if site == 'autopiter' else 0.05)  # Уменьшаем для Emex
                             brands = parser_func(num, proxy)
                             log(f"{site}: {num} → {brands}")
                             return [(brand, part_number, name, b, num, site) for b in brands]
                         except Exception as e:
                             log(f"Error parsing {site} for {num} (attempt {attempt + 1}): {str(e)}")
                             if attempt < max_retries - 1:
-                                time.sleep(0.3)  # Уменьшаем время ожидания
+                                time.sleep(0.2)  # Еще больше уменьшаем время ожидания
                             else:
                                 log(f"Failed to parse {site} for {num} after {max_retries} attempts")
                                 return []
@@ -216,12 +218,44 @@ def process_parsing_task(self, task_id):
                     else:
                         proxy = None
                     
-                    emex_results = parse_one('emex', get_brands_by_artikul_emex)(num)
-                    results['emex'].extend(emex_results)
+                    # Emex с ограниченным временем выполнения
+                    try:
+                        import threading
+                        import queue
+                        
+                        result_queue = queue.Queue()
+                        
+                        def emex_worker():
+                            try:
+                                emex_results = parse_one('emex', get_brands_by_artikul_emex)(num)
+                                result_queue.put(('success', emex_results))
+                            except Exception as e:
+                                result_queue.put(('error', str(e)))
+                        
+                        # Запускаем Emex в отдельном потоке с таймаутом
+                        worker_thread = threading.Thread(target=emex_worker)
+                        worker_thread.daemon = True
+                        worker_thread.start()
+                        
+                        # Ждем результат максимум 20 секунд
+                        try:
+                            result_type, result_data = result_queue.get(timeout=20)
+                            if result_type == 'success':
+                                results['emex'].extend(result_data)
+                            else:
+                                log(f"Emex: ошибка для артикула {num}: {result_data}")
+                                results['emex'].extend([])
+                        except queue.Empty:
+                            log(f"Emex: таймаут для артикула {num}, пропускаем")
+                            results['emex'].extend([])
+                        
+                    except Exception as e:
+                        log(f"Emex: критическая ошибка для артикула {num}: {str(e)}")
+                        results['emex'].extend([])
                     
-                    # Небольшая пауза между артикулами для снижения нагрузки
+                    # Уменьшенная пауза между артикулами
                     if i % 5 == 0 and i > 0:
-                        time.sleep(0.2)
+                        time.sleep(0.1)  # Уменьшаем паузу
                     
                 except Exception as e:
                     log(f"Ошибка обработки артикула {num}: {str(e)}")
