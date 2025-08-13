@@ -1,19 +1,24 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
-WORKDIR /app
+# Устанавливаем переменные окружения
+ENV PYTHONUNBUFFERED=1
+ENV DISPLAY=:99
 
-# Обновляем ключи и устанавливаем базовые зависимости
+# Обновляем систему и устанавливаем базовые зависимости
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
-        gnupg \
-        wget \
         curl \
+        wget \
+        gnupg \
+        apt-transport-https \
+        lsb-release \
         unzip \
         xvfb \
+        sudo \
+        gosu \
         procps \
         gcc \
-        python3-dev \
         fonts-liberation \
         libasound2 \
         libatk-bridge2.0-0 \
@@ -24,38 +29,76 @@ RUN apt-get update && \
         libxcomposite1 \
         libxdamage1 \
         libxrandr2 \
-        xdg-utils && \
-    rm -rf /var/lib/apt/lists/*
+        libxss1 \
+        libxtst6 \
+        xdg-utils \
+        libpq-dev \
+        postgresql-client \
+        && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем Chrome через snap или альтернативный способ
+# Устанавливаем Chromium и ChromeDriver
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         chromium \
-        chromium-driver && \
-    rm -rf /var/lib/apt/lists/*
+        chromium-driver \
+        && rm -rf /var/lib/apt/lists/*
 
-# Создаем пользователя для запуска Chrome
-RUN groupadd -r chrome && useradd -r -g chrome -G audio,video chrome \
-    && mkdir -p /home/chrome/Downloads \
-    && chown -R chrome:chrome /home/chrome
+# Создаем символические ссылки для совместимости
+RUN ln -sf /usr/bin/chromium /usr/bin/google-chrome && \
+    ln -sf /usr/bin/chromedriver /usr/local/bin/chromedriver
 
-# Копируем и устанавливаем Python-зависимости
-COPY requirements.txt ./
-RUN python -m pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Создаем пользователя для запуска приложения
+RUN groupadd -r appuser && \
+    useradd -r -g appuser -G audio,video appuser && \
+    mkdir -p /home/appuser && \
+    chown -R appuser:appuser /home/appuser && \
+    echo "appuser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
-# Копируем остальные файлы
-COPY . .
+# Устанавливаем рабочую директорию
+WORKDIR /app
 
-# Добавляем Daphne
-RUN pip install daphne
+# Создаем структуру директорий с правильными правами
+RUN mkdir -p /app/media/uploads /app/media/results /app/media/temp /app/static && \
+    chown -R appuser:appuser /app && \
+    chmod -R 775 /app/media
 
-# Собираем статику
-RUN python manage.py collectstatic --noinput
+# Копируем requirements.txt
+COPY --chown=appuser:appuser requirements.txt .
 
-# Создаем скрипт для запуска Xvfb
-RUN echo '#!/bin/bash\nXvfb :99 -screen 0 1280x720x24 &\nexport DISPLAY=:99\nexec "$@"' > /usr/local/bin/entrypoint.sh && \
-    chmod +x /usr/local/bin/entrypoint.sh
+# Устанавливаем Python зависимости
+RUN pip install --no-cache-dir -r requirements.txt daphne
 
+# Копируем код приложения
+COPY --chown=appuser:appuser . .
+
+# Создаем файл прокси если его нет
+RUN if [ ! -f /app/proxies.txt ]; then \
+        echo "# Пример файла прокси" > /app/proxies.txt && \
+        echo "# Формат: username:password@ip:port" >> /app/proxies.txt && \
+        echo "# Или просто: ip:port" >> /app/proxies.txt && \
+        echo "# Один прокси на строку" >> /app/proxies.txt && \
+        echo "" >> /app/proxies.txt && \
+        echo "# Примеры:" >> /app/proxies.txt && \
+        echo "# user123:pass456@192.168.1.100:8080" >> /app/proxies.txt && \
+        echo "# 192.168.1.100:8080" >> /app/proxies.txt && \
+        echo "# proxy.example.com:3128" >> /app/proxies.txt; \
+    fi && \
+    chmod 644 /app/proxies.txt
+
+# Копируем entrypoint скрипты
+COPY --chown=appuser:appuser entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chown=appuser:appuser entrypoint_simple.sh /usr/local/bin/entrypoint_simple.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/entrypoint_simple.sh
+
+# Фиксируем права для media директорий
+RUN chown -R appuser:appuser /app/media && \
+    chmod -R 775 /app/media
+
+# Переключаемся на пользователя приложения
+USER appuser
+
+# Открываем порт
 EXPOSE 8000
-CMD ["/usr/local/bin/entrypoint.sh", "daphne", "-b", "0.0.0.0", "-p", "8000", "backend.asgi:application"]
+
+# Запускаем entrypoint
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

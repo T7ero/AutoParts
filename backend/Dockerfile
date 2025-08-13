@@ -12,7 +12,6 @@ RUN apt-get update && \
         curl \
         wget \
         gnupg \
-        software-properties-common \
         apt-transport-https \
         lsb-release \
         unzip \
