@@ -191,3 +191,103 @@ def auth_token(request):
             
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def task_logs(request, task_id):
+    """Получить логи задачи"""
+    try:
+        task = ParsingTask.objects.get(id=task_id)
+        
+        # Получаем логи из Celery result backend
+        from celery.result import AsyncResult
+        celery_result = AsyncResult(str(task_id))
+        
+        logs = []
+        
+        # Добавляем базовую информацию о задаче
+        logs.append({
+            'timestamp': task.created_at.isoformat(),
+            'message': f"Задача #{task_id} создана. Файл: {task.file.name if task.file else 'Не указан'}"
+        })
+        
+        # Добавляем информацию о статусе
+        if task.status == 'pending':
+            logs.append({
+                'timestamp': task.created_at.isoformat(),
+                'message': "Задача поставлена в очередь на выполнение"
+            })
+        elif task.status == 'processing':
+            logs.append({
+                'timestamp': task.updated_at.isoformat(),
+                'message': f"Задача в процессе выполнения. Прогресс: {task.progress}%"
+            })
+        elif task.status == 'completed':
+            logs.append({
+                'timestamp': task.updated_at.isoformat(),
+                'message': f"Задача завершена успешно. Прогресс: 100%"
+            })
+            if hasattr(task, '_processed_rows') and task._processed_rows:
+                logs.append({
+                    'timestamp': task.updated_at.isoformat(),
+                    'message': f"Обработано строк: {task._processed_rows}"
+                })
+        elif task.status == 'failed':
+            logs.append({
+                'timestamp': task.updated_at.isoformat(),
+                'message': f"Задача завершена с ошибкой: {task.error_message or 'Неизвестная ошибка'}"
+            })
+        
+        # Пытаемся получить дополнительную информацию из Celery
+        if celery_result.info:
+            if isinstance(celery_result.info, dict):
+                # Добавляем информацию о результатах парсинга
+                if 'autopiter_results' in celery_result.info:
+                    logs.append({
+                        'timestamp': task.updated_at.isoformat(),
+                        'message': f"Autopiter: найдено {len(celery_result.info['autopiter_results'])} результатов"
+                    })
+                if 'emex_results' in celery_result.info:
+                    logs.append({
+                        'timestamp': task.updated_at.isoformat(),
+                        'message': f"Emex: найдено {len(celery_result.info['emex_results'])} результатов"
+                    })
+                if 'armtek_results' in celery_result.info:
+                    logs.append({
+                        'timestamp': task.updated_at.isoformat(),
+                        'message': f"Armtek: найдено {len(celery_result.info['armtek_results'])} результатов"
+                    })
+                
+                # Добавляем детальные логи если есть
+                if 'detailed_logs' in celery_result.info:
+                    for log_entry in celery_result.info['detailed_logs']:
+                        logs.append({
+                            'timestamp': log_entry.get('timestamp', task.updated_at.isoformat()),
+                            'message': log_entry.get('message', 'Лог записи')
+                        })
+        
+        # Добавляем информацию о времени выполнения
+        if task.status in ['completed', 'failed']:
+            duration = task.updated_at - task.created_at
+            logs.append({
+                'timestamp': task.updated_at.isoformat(),
+                'message': f"Время выполнения: {duration.total_seconds():.1f} секунд"
+            })
+        
+        # Сортируем логи по времени
+        logs.sort(key=lambda x: x['timestamp'])
+        
+        return Response({
+            'task_id': task_id,
+            'status': task.status,
+            'progress': task.progress,
+            'logs': logs,
+            'created_at': task.created_at.isoformat(),
+            'updated_at': task.updated_at.isoformat(),
+            'file_name': task.file.name if task.file else None
+        })
+        
+    except ParsingTask.DoesNotExist:
+        return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

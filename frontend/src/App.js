@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard';
 import Upload from './pages/Upload';
 import Tasks from './pages/Tasks';
 import Results from './pages/Results';
+import Logs from './pages/Logs';
 
 function App() {
   return (
@@ -19,6 +20,7 @@ function App() {
             <Route path="/upload" element={<Upload />} />
             <Route path="/tasks" element={<Tasks />} />
             <Route path="/results" element={<Results />} />
+            <Route path="/logs" element={<Logs />} />
           </Routes>
         </main>
       </div>

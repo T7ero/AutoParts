@@ -8,6 +8,7 @@ const navigation = [
   { name: 'Загрузка', href: '/upload' },
   { name: 'Задачи', href: '/tasks' },
   { name: 'Результаты', href: '/results' },
+  { name: 'Логи', href: '/logs' },
   { name: 'Прокси', href: '/proxy-manager', external: true },
 ];
 
