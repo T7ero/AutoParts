@@ -162,3 +162,4 @@ GET /api/parsing-tasks/{task_id}/logs/
 **Версия**: 1.0.0  
 **Дата**: 13.08.2025  
 **Автор**: AutoParts Team
+

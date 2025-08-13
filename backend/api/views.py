@@ -258,6 +258,15 @@ def task_logs(request, task_id):
                         'message': f"Armtek: найдено {len(celery_result.info['armtek_results'])} результатов"
                     })
                 
+                # Добавляем информацию о текущей обрабатываемой строке
+                if 'current_row' in celery_result.info:
+                    current_row = celery_result.info['current_row']
+                    total_rows = celery_result.info.get('total_rows', 'неизвестно')
+                    logs.append({
+                        'timestamp': task.updated_at.isoformat(),
+                        'message': f"Обрабатывается строка {current_row} из {total_rows}"
+                    })
+                
                 # Добавляем детальные логи если есть
                 if 'detailed_logs' in celery_result.info:
                     for log_entry in celery_result.info['detailed_logs']:
@@ -286,6 +295,52 @@ def task_logs(request, task_id):
             'updated_at': task.updated_at.isoformat(),
             'file_name': task.file.name if task.file else None
         })
+        
+    except ParsingTask.DoesNotExist:
+        return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def download_result(request, task_id):
+    """Скачать результат задачи"""
+    try:
+        task = ParsingTask.objects.get(id=task_id)
+        
+        if task.status != 'completed':
+            return Response({'error': 'Задача не завершена'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Ищем файл результата
+        result_file_path = None
+        
+        # Проверяем поле result_file
+        if task.result_file:
+            result_file_path = task.result_file.path
+        else:
+            # Ищем в папке results по ID задачи
+            import os
+            from django.conf import settings
+            
+            results_dir = os.path.join(settings.MEDIA_ROOT, 'results')
+            for filename in os.listdir(results_dir):
+                if filename.startswith(f'result_{task_id}') and filename.endswith('.xlsx'):
+                    result_file_path = os.path.join(results_dir, filename)
+                    break
+        
+        if not result_file_path or not os.path.exists(result_file_path):
+            return Response({'error': 'Файл результата не найден'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Отправляем файл
+        from django.http import FileResponse
+        import os
+        
+        filename = os.path.basename(result_file_path)
+        response = FileResponse(open(result_file_path, 'rb'))
+        response['Content-Type'] = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        
+        return response
         
     except ParsingTask.DoesNotExist:
         return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)

@@ -93,3 +93,4 @@ if __name__ == "__main__":
     print("2. Получите токен аутентификации через /api/auth/token/")
     print("3. Обновите API_TOKEN в этом файле")
     print("4. Запустите тест снова: python test_logs_api.py")
+

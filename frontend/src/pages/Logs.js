@@ -81,11 +81,11 @@ function Logs() {
 
   const getStatusColor = (status) => {
     switch (status) {
-      case 'completed': return 'text-green-600';
-      case 'failed': return 'text-red-600';
-      case 'processing': return 'text-blue-600';
-      case 'pending': return 'text-yellow-600';
-      default: return 'text-gray-600';
+      case 'completed': return 'text-green-600 dark:text-green-400';
+      case 'failed': return 'text-red-600 dark:text-red-400';
+      case 'processing': return 'text-blue-600 dark:text-blue-400';
+      case 'pending': return 'text-yellow-600 dark:text-yellow-400';
+      default: return 'text-gray-600 dark:text-gray-400';
     }
   };
 
@@ -102,14 +102,14 @@ function Logs() {
   if (loading) {
     return (
       <div className="flex justify-center items-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 dark:border-blue-400"></div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
+      <div className="bg-red-100 dark:bg-red-900 border border-red-400 dark:border-red-700 text-red-700 dark:text-red-300 px-4 py-3 rounded">
         {error}
       </div>
     );
@@ -117,10 +117,10 @@ function Logs() {
 
   return (
     <div className="max-w-7xl mx-auto">
-      <div className="bg-white shadow rounded-lg">
-        <div className="px-6 py-4 border-b border-gray-200">
+      <div className="bg-white dark:bg-gray-800 shadow rounded-lg transition-colors">
+        <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
           <div className="flex justify-between items-center">
-            <h1 className="text-2xl font-bold text-gray-900">Логи задач</h1>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Логи задач</h1>
             <div className="flex space-x-2">
               <button
                 onClick={clearLogs}
@@ -135,7 +135,7 @@ function Logs() {
                   onChange={(e) => setAutoScroll(e.target.checked)}
                   className="rounded"
                 />
-                <span className="text-sm text-gray-600">Автопрокрутка</span>
+                <span className="text-sm text-gray-600 dark:text-gray-300">Автопрокрутка</span>
               </label>
             </div>
           </div>
@@ -143,11 +143,11 @@ function Logs() {
 
         <div className="flex h-96">
           {/* Список задач */}
-          <div className="w-1/3 border-r border-gray-200 overflow-y-auto">
+          <div className="w-1/3 border-r border-gray-200 dark:border-gray-700 overflow-y-auto">
             <div className="p-4">
-              <h3 className="text-lg font-medium text-gray-900 mb-4">Задачи</h3>
+              <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Задачи</h3>
               {tasks.length === 0 ? (
-                <p className="text-gray-500">Нет доступных задач</p>
+                <p className="text-gray-500 dark:text-gray-400">Нет доступных задач</p>
               ) : (
                 <div className="space-y-2">
                   {tasks.map((task) => (
@@ -156,19 +156,19 @@ function Logs() {
                       onClick={() => handleTaskSelect(task.id)}
                       className={`p-3 rounded-lg cursor-pointer transition-colors ${
                         selectedTask === task.id
-                          ? 'bg-blue-100 border-blue-300 border'
-                          : 'bg-gray-50 hover:bg-gray-100'
+                          ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-600 border'
+                          : 'bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600'
                       }`}
                     >
                       <div className="flex justify-between items-start">
                         <div>
-                          <h4 className="font-medium text-gray-900">
+                          <h4 className="font-medium text-gray-900 dark:text-white">
                             Задача #{task.id}
                           </h4>
-                          <p className="text-sm text-gray-600">
+                          <p className="text-sm text-gray-600 dark:text-gray-300">
                             {task.file_name || 'Без названия'}
                           </p>
-                          <p className="text-xs text-gray-500">
+                          <p className="text-xs text-gray-500 dark:text-gray-400">
                             {formatTimestamp(task.created_at)}
                           </p>
                         </div>
@@ -178,13 +178,13 @@ function Logs() {
                       </div>
                       {task.progress !== undefined && (
                         <div className="mt-2">
-                          <div className="w-full bg-gray-200 rounded-full h-2">
+                          <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2">
                             <div
-                              className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                              className="bg-blue-600 dark:bg-blue-400 h-2 rounded-full transition-all duration-300"
                               style={{ width: `${task.progress}%` }}
                             ></div>
                           </div>
-                          <span className="text-xs text-gray-600">{task.progress}%</span>
+                          <span className="text-xs text-gray-600 dark:text-gray-400">{task.progress}%</span>
                         </div>
                       )}
                     </div>
@@ -199,10 +199,10 @@ function Logs() {
             {selectedTask ? (
               <div className="h-full flex flex-col">
                 <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-lg font-medium text-gray-900">
+                  <h3 className="text-lg font-medium text-gray-900 dark:text-white">
                     Логи задачи #{selectedTask}
                   </h3>
-                  <span className="text-sm text-gray-500">
+                  <span className="text-sm text-gray-500 dark:text-gray-400">
                     {logs[selectedTask]?.length || 0} записей
                   </span>
                 </div>
@@ -222,7 +222,7 @@ function Logs() {
                 </div>
               </div>
             ) : (
-              <div className="h-full flex items-center justify-center text-gray-500">
+              <div className="h-full flex items-center justify-center text-gray-500 dark:text-gray-400">
                 Выберите задачу для просмотра логов
               </div>
             )}
@@ -234,3 +234,4 @@ function Logs() {
 }
 
 export default Logs;
+
