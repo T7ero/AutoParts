@@ -7,6 +7,7 @@ urlpatterns = [
     path('parsing-tasks/<int:task_id>/', views.task_status, name='task_status'),
     path('parsing-tasks/<int:task_id>/logs/', views.task_logs, name='task_logs'),
     path('parsing-tasks/<int:task_id>/download/', views.download_result, name='download_result'),
+    path('parsing-tasks/<int:task_id>/download-site/<str:site>/', views.download_site_result, name='download_site_result'),
     path('parsing-tasks/<int:task_id>/delete/', views.delete_task, name='delete_task'),
     path('parsing-tasks/clear/', views.clear_all_tasks, name='clear_all_tasks'),
     path('proxies/upload/', views.upload_proxies, name='upload_proxies'),

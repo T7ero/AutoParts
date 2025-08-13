@@ -12,11 +12,24 @@ class CrossReferenceSerializer(serializers.ModelSerializer):
         fields = ['id', 'part', 'competitor_brand', 'competitor_number', 'source_url', 'created_at']
 
 class ParsingTaskSerializer(serializers.ModelSerializer):
+    file_name = serializers.SerializerMethodField()
+    
     class Meta:
         model = ParsingTask
-        fields = ['id', 'user', 'file', 'status', 'progress', 'result_file', 'result_files', 'log',
+        fields = ['id', 'user', 'file', 'file_name', 'status', 'progress', 'result_file', 'result_files', 'log',
                  'created_at', 'updated_at', 'error_message']
         read_only_fields = ['user', 'status', 'progress', 'result_file', 'result_files', 'log', 'error_message']
+    
+    def get_file_name(self, obj):
+        """Получить название файла"""
+        if obj.file:
+            if hasattr(obj.file, 'name'):
+                return obj.file.name
+            elif isinstance(obj.file, str):
+                # Если file это строка с путем
+                import os
+                return os.path.basename(obj.file)
+        return None
     
     def validate_file(self, value):
         """Валидация загружаемого файла"""

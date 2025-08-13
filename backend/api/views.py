@@ -346,3 +346,53 @@ def download_result(request, task_id):
         return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def download_site_result(request, task_id, site):
+    """Скачать результат задачи по конкретному сайту"""
+    try:
+        task = ParsingTask.objects.get(id=task_id)
+        
+        if task.status != 'completed':
+            return Response({'error': 'Задача не завершена'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        if not task.result_files or site not in task.result_files:
+            return Response({'error': f'Файл для сайта {site} не найден'}, status=status.HTTP_404_NOT_FOUND)
+        
+        file_path = task.result_files[site]
+        
+        # Проверяем, что файл существует
+        import os
+        from django.conf import settings
+        
+        # Если file_path это относительный путь, добавляем MEDIA_ROOT
+        if not os.path.isabs(file_path):
+            full_path = os.path.join(settings.MEDIA_ROOT, file_path)
+        else:
+            full_path = file_path
+        
+        if not os.path.exists(full_path):
+            return Response({'error': 'Файл не найден на диске'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Отправляем файл
+        from django.http import FileResponse
+        
+        # Определяем название сайта для файла
+        site_names = {
+            'autopiter': 'Autopiter',
+            'emex': 'Emex',
+            'armtek': 'Armtek'
+        }
+        site_name = site_names.get(site, site)
+        
+        response = FileResponse(open(full_path, 'rb'))
+        response['Content-Type'] = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        response['Content-Disposition'] = f'attachment; filename="{site_name}_result_{task_id}.xlsx"'
+        
+        return response
+        
+    except ParsingTask.DoesNotExist:
+        return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

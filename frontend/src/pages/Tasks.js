@@ -107,23 +107,61 @@ function Tasks() {
   };
 
   const handleDownloadResult = async (task) => {
-    if (task.status === 'completed' && task.result_file) {
+    if (task.status === 'completed') {
       try {
-        const response = await axios.get(`/api/parsing-tasks/${task.id}/download/`, {
-          headers: {
-            'Authorization': `Token ${localStorage.getItem('token')}`
-          },
-          responseType: 'blob'
-        });
+        // Скачиваем основной файл результата
+        if (task.result_file) {
+          const response = await axios.get(`/api/parsing-tasks/${task.id}/download/`, {
+            headers: {
+              'Authorization': `Token ${localStorage.getItem('token')}`
+            },
+            responseType: 'blob'
+          });
+          
+          const url = window.URL.createObjectURL(new Blob([response.data]));
+          const link = document.createElement('a');
+          link.href = url;
+          link.setAttribute('download', `result_${task.id}.xlsx`);
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          window.URL.revokeObjectURL(url);
+        }
         
-        const url = window.URL.createObjectURL(new Blob([response.data]));
-        const link = document.createElement('a');
-        link.href = url;
-        link.setAttribute('download', `result_${task.id}.xlsx`);
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        window.URL.revokeObjectURL(url);
+        // Скачиваем файлы по сайтам, если есть
+        if (task.result_files) {
+          for (const [site, filePath] of Object.entries(task.result_files)) {
+            try {
+              const response = await axios.get(`/api/parsing-tasks/${task.id}/download-site/${site}/`, {
+                headers: {
+                  'Authorization': `Token ${localStorage.getItem('token')}`
+                },
+                responseType: 'blob'
+              });
+              
+              const url = window.URL.createObjectURL(new Blob([response.data]));
+              const link = document.createElement('a');
+              link.href = url;
+              
+              // Определяем название сайта для файла
+              let siteName = site;
+              if (site === 'autopiter') siteName = 'Autopiter';
+              else if (site === 'emex') siteName = 'Emex';
+              else if (site === 'armtek') siteName = 'Armtek';
+              
+              link.setAttribute('download', `${siteName}_result_${task.id}.xlsx`);
+              document.body.appendChild(link);
+              link.click();
+              link.remove();
+              window.URL.revokeObjectURL(url);
+              
+              // Небольшая задержка между скачиваниями
+              await new Promise(resolve => setTimeout(resolve, 500));
+            } catch (err) {
+              console.error(`Ошибка при скачивании файла ${site}:`, err);
+            }
+          }
+        }
       } catch (err) {
         alert('Ошибка при скачивании результата');
       }
@@ -154,6 +192,22 @@ function Tasks() {
     if (!timestamp) return '';
     const date = new Date(timestamp);
     return date.toLocaleString('ru-RU');
+  };
+
+  const getFileName = (task) => {
+    // Пытаемся получить название файла из разных полей
+    if (task.file && task.file.name) {
+      return task.file.name;
+    }
+    if (task.file_name) {
+      return task.file_name;
+    }
+    if (task.file && typeof task.file === 'string') {
+      // Если file это строка с путем
+      const parts = task.file.split('/');
+      return parts[parts.length - 1];
+    }
+    return 'Не указан';
   };
 
   if (loading) {
@@ -212,7 +266,7 @@ function Tasks() {
                       
                       <div className="mt-2 space-y-1">
                         <p className="text-sm text-gray-600 dark:text-gray-300">
-                          <span className="font-medium">Файл:</span> {task.file_name || 'Не указан'}
+                          <span className="font-medium">Файл:</span> {getFileName(task)}
                         </p>
                         <p className="text-sm text-gray-600 dark:text-gray-300">
                           <span className="font-medium">Создана:</span> {formatTimestamp(task.created_at)}
@@ -243,6 +297,29 @@ function Tasks() {
                           </div>
                         </div>
                       )}
+
+                      {/* Показываем доступные файлы для скачивания */}
+                      {task.status === 'completed' && task.result_files && (
+                        <div className="mt-3">
+                          <p className="text-sm text-gray-600 dark:text-gray-300 mb-2">
+                            <span className="font-medium">Доступные файлы:</span>
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {Object.keys(task.result_files).map((site) => {
+                              let siteName = site;
+                              if (site === 'autopiter') siteName = 'Autopiter';
+                              else if (site === 'emex') siteName = 'Emex';
+                              else if (site === 'armtek') siteName = 'Armtek';
+                              
+                              return (
+                                <span key={site} className="px-2 py-1 bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 text-xs rounded">
+                                  {siteName}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     <div className="flex flex-col space-y-2 ml-4">
@@ -251,7 +328,7 @@ function Tasks() {
                           onClick={() => handleDownloadResult(task)}
                           className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-sm"
                         >
-                          Скачать результат
+                          Скачать все результаты
                         </button>
                       )}
                       
