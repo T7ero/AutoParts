@@ -108,7 +108,7 @@ def upload_proxies(request):
         
         return Response({'message': 'Прокси успешно загружены'}, status=status.HTTP_200_OK)
         
-        except Exception as e:
+    except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['GET'])
