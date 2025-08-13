@@ -39,6 +39,7 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
     """Фильтрует мусорные бренды из результатов Autopiter и Emex"""
     garbage_words = {
         'артикул', 'тестовый', 'клиента', 'ремень', 'грм', 'без артикула', 'оригинальная',
+        'дизель', 'дизеля', 'дизельный',
         'крышка', 'решетки', 'фен', 'строительный', 'полироль', 'mat', 'номер', 'корея',
         'русская', 'артель', 'освар', 'plak', 'zabectuaptukyl', 'zikmar', 'plak',
         'testartikul', 'euroflextestartikul', 'тестовый артикул', 'артикул клиента',
@@ -316,7 +317,7 @@ def process_parsing_task(self, task_id):
             try:
                 # Проверка таймаута каждые 25 строк для более частой проверки
                 if index % 25 == 0:
-                    if time.time() - task._timeout_check > 25200:  # 7 часов
+                    if time.time() - task._timeout_check > 82800:  # 23 часа
                         log("Task timeout approaching, finishing up...")
                         break
                 

@@ -317,15 +317,16 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                     if brand and len(brand) > 1 and not brand.isdigit():
                         # Дополнительная проверка - исключаем мусор и данные из "Часто ищут"
                         if (len(brand) < 50 and 
-                            not any(exclude in brand.lower() for exclude in [
-                                'сверла', 'свечи', 'автошина', 'заклепка', 'игла', 
-                                'лейка', 'лента', 'помпа', 'поплавок', 'ремень', 
-                                'фильтр', 'хомут', 'шина', 'щетка', 'кольцо',
-                                'комплект', 'костюм', 'стартер', 'шайба', 'деталь',
-                                'накладка', 'тормозная', 'задняя', 'комплект', 'колесо',
-                                'производители', 'часто ищут', 'рекомендуем', 'сверла техмаш',
-                                'тестовый', 'клиента', 'без артикула', 'оригинальная'
-                            ]) and
+                                                            not any(exclude in brand.lower() for exclude in [
+                                    'сверла', 'свечи', 'автошина', 'заклепка', 'игла', 
+                                    'лейка', 'лента', 'помпа', 'поплавок', 'ремень', 
+                                    'фильтр', 'хомут', 'шина', 'щетка', 'кольцо',
+                                    'комплект', 'костюм', 'стартер', 'шайба', 'деталь',
+                                    'накладка', 'тормозная', 'задняя', 'комплект', 'колесо',
+                                    'производители', 'часто ищут', 'рекомендуем', 'сверла техмаш',
+                                    'тестовый', 'клиента', 'без артикула', 'оригинальная',
+                                    'дизель', 'дизеля', 'дизельный'
+                                ]) and
                             not brand.lower().startswith('12643') and  # Исключаем артикулы
                             not brand.lower().startswith('d-') and
                             not any(char.isdigit() for char in brand[:3])  # Исключаем артикулы в начале
@@ -350,7 +351,8 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                                     'комплект', 'костюм', 'стартер', 'шайба', 'деталь',
                                     'накладка', 'тормозная', 'задняя', 'комплект', 'колесо',
                                     'производители', 'часто ищут', 'рекомендуем', 'сверла техмаш',
-                                    'тестовый', 'клиента', 'без артикула', 'оригинальная'
+                                    'тестовый', 'клиента', 'без артикула', 'оригинальная',
+                                    'дизель', 'дизеля', 'дизельный'
                                 ]) and
                                 not brand.lower().startswith('12643') and
                                 not brand.lower().startswith('d-') and
@@ -390,9 +392,40 @@ def split_combined_brands(brands: List[str]) -> List[str]:
                         result.add(part_clean)
                 break
         
-        # Если нет разделителей, добавляем как есть
+        # Если нет разделителей, пробуем разделить по заглавным буквам
         if not has_separator:
-            result.add(brand_clean)
+            # Ищем паттерны типа "BPWSKUBATRUCKMAX" -> "BPW", "SKUBA", "TRUCKMAX"
+            if brand_clean.isupper() and len(brand_clean) > 10:
+                # Разделяем по заглавным буквам, но сохраняем известные бренды
+                known_brands = ['BPW', 'SKUBA', 'TRUCKMAX', 'DAF', 'OPEL', 'FORD', 'MANSONS', 'TRP', 
+                               'BLUMAQ', 'EXOVO', 'SAMPASCANIA', 'SIMPECO', 'FRUEHAUF', 'GIGANT', 
+                               'SMB', 'EUROPARTS', 'AFURAL', 'AIC', 'ASAMAUGER', 'DDA', 'FACET',
+                               'FAW', 'HINO', 'ISUZU', 'MARSHALL', 'PARTS', 'RENAULT', 'RVI', 'VOLVO',
+                               'SCANIA', 'VAN WEZEL', 'SAAB', 'SCHLIECKMANN', 'AIRSTAL', 'AUGER', 
+                               'AURADIA', 'AUTOGAMMA', 'CARGO', 'AKINTECH', 'ABALAD', 'KUHNER',
+                               'ANALOG DEVICES', 'ARVIN ROSI', 'CONELASTRA', 'CARDONE']
+                
+                # Сначала проверяем, есть ли известные бренды
+                found_known = False
+                for known_brand in known_brands:
+                    if known_brand in brand_clean:
+                        result.add(known_brand)
+                        found_known = True
+                
+                # Если не нашли известные, пробуем разделить по заглавным
+                if not found_known:
+                    # Разделяем по заглавным буквам, но не разбиваем короткие части
+                    parts = re.findall(r'[A-Z][a-z]*', brand_clean)
+                    if len(parts) > 1:
+                        for part in parts:
+                            if len(part) > 2:
+                                result.add(part)
+                    else:
+                        result.add(brand_clean)
+                else:
+                    result.add(brand_clean)
+            else:
+                result.add(brand_clean)
     
     return sorted(list(result))
 
