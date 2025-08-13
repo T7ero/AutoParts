@@ -349,49 +349,36 @@ def download_result(request, task_id):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
-def test_api(request):
-    """Тестовый endpoint для проверки работы API"""
-    return Response({'message': 'API работает!', 'timestamp': '2025-08-14'})
-
-@api_view(['GET'])
-@permission_classes([AllowAny])
 def download_site_result(request, task_id, site):
     """Скачать результат задачи по конкретному сайту"""
-    print(f"DEBUG: download_site_result вызвана с task_id={task_id}, site={site}")
-    
     try:
         task = ParsingTask.objects.get(id=task_id)
-        print(f"DEBUG: Задача найдена: {task.id}, статус: {task.status}")
         
         if task.status != 'completed':
-            print(f"DEBUG: Задача не завершена: {task.status}")
             return Response({'error': 'Задача не завершена'}, status=status.HTTP_400_BAD_REQUEST)
         
-        print(f"DEBUG: result_files: {task.result_files}")
-        
         if not task.result_files or site not in task.result_files:
-            print(f"DEBUG: Файл для сайта {site} не найден в result_files")
             return Response({'error': f'Файл для сайта {site} не найден'}, status=status.HTTP_404_NOT_FOUND)
         
         file_path = task.result_files[site]
-        print(f"DEBUG: Путь к файлу: {file_path}")
         
         # Проверяем, что файл существует
         import os
         from django.conf import settings
         
-        # Если file_path это относительный путь, добавляем MEDIA_ROOT
-        if not os.path.isabs(file_path):
-            full_path = os.path.join(settings.MEDIA_ROOT, file_path)
-        else:
+        # Формируем правильный путь к файлу
+        if file_path.startswith('media/'):
+            # Если путь начинается с media/, убираем его и добавляем MEDIA_ROOT
+            relative_path = file_path[6:]  # убираем 'media/'
+            full_path = os.path.join(settings.MEDIA_ROOT, relative_path)
+        elif file_path.startswith('/'):
+            # Если абсолютный путь
             full_path = file_path
-        
-        print(f"DEBUG: Полный путь к файлу: {full_path}")
-        print(f"DEBUG: MEDIA_ROOT: {settings.MEDIA_ROOT}")
-        print(f"DEBUG: Файл существует: {os.path.exists(full_path)}")
+        else:
+            # Если относительный путь без media/
+            full_path = os.path.join(settings.MEDIA_ROOT, file_path)
         
         if not os.path.exists(full_path):
-            print(f"DEBUG: Файл не найден на диске: {full_path}")
             return Response({'error': 'Файл не найден на диске'}, status=status.HTTP_404_NOT_FOUND)
         
         # Отправляем файл
@@ -405,8 +392,6 @@ def download_site_result(request, task_id, site):
         }
         site_name = site_names.get(site, site)
         
-        print(f"DEBUG: Отправляем файл: {full_path}")
-        
         response = FileResponse(open(full_path, 'rb'))
         response['Content-Type'] = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         response['Content-Disposition'] = f'attachment; filename="{site_name}_result_{task_id}.xlsx"'
@@ -414,10 +399,6 @@ def download_site_result(request, task_id, site):
         return response
         
     except ParsingTask.DoesNotExist:
-        print(f"DEBUG: Задача {task_id} не найдена")
         return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        print(f"DEBUG: Ошибка: {str(e)}")
-        import traceback
-        traceback.print_exc()
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
