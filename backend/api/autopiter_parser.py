@@ -469,7 +469,15 @@ def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None) -> L
         if not proxy:
             proxy_dict = get_next_proxy()
             if proxy_dict:
-                proxy = proxy_dict.get('http', '').replace('http://', '')
+                # Извлекаем только IP:port из прокси
+                proxy_url = proxy_dict.get('http', '')
+                if proxy_url.startswith('http://'):
+                    proxy_url = proxy_url[7:]  # Убираем 'http://'
+                if '@' in proxy_url:
+                    # Формат: login:password@ip:port -> берем только ip:port
+                    proxy = proxy_url.split('@')[1]
+                else:
+                    proxy = proxy_url
                 log_debug(f"Armtek: автоматически получен прокси: {proxy}")
         
         # Сначала пробуем API
@@ -667,7 +675,24 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
             ".product-name .brand",
             "[data-brand]",
             ".manufacturer",
-            ".vendor"
+            ".vendor",
+            ".brand--selecting",
+            ".font__body2.brand--selecting",
+            ".product-card .brand",
+            ".catalog-item .brand",
+            ".search-item .brand",
+            ".catalog-item__brand",
+            ".product__brand",
+            ".item__brand",
+            ".brand-item",
+            ".brand-link",
+            ".brand-title",
+            ".brand-name",
+            ".product-brand",
+            ".manufacturer-name",
+            ".vendor-title",
+            ".item-brand",
+            ".brand__name"
         ]
         
         for selector in brand_selectors:
@@ -688,6 +713,33 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
                 brands = parse_armtek_page_text(page_text, artikul)
             except Exception as e:
                 log_debug(f"Armtek Selenium: ошибка при парсинге текста страницы: {str(e)}")
+        
+        # Дополнительный поиск по тексту страницы
+        if not brands:
+            try:
+                # Ищем потенциальные бренды в тексте страницы
+                page_text = driver.page_source
+                # Разбиваем текст на слова и ищем потенциальные бренды
+                words = re.findall(r'\b[A-Z][a-zA-Z0-9-]+\b', page_text)
+                for word in words:
+                    if len(word) > 2 and len(word) < 20 and not word.isdigit():
+                        # Проверяем, что это похоже на бренд
+                        if re.match(r'^[A-Z][a-zA-Z0-9-]+$', word):
+                            brands.add(word)
+            except Exception as e:
+                log_debug(f"Armtek Selenium: ошибка при поиске брендов в тексте: {str(e)}")
+        
+        # Поиск по атрибутам data-brand в HTML
+        if not brands:
+            try:
+                page_source = driver.page_source
+                # Ищем все атрибуты data-brand
+                data_brand_matches = re.findall(r'data-brand="([^"]+)"', page_source)
+                for match in data_brand_matches:
+                    if match and len(match) > 2 and not match.isdigit():
+                        brands.add(match.strip())
+            except Exception as e:
+                log_debug(f"Armtek Selenium: ошибка при поиске data-brand: {str(e)}")
         
         log_debug(f"Armtek Selenium: найдено {len(brands)} брендов")
         return list(brands)
@@ -800,6 +852,13 @@ def parse_armtek_page_text(page_text: str, artikul: str) -> set:
         r'brand["\s]*[:=]\s*["\']([^"\']+)["\']',
         r'производитель["\s]*[:=]\s*["\']([^"\']+)["\']',
         r'бренд["\s]*[:=]\s*["\']([^"\']+)["\']',
+        r'brand-name="([^"]+)"',
+        r'manufacturer="([^"]+)"',
+        r'vendor="([^"]+)"',
+        r'data-brand="([^"]+)"',
+        r'brand["\s]*[:=]\s*([^\s,]+)',
+        r'производитель["\s]*[:=]\s*([^\s,]+)',
+        r'бренд["\s]*[:=]\s*([^\s,]+)'
     ]
     
     for pattern in brand_patterns:
@@ -807,6 +866,34 @@ def parse_armtek_page_text(page_text: str, artikul: str) -> set:
         for match in matches:
             if match and len(match) > 1:
                 brands.add(match.strip())
+    
+    # Дополнительный поиск по тексту страницы
+    if not brands:
+        try:
+            # Ищем потенциальные бренды в тексте
+            # Разбиваем текст на слова и ищем потенциальные бренды
+            words = re.findall(r'\b[A-Z][a-zA-Z0-9-]+\b', page_text)
+            for word in words:
+                if len(word) > 2 and len(word) < 20 and not word.isdigit():
+                    # Проверяем, что это похоже на бренд
+                    if re.match(r'^[A-Z][a-zA-Z0-9-]+$', word):
+                        brands.add(word)
+        except Exception as e:
+            pass
+    
+    # Поиск по структурированным данным
+    if not brands:
+        try:
+            # Ищем JSON данные в скриптах
+            script_matches = re.findall(r'<script[^>]*>([^<]+)</script>', page_text, re.IGNORECASE)
+            for script in script_matches:
+                # Ищем бренды в JSON
+                json_brand_matches = re.findall(r'"brand"\s*:\s*"([^"]+)"', script)
+                for match in json_brand_matches:
+                    if match and len(match) > 2 and not match.isdigit():
+                        brands.add(match.strip())
+        except Exception as e:
+            pass
     
     return brands
 
@@ -1054,6 +1141,21 @@ def parse_armtek_http_response(html_content: str, artikul: str) -> List[str]:
                         brands.add(word)
         except Exception as e:
             log_debug(f"Armtek HTTP: ошибка при поиске брендов в тексте: {str(e)}")
+    
+    # Поиск по структурированным данным в скриптах
+    if not brands:
+        try:
+            # Ищем JSON данные в скриптах
+            script_tags = soup.find_all('script')
+            for script in script_tags:
+                if script.string:
+                    # Ищем бренды в JSON
+                    json_brand_matches = re.findall(r'"brand"\s*:\s*"([^"]+)"', script.string)
+                    for match in json_brand_matches:
+                        if match and len(match) > 2 and not match.isdigit():
+                            brands.add(match.strip())
+        except Exception as e:
+            log_debug(f"Armtek HTTP: ошибка при поиске брендов в скриптах: {str(e)}")
     
     # Фильтруем и возвращаем бренды
     filtered_brands = filter_armtek_brands(list(brands))
