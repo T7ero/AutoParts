@@ -13,6 +13,7 @@ from selenium.webdriver.chrome.service import Service
 import logging
 import subprocess
 import os
+import shutil
 import tempfile
 import uuid
 import random
@@ -499,90 +500,35 @@ def split_combined_brands(brands: List[str]) -> List[str]:
     return sorted(list(result))
 
 def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None) -> List[str]:
-	"""Получает бренды с Armtek по артикулу с поддержкой прокси"""
+	"""Получает бренды с Armtek по артикулу. Для скорости сразу используем Selenium."""
 	try:
 		log_debug(f"Armtek: начало обработки артикула {artikul}")
-		
-		# Если прокси не передан, пробуем получить из списка
+		# 1) Selenium без прокси (чаще всего быстрее и стабильнее)
+		brands = parse_armtek_selenium(artikul, None)
+		if brands:
+			return filter_armtek_brands(split_combined_brands(brands))
+
+		# 2) Selenium c прокси (если доступен)
 		if not proxy:
 			proxy_dict = get_next_proxy()
 			if proxy_dict:
-				# Получаем полный URL прокси
 				proxy_url = proxy_dict.get('http', '')
 				if proxy_url.startswith('http://'):
-					proxy_url = proxy_url[7:]  # Убираем 'http://'
-				proxy = proxy_url  # Используем полный прокси с аутентификацией
+					proxy_url = proxy_url[7:]
+				proxy = proxy_url
 				log_debug(f"Armtek: автоматически получен прокси: {proxy}")
-		
-		# Сначала пробуем API
-		api_url = f"https://armtek.ru/api/search?query={artikul}&limit=50"
-		log_debug(f"Armtek API: запрос к {api_url}")
-		
-		try:
-			response = make_request(api_url, proxy, max_retries=1)
-			if response and response.status_code == 200:
-				try:
-					# Проверяем, что ответ действительно JSON
-					content_type = response.headers.get('content-type', '')
-					if 'application/json' in content_type or 'text/json' in content_type:
-						data = response.json()
-						if data and 'brands' in data:
-							brands = [brand.strip() for brand in data['brands'] if brand.strip()]
-							if brands:
-								log_debug(f"Armtek API: найдено {len(brands)} брендов")
-								# Применяем разделение объединенных брендов
-								split_brands = split_combined_brands(brands)
-								return filter_armtek_brands(split_brands)
-					else:
-						log_debug(f"Armtek API: неверный content-type: {content_type}")
-				except json.JSONDecodeError as e:
-					log_debug(f"Armtek API: ошибка декодирования JSON: {str(e)}")
-					log_debug(f"Armtek API: ответ: {response.text[:200]}...")
-		except Exception as e:
-			log_debug(f"Armtek API: ошибка {str(e)}")
-		
-		# Если API не работает, пробуем HTTP
-		http_url = f"https://armtek.ru/search?text={artikul}"
-		log_debug(f"Armtek HTTP: запрос к {http_url}")
-		
-		try:
-			response = make_request(http_url, proxy, max_retries=1)
-			if response and response.status_code == 200:
-				brands = parse_armtek_http_response(response.text, artikul)
-				if brands:
-					log_debug(f"Armtek HTTP: найдено {len(brands)} брендов")
-					# Применяем разделение объединенных брендов
-					split_brands = split_combined_brands(brands)
-					return filter_armtek_brands(split_brands)
-		except Exception as e:
-			log_debug(f"Armtek HTTP: ошибка {str(e)}")
-		
-		# Если HTTP не работает, пробуем альтернативный метод
-		log_debug(f"Armtek: пробуем альтернативный метод для {artikul}")
-		brands = parse_armtek_alternative(artikul, proxy)
-		if brands:
-			log_debug(f"Armtek альтернативный: найдено {len(brands)} брендов")
-			# Применяем разделение объединенных брендов
-			split_brands = split_combined_brands(brands)
-			return filter_armtek_brands(split_brands)
-		
-		# Если все методы не работают, используем Selenium как последний вариант
-		log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
-		# Если прокси с авторизацией, для Selenium сначала пробуем БЕЗ прокси
-		selenium_proxy = None if (proxy and '@' in proxy) else proxy
-		brands = parse_armtek_selenium(artikul, selenium_proxy)
-		if not brands and selenium_proxy is None and proxy:
-			# Вторая попытка: попробовать с прокси (если вдруг без прокси не удалось)
+		if proxy:
 			brands = parse_armtek_selenium(artikul, proxy)
-		if brands:
-			log_debug(f"Armtek Selenium: найдено {len(brands)} брендов")
-			# Применяем разделение объединенных брендов
-			split_brands = split_combined_brands(brands)
-			return filter_armtek_brands(split_brands)
-		
-		log_debug(f"Armtek: все методы не дали результатов для {artikul}")
+			if brands:
+				return filter_armtek_brands(split_combined_brands(brands))
+
+		# 3) В крайнем случае можно попробовать альтернативные HTTP-точки (выключено для скорости)
+		# brands = parse_armtek_alternative(artikul, proxy)
+		# if brands:
+		# 	return filter_armtek_brands(split_combined_brands(brands))
+
+		log_debug(f"Armtek: бренды не найдены для {artikul}")
 		return []
-		
 	except Exception as e:
 		log_debug(f"Ошибка Armtek для {artikul}: {str(e)}")
 		return []
@@ -658,7 +604,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
 		driver.get(url)
 		
 		# Явные ожидания появления результатов
-		wait = WebDriverWait(driver, 20)
+		wait = WebDriverWait(driver, SELENIUM_TIMEOUT)
 		selectors_to_wait = [
 			(By.CSS_SELECTOR, '.results-list__items'),
 			(By.CSS_SELECTOR, '.font__body2.brand--selecting'),
@@ -673,9 +619,9 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
 		# Прокручиваем страницу для подгрузки
 		try:
 			driver.execute_script('window.scrollTo(0, document.body.scrollHeight/2);')
-			time.sleep(0.5)
+			time.sleep(0.2)
 			driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
-			time.sleep(0.5)
+			time.sleep(0.2)
 		except Exception:
 			pass
 		
@@ -762,8 +708,8 @@ def _create_chrome_driver(temp_dir: str, with_user_data: bool = True, proxy: Opt
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
         # Устанавливаем таймауты
-        driver.set_page_load_timeout(30)
-        driver.implicitly_wait(10)
+        driver.set_page_load_timeout(15)
+        driver.implicitly_wait(5)
         
         return driver
         
@@ -805,8 +751,8 @@ def _create_chrome_driver_minimal(temp_dir: str, proxy: Optional[str] = None):
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
         # Устанавливаем таймауты
-        driver.set_page_load_timeout(30)
-        driver.implicitly_wait(10)
+        driver.set_page_load_timeout(15)
+        driver.implicitly_wait(5)
         
         return driver
         
