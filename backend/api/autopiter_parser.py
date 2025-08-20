@@ -461,9 +461,16 @@ def split_combined_brands(brands: List[str]) -> List[str]:
     return sorted(list(result))
 
 def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None) -> List[str]:
-    """Получает бренды с Armtek по артикулу"""
+    """Получает бренды с Armtek по артикулу с поддержкой прокси"""
     try:
         log_debug(f"Armtek: начало обработки артикула {artikul}")
+        
+        # Если прокси не передан, пробуем получить из списка
+        if not proxy:
+            proxy_dict = get_next_proxy()
+            if proxy_dict:
+                proxy = proxy_dict.get('http', '').replace('http://', '')
+                log_debug(f"Armtek: автоматически получен прокси: {proxy}")
         
         # Сначала пробуем API
         api_url = f"https://armtek.ru/api/search?query={artikul}&limit=50"
@@ -604,11 +611,11 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
         # Пробуем несколько способов инициализации драйвера
         driver_init_methods = [
             # Метод 1: с уникальным user-data-dir
-            lambda: _create_chrome_driver(temp_dir, with_user_data=True),
+            lambda: _create_chrome_driver(temp_dir, with_user_data=True, proxy=proxy),
             # Метод 2: без user-data-dir
-            lambda: _create_chrome_driver(temp_dir, with_user_data=False),
+            lambda: _create_chrome_driver(temp_dir, with_user_data=False, proxy=proxy),
             # Метод 3: с минимальными опциями
-            lambda: _create_chrome_driver_minimal(temp_dir),
+            lambda: _create_chrome_driver_minimal(temp_dir, proxy=proxy),
         ]
         
         driver = None
@@ -702,8 +709,8 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
         except Exception as e:
             log_debug(f"Armtek Selenium: ошибка при очистке временной директории: {str(e)}")
 
-def _create_chrome_driver(temp_dir: str, with_user_data: bool = True):
-    """Создает Chrome драйвер с заданными параметрами"""
+def _create_chrome_driver(temp_dir: str, with_user_data: bool = True, proxy: Optional[str] = None):
+    """Создает Chrome драйвер с заданными параметрами и поддержкой прокси"""
     options = Options()
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
@@ -733,16 +740,52 @@ def _create_chrome_driver(temp_dir: str, with_user_data: bool = True):
     if with_user_data:
         options.add_argument(f'--user-data-dir={temp_dir}')
     
+    # Добавляем поддержку прокси
+    if proxy:
+        try:
+            if '@' in proxy:
+                # Формат: login:password@ip:port
+                auth_part, proxy_part = proxy.split('@')
+                login, password = auth_part.split(':')
+                ip, port = proxy_part.split(':')
+                proxy_string = f"{ip}:{port}"
+                options.add_argument(f'--proxy-server={proxy_string}')
+                log_debug(f"Armtek Selenium: добавлен прокси {proxy_string}")
+            else:
+                # Формат: ip:port
+                options.add_argument(f'--proxy-server={proxy}')
+                log_debug(f"Armtek Selenium: добавлен прокси {proxy}")
+        except Exception as e:
+            log_debug(f"Armtek Selenium: ошибка настройки прокси {proxy}: {str(e)}")
+    
     return webdriver.Chrome(options=options)
 
-def _create_chrome_driver_minimal(temp_dir: str):
-    """Создает Chrome драйвер с минимальными опциями"""
+def _create_chrome_driver_minimal(temp_dir: str, proxy: Optional[str] = None):
+    """Создает Chrome драйвер с минимальными опциями и поддержкой прокси"""
     options = Options()
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     options.add_argument('--user-agent=' + HEADERS["User-Agent"])
+    
+    # Добавляем поддержку прокси
+    if proxy:
+        try:
+            if '@' in proxy:
+                # Формат: login:password@ip:port
+                auth_part, proxy_part = proxy.split('@')
+                login, password = auth_part.split(':')
+                ip, port = proxy_part.split(':')
+                proxy_string = f"{ip}:{port}"
+                options.add_argument(f'--proxy-server={proxy_string}')
+                log_debug(f"Armtek Selenium: добавлен прокси {proxy_string}")
+            else:
+                # Формат: ip:port
+                options.add_argument(f'--proxy-server={proxy}')
+                log_debug(f"Armtek Selenium: добавлен прокси {proxy}")
+        except Exception as e:
+            log_debug(f"Armtek Selenium: ошибка настройки прокси {proxy}: {str(e)}")
     
     return webdriver.Chrome(options=options)
 
@@ -920,7 +963,15 @@ def parse_armtek_http_response(html_content: str, artikul: str) -> List[str]:
         '.vendor',
         '.producer',
         '.brand--selecting',
-        '.font__body2.brand--selecting'
+        '.font__body2.brand--selecting',
+        '.product-item .brand',
+        '.search-item .brand',
+        '.catalog-item__brand',
+        '.product__brand',
+        '.item__brand',
+        '.brand-item',
+        '.brand-link',
+        '.brand-title'
     ]
     
     for selector in brand_selectors:
@@ -974,7 +1025,11 @@ def parse_armtek_http_response(html_content: str, artikul: str) -> List[str]:
                 r'бренд["\s]*[:=]\s*["\']([^"\']+)["\']',
                 r'brand["\s]*[:=]\s*([^\s,]+)',
                 r'производитель["\s]*[:=]\s*([^\s,]+)',
-                r'бренд["\s]*[:=]\s*([^\s,]+)'
+                r'бренд["\s]*[:=]\s*([^\s,]+)',
+                r'data-brand="([^"]+)"',
+                r'brand-name="([^"]+)"',
+                r'manufacturer="([^"]+)"',
+                r'vendor="([^"]+)"'
             ]
             
             for pattern in brand_patterns:
@@ -984,6 +1039,21 @@ def parse_armtek_http_response(html_content: str, artikul: str) -> List[str]:
                         brands.add(match.strip())
         except Exception as e:
             log_debug(f"Armtek HTTP: ошибка при поиске по паттернам: {str(e)}")
+    
+    # Дополнительный поиск по тексту страницы
+    if not brands:
+        try:
+            # Ищем потенциальные бренды в тексте
+            text_content = soup.get_text()
+            # Разбиваем текст на слова и ищем потенциальные бренды
+            words = re.findall(r'\b[A-Z][a-zA-Z0-9-]+\b', text_content)
+            for word in words:
+                if len(word) > 2 and len(word) < 20 and not word.isdigit():
+                    # Проверяем, что это похоже на бренд
+                    if re.match(r'^[A-Z][a-zA-Z0-9-]+$', word):
+                        brands.add(word)
+        except Exception as e:
+            log_debug(f"Armtek HTTP: ошибка при поиске брендов в тексте: {str(e)}")
     
     # Фильтруем и возвращаем бренды
     filtered_brands = filter_armtek_brands(list(brands))
@@ -1302,3 +1372,33 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
 
 # Инициализация прокси при импорте модуля
 load_proxies_from_file()
+
+def parse_armtek_alternative(artikul: str, proxy: Optional[str] = None) -> List[str]:
+    """Альтернативный метод парсинга Armtek через различные эндпоинты"""
+    try:
+        # Пробуем различные эндпоинты
+        endpoints = [
+            f"https://armtek.ru/catalog/search?q={artikul}",
+            f"https://armtek.ru/products/search?query={artikul}",
+            f"https://armtek.ru/search?q={artikul}",
+            f"https://armtek.ru/catalog?search={artikul}"
+        ]
+        
+        for endpoint in endpoints:
+            try:
+                log_debug(f"Armtek альтернативный: пробуем {endpoint}")
+                response = make_request(endpoint, proxy, max_retries=1)
+                if response and response.status_code == 200:
+                    brands = parse_armtek_http_response(response.text, artikul)
+                    if brands:
+                        log_debug(f"Armtek альтернативный: найдено {len(brands)} брендов в {endpoint}")
+                        return brands
+            except Exception as e:
+                log_debug(f"Armtek альтернативный: ошибка для {endpoint}: {str(e)}")
+                continue
+        
+        return []
+        
+    except Exception as e:
+        log_debug(f"Armtek альтернативный: общая ошибка: {str(e)}")
+        return []
