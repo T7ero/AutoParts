@@ -254,7 +254,7 @@ def process_parsing_task(self, task_id):
                         autopiter_results = parse_one('autopiter', get_brands_by_artikul)(num)
                         results['autopiter'].extend(autopiter_results)
                     
-                    # Emex с ограниченным временем выполнения (если выбран и не отключен)
+                    # Emex: без создания новых потоков (устранение 'can't start new thread')
                     if 'emex' in selected_sources and not state['emex_disabled']:
                         proxy = get_proxy_string()
                         if proxy:
@@ -263,39 +263,15 @@ def process_parsing_task(self, task_id):
                             log(f"Emex: прокси недоступен для артикула {num}")
 
                         try:
-                            import threading
-                            import queue
-
-                            result_queue = queue.Queue()
-
-                            def emex_worker():
-                                try:
-                                    emex_results = parse_one('emex', get_brands_by_artikul_emex)(num, proxy)
-                                    result_queue.put(('success', emex_results))
-                                except Exception as e:
-                                    result_queue.put(('error', str(e)))
-
-                            worker_thread = threading.Thread(target=emex_worker)
-                            worker_thread.daemon = True
-                            worker_thread.start()
-
-                            # Ждем результат максимум 30 секунд (увеличиваем для работы с прокси)
-                            try:
-                                result_type, result_data = result_queue.get(timeout=30)
-                                if result_type == 'success':
-                                    if result_data:
-                                        state['emex_failures'] = 0
-                                    else:
-                                        state['emex_failures'] += 1
-                                    results['emex'].extend(result_data)
-                                else:
-                                    state['emex_failures'] += 1
-                                    log(f"Emex: ошибка для артикула {num}: {result_data}")
-                            except queue.Empty:
+                            # Вызов синхронно, таймауты заданы внутри get_brands_by_artikul_emex
+                            emex_results = parse_one('emex', get_brands_by_artikul_emex)(num, proxy)
+                            if emex_results:
+                                state['emex_failures'] = 0
+                            else:
                                 state['emex_failures'] += 1
-                                log(f"Emex: таймаут для артикула {num}, пропускаем")
-                            
-                            # Если подряд 5 неудач, отключаем Emex до конца строки/партии
+                            results['emex'].extend(emex_results)
+
+                            # Если подряд 5 неудач — отключаем Emex для текущей партии
                             if state['emex_failures'] >= 5:
                                 state['emex_disabled'] = True
                                 log("Emex: слишком много неудач подряд, временно отключаем Emex для этой партии")
