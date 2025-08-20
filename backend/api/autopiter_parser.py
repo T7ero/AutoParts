@@ -236,25 +236,28 @@ def make_request(url: str, proxy: Optional[str] = None, max_retries: int = 3, ti
             auth_part, proxy_part = proxy.split('@', 1)
             if ':' in auth_part:
                 username, password = auth_part.split(':', 1)
+                # Правильный формат для requests с аутентификацией
                 proxy_dict = {
                     'http': f'http://{username}:{password}@{proxy_part}',
                     'https': f'http://{username}:{password}@{proxy_part}'
                 }
+                log_debug(f"Используется прокси с аутентификацией: {username}:***@{proxy_part}")
             else:
                 # Если нет пароля, используем как есть
                 proxy_dict = {
                     'http': f'http://{proxy}',
                     'https': f'http://{proxy}'
                 }
+                log_debug(f"Используется прокси без аутентификации: {proxy}")
         else:
             # Формат: ip:port
             proxy_dict = {
                 'http': f'http://{proxy}',
                 'https': f'http://{proxy}'
             }
+            log_debug(f"Используется прокси: {proxy}")
         
         session.proxies.update(proxy_dict)
-        log_debug(f"Используется прокси: {proxy}")
     
     # Настройка заголовков
     headers = {
@@ -504,15 +507,11 @@ def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None) -> L
         if not proxy:
             proxy_dict = get_next_proxy()
             if proxy_dict:
-                # Извлекаем только IP:port из прокси
+                # Получаем полный URL прокси
                 proxy_url = proxy_dict.get('http', '')
                 if proxy_url.startswith('http://'):
                     proxy_url = proxy_url[7:]  # Убираем 'http://'
-                if '@' in proxy_url:
-                    # Формат: login:password@ip:port -> берем только ip:port
-                    proxy = proxy_url.split('@')[1]
-                else:
-                    proxy = proxy_url
+                proxy = proxy_url  # Используем полный прокси с аутентификацией
                 log_debug(f"Armtek: автоматически получен прокси: {proxy}")
         
         # Сначала пробуем API
@@ -702,8 +701,17 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
         # Парсим результаты
         brands = set()
         
-        # Различные селекторы для поиска брендов
+        # Различные селекторы для поиска брендов (обновленные для Armtek)
         brand_selectors = [
+            ".font__body2.brand--selecting",  # Основной селектор для брендов
+            ".brand--selecting",              # Альтернативный селектор
+            ".font__body2",                   # Общий селектор для текста
+            ".brand-name", 
+            ".product-brand", 
+            ".manufacturer-name",
+            ".vendor-title", 
+            ".item-brand", 
+            ".brand__name",
             ".product-item .brand",
             ".search-result .brand", 
             ".item .brand",
@@ -711,8 +719,6 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
             "[data-brand]",
             ".manufacturer",
             ".vendor",
-            ".brand--selecting",
-            ".font__body2.brand--selecting",
             ".product-card .brand",
             ".catalog-item .brand",
             ".search-item .brand",
@@ -737,6 +743,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
                     brand_text = element.text.strip()
                     if brand_text and len(brand_text) > 1:
                         brands.add(brand_text)
+                        log_debug(f"Armtek Selenium: найден бренд '{brand_text}' по селектору '{selector}'")
             except Exception as e:
                 log_debug(f"Armtek Selenium: ошибка при поиске по селектору {selector}: {str(e)}")
                 continue
@@ -746,6 +753,8 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
             try:
                 page_text = driver.page_source
                 brands = parse_armtek_page_text(page_text, artikul)
+                if brands:
+                    log_debug(f"Armtek Selenium: найдено {len(brands)} брендов через парсинг текста")
             except Exception as e:
                 log_debug(f"Armtek Selenium: ошибка при парсинге текста страницы: {str(e)}")
         
@@ -761,6 +770,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
                         # Проверяем, что это похоже на бренд
                         if re.match(r'^[A-Z][a-zA-Z0-9-]+$', word):
                             brands.add(word)
+                            log_debug(f"Armtek Selenium: найден потенциальный бренд '{word}' в тексте")
             except Exception as e:
                 log_debug(f"Armtek Selenium: ошибка при поиске брендов в тексте: {str(e)}")
         
@@ -773,10 +783,24 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
                 for match in data_brand_matches:
                     if match and len(match) > 2 and not match.isdigit():
                         brands.add(match.strip())
+                        log_debug(f"Armtek Selenium: найден бренд '{match}' в data-brand")
             except Exception as e:
                 log_debug(f"Armtek Selenium: ошибка при поиске data-brand: {str(e)}")
         
-        log_debug(f"Armtek Selenium: найдено {len(brands)} брендов")
+        # Поиск по Angular атрибутам
+        if not brands:
+            try:
+                page_source = driver.page_source
+                # Ищем Angular атрибуты _ngcontent
+                ng_brand_matches = re.findall(r'_ngcontent[^>]*class="[^"]*brand[^"]*"[^>]*>([^<]+)</', page_source)
+                for match in ng_brand_matches:
+                    if match and len(match.strip()) > 2 and not match.strip().isdigit():
+                        brands.add(match.strip())
+                        log_debug(f"Armtek Selenium: найден бренд '{match}' в Angular атрибуте")
+            except Exception as e:
+                log_debug(f"Armtek Selenium: ошибка при поиске Angular атрибутов: {str(e)}")
+        
+        log_debug(f"Armtek Selenium: итого найдено {len(brands)} брендов")
         return list(brands)
         
     except Exception as e:
