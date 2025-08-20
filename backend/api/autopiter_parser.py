@@ -222,58 +222,93 @@ def is_site_available(url: str, proxies: Optional[Dict] = None) -> bool:
     except:
         return False
 
-def make_request(url: str, proxy: Optional[str] = None, max_retries: int = 2) -> Optional[requests.Response]:
+def make_request(url: str, proxy: Optional[str] = None, max_retries: int = 3, timeout: int = 30) -> Optional[requests.Response]:
     """Выполняет HTTP запрос с поддержкой прокси и повторными попытками"""
+    
+    # Настройка сессии
     session = requests.Session()
-    session.headers.update(HEADERS)
     
     # Настройка прокси
     if proxy:
-        try:
-            if '@' in proxy:
-                proxy_parts = proxy.split('@')
-                proxy_url = proxy_parts[0]
-                auth_parts = proxy_parts[1].split(':')
-                username = auth_parts[0]
-                password = auth_parts[1]
-                
+        # Проверяем формат прокси
+        if '@' in proxy:
+            # Формат: login:password@ip:port
+            auth_part, proxy_part = proxy.split('@', 1)
+            if ':' in auth_part:
+                username, password = auth_part.split(':', 1)
                 proxy_dict = {
-                    'http': f'http://{username}:{password}@{proxy_url}',
-                    'https': f'http://{username}:{password}@{proxy_url}'
+                    'http': f'http://{username}:{password}@{proxy_part}',
+                    'https': f'http://{username}:{password}@{proxy_part}'
                 }
             else:
+                # Если нет пароля, используем как есть
                 proxy_dict = {
                     'http': f'http://{proxy}',
                     'https': f'http://{proxy}'
                 }
-            session.proxies.update(proxy_dict)
-        except Exception as e:
-            log_debug(f"Ошибка настройки прокси: {str(e)}")
+        else:
+            # Формат: ip:port
+            proxy_dict = {
+                'http': f'http://{proxy}',
+                'https': f'http://{proxy}'
+            }
+        
+        session.proxies.update(proxy_dict)
+        log_debug(f"Используется прокси: {proxy}")
     
-    for attempt in range(max_retries):
+    # Настройка заголовков
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+    }
+    
+    session.headers.update(headers)
+    
+    # Выполнение запроса с повторными попытками
+    for attempt in range(1, max_retries + 1):
         try:
-            # Увеличиваем таймауты для лучшей стабильности
-            timeout_config = (TIMEOUT, TIMEOUT)  # (connect_timeout, read_timeout)
-            response = session.get(url, timeout=timeout_config)
+            log_debug(f"Попытка {attempt} {'с прокси' if proxy else 'без прокси'} для {url}")
             
+            response = session.get(url, timeout=timeout, allow_redirects=True)
+            
+            # Проверяем статус ответа
             if response.status_code == 200:
                 return response
+            elif response.status_code == 403:
+                log_debug(f"403 Forbidden для {url} (попытка {attempt})")
+                if attempt < max_retries:
+                    time.sleep(2 ** attempt)  # Экспоненциальная задержка
+                    continue
+            elif response.status_code == 429:
+                log_debug(f"429 Rate Limit для {url} (попытка {attempt})")
+                if attempt < max_retries:
+                    time.sleep(5 * attempt)  # Увеличенная задержка для rate limit
+                    continue
             else:
                 log_debug(f"HTTP {response.status_code} для {url}")
+                return response
                 
-        except requests.exceptions.Timeout:
-            log_debug(f"Таймаут для {url} (попытка {attempt + 1})")
-            if attempt < max_retries - 1:
-                time.sleep(2)  # Увеличиваем время ожидания между попытками
+        except requests.exceptions.ProxyError as e:
+            log_debug(f"Ошибка прокси для {url}: {str(e)} (попытка {attempt})")
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+                continue
+        except requests.exceptions.Timeout as e:
+            log_debug(f"Таймаут для {url}: {str(e)} (попытка {attempt})")
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+                continue
         except requests.exceptions.RequestException as e:
-            log_debug(f"Ошибка запроса для {url}: {str(e)} (попытка {attempt + 1})")
-            if attempt < max_retries - 1:
-                time.sleep(2)  # Увеличиваем время ожидания между попытками
-        except Exception as e:
-            log_debug(f"Неожиданная ошибка для {url}: {str(e)} (попытка {attempt + 1})")
-            if attempt < max_retries - 1:
-                time.sleep(2)  # Увеличиваем время ожидания между попытками
+            log_debug(f"Ошибка запроса для {url}: {str(e)} (попытка {attempt})")
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+                continue
     
+    log_debug(f"Все попытки исчерпаны для {url}")
     return None
 
 def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str]:
@@ -762,84 +797,103 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
             log_debug(f"Armtek Selenium: ошибка при очистке временной директории: {str(e)}")
 
 def _create_chrome_driver(temp_dir: str, with_user_data: bool = True, proxy: Optional[str] = None):
-    """Создает Chrome драйвер с заданными параметрами и поддержкой прокси"""
-    options = Options()
-    options.add_argument('--headless=new')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--disable-extensions')
-    options.add_argument('--disable-plugins')
-    options.add_argument('--blink-settings=imagesEnabled=false')
-    options.add_argument('--remote-debugging-port=0')
-    options.add_argument('--disable-web-security')
-    options.add_argument('--single-process')
-    options.add_argument('--disable-logging')
-    options.add_argument('--log-level=3')
-    options.add_argument('--user-agent=' + HEADERS["User-Agent"])
-    options.add_argument('--disable-background-timer-throttling')
-    options.add_argument('--disable-backgrounding-occluded-windows')
-    options.add_argument('--disable-renderer-backgrounding')
-    options.add_argument('--disable-features=VizDisplayCompositor')
-    options.add_argument('--disable-ipc-flooding-protection')
-    options.add_argument('--no-first-run')
-    options.add_argument('--no-default-browser-check')
-    options.add_argument('--disable-default-apps')
-    options.add_argument('--disable-blink-features=AutomationControlled')
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
-    
-    if with_user_data:
-        options.add_argument(f'--user-data-dir={temp_dir}')
-    
-    # Добавляем поддержку прокси
-    if proxy:
-        try:
+    """Создает Chrome драйвер с настройками и прокси"""
+    try:
+        chrome_options = Options()
+        chrome_options.add_argument('--headless')
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--disable-gpu')
+        chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+        
+        if with_user_data:
+            chrome_options.add_argument(f'--user-data-dir={temp_dir}')
+        
+        # Настройка прокси
+        if proxy:
             if '@' in proxy:
                 # Формат: login:password@ip:port
-                auth_part, proxy_part = proxy.split('@')
-                login, password = auth_part.split(':')
-                ip, port = proxy_part.split(':')
-                proxy_string = f"{ip}:{port}"
-                options.add_argument(f'--proxy-server={proxy_string}')
-                log_debug(f"Armtek Selenium: добавлен прокси {proxy_string}")
+                auth_part, proxy_part = proxy.split('@', 1)
+                if ':' in auth_part:
+                    username, password = auth_part.split(':', 1)
+                    # Для Chrome с аутентификацией прокси используем расширение
+                    chrome_options.add_argument(f'--proxy-server={proxy_part}')
+                    # Добавляем расширение для аутентификации прокси
+                    chrome_options.add_argument('--load-extension=/tmp/proxy-auth-extension')
+                else:
+                    chrome_options.add_argument(f'--proxy-server={proxy}')
             else:
                 # Формат: ip:port
-                options.add_argument(f'--proxy-server={proxy}')
-                log_debug(f"Armtek Selenium: добавлен прокси {proxy}")
-        except Exception as e:
-            log_debug(f"Armtek Selenium: ошибка настройки прокси {proxy}: {str(e)}")
-    
-    return webdriver.Chrome(options=options)
+                chrome_options.add_argument(f'--proxy-server={proxy}')
+            
+            log_debug(f"Armtek Selenium: добавлен прокси {proxy}")
+        
+        # Дополнительные опции для стабильности
+        chrome_options.add_argument('--disable-extensions')
+        chrome_options.add_argument('--disable-plugins')
+        chrome_options.add_argument('--disable-images')
+        chrome_options.add_argument('--disable-javascript')
+        chrome_options.add_argument('--disable-web-security')
+        chrome_options.add_argument('--allow-running-insecure-content')
+        
+        service = Service()
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        
+        # Устанавливаем таймауты
+        driver.set_page_load_timeout(30)
+        driver.implicitly_wait(10)
+        
+        return driver
+        
+    except Exception as e:
+        log_debug(f"Ошибка создания Chrome драйвера: {str(e)}")
+        return None
 
 def _create_chrome_driver_minimal(temp_dir: str, proxy: Optional[str] = None):
-    """Создает Chrome драйвер с минимальными опциями и поддержкой прокси"""
-    options = Options()
-    options.add_argument('--headless=new')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--user-agent=' + HEADERS["User-Agent"])
-    
-    # Добавляем поддержку прокси
-    if proxy:
-        try:
+    """Создает Chrome драйвер с минимальными настройками и прокси"""
+    try:
+        chrome_options = Options()
+        chrome_options.add_argument('--headless')
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--disable-gpu')
+        chrome_options.add_argument('--disable-extensions')
+        chrome_options.add_argument('--disable-plugins')
+        
+        # Настройка прокси
+        if proxy:
             if '@' in proxy:
                 # Формат: login:password@ip:port
-                auth_part, proxy_part = proxy.split('@')
-                login, password = auth_part.split(':')
-                ip, port = proxy_part.split(':')
-                proxy_string = f"{ip}:{port}"
-                options.add_argument(f'--proxy-server={proxy_string}')
-                log_debug(f"Armtek Selenium: добавлен прокси {proxy_string}")
+                auth_part, proxy_part = proxy.split('@', 1)
+                if ':' in auth_part:
+                    username, password = auth_part.split(':', 1)
+                    # Для Chrome с аутентификацией прокси используем расширение
+                    chrome_options.add_argument(f'--proxy-server={proxy_part}')
+                    # Добавляем расширение для аутентификации прокси
+                    chrome_options.add_argument('--load-extension=/tmp/proxy-auth-extension')
+                else:
+                    chrome_options.add_argument(f'--proxy-server={proxy}')
             else:
                 # Формат: ip:port
-                options.add_argument(f'--proxy-server={proxy}')
-                log_debug(f"Armtek Selenium: добавлен прокси {proxy}")
-        except Exception as e:
-            log_debug(f"Armtek Selenium: ошибка настройки прокси {proxy}: {str(e)}")
-    
-    return webdriver.Chrome(options=options)
+                chrome_options.add_argument(f'--proxy-server={proxy}')
+            
+            log_debug(f"Armtek Selenium: добавлен прокси {proxy}")
+        
+        service = Service()
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        
+        # Устанавливаем таймауты
+        driver.set_page_load_timeout(30)
+        driver.implicitly_wait(10)
+        
+        return driver
+        
+    except Exception as e:
+        log_debug(f"Ошибка создания минимального Chrome драйвера: {str(e)}")
+        return None
 
 def parse_armtek_page_text(page_text: str, artikul: str) -> set:
     """Парсит бренды из текста страницы Armtek"""
@@ -1477,30 +1531,29 @@ load_proxies_from_file()
 
 def parse_armtek_alternative(artikul: str, proxy: Optional[str] = None) -> List[str]:
     """Альтернативный метод парсинга Armtek через различные эндпоинты"""
-    try:
-        # Пробуем различные эндпоинты
-        endpoints = [
-            f"https://armtek.ru/catalog/search?q={artikul}",
-            f"https://armtek.ru/products/search?query={artikul}",
-            f"https://armtek.ru/search?q={artikul}",
-            f"https://armtek.ru/catalog?search={artikul}"
-        ]
-        
-        for endpoint in endpoints:
-            try:
-                log_debug(f"Armtek альтернативный: пробуем {endpoint}")
-                response = make_request(endpoint, proxy, max_retries=1)
-                if response and response.status_code == 200:
-                    brands = parse_armtek_http_response(response.text, artikul)
-                    if brands:
-                        log_debug(f"Armtek альтернативный: найдено {len(brands)} брендов в {endpoint}")
-                        return brands
-            except Exception as e:
-                log_debug(f"Armtek альтернативный: ошибка для {endpoint}: {str(e)}")
-                continue
-        
-        return []
-        
-    except Exception as e:
-        log_debug(f"Armtek альтернативный: общая ошибка: {str(e)}")
-        return []
+    alternative_urls = [
+        f"https://armtek.ru/catalog/search?q={artikul}",
+        f"https://armtek.ru/products/search?query={artikul}",
+        f"https://armtek.ru/search?q={artikul}",
+        f"https://armtek.ru/catalog?search={artikul}",
+        f"https://armtek.ru/search?query={artikul}",
+        f"https://armtek.ru/catalog/search?query={artikul}",
+        f"https://armtek.ru/products?search={artikul}",
+        f"https://armtek.ru/items?q={artikul}"
+    ]
+    
+    for url in alternative_urls:
+        try:
+            log_debug(f"Armtek альтернативный: пробуем {url}")
+            response = make_request(url, proxy, max_retries=1)
+            if response and response.status_code == 200:
+                brands = parse_armtek_http_response(response.text, artikul)
+                if brands:
+                    log_debug(f"Armtek альтернативный: найдено {len(brands)} брендов на {url}")
+                    return brands
+        except Exception as e:
+            log_debug(f"Ошибка запроса для {url}: {str(e)} (попытка 1)")
+            continue
+    
+    log_debug(f"Armtek альтернативный: все эндпоинты не дали результатов для {artikul}")
+    return []
