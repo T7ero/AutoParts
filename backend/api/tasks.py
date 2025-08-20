@@ -210,6 +210,7 @@ def process_parsing_task(self, task_id):
         log(f"Выбранные источники: {sorted(selected_sources)}")
 
         log(f"Начинаем обработку {total_rows} строк")
+        ws_send()
         # Батч-обработка: по 50 строк с промежуточным сохранением результатов
         batch_size = 50
         
@@ -329,6 +330,8 @@ def process_parsing_task(self, task_id):
                     continue
                 
                 log(f"Обрабатываем строку {index + 1}: {len(numbers_to_parse)} артикулов")
+                task.log = '\n'.join(log_messages[-100:])
+                task.save(); ws_send()
                 
                 # Обрабатываем каждый артикул отдельно для создания отдельных строк
                 for current_number in numbers_to_parse:
@@ -448,6 +451,9 @@ def process_parsing_task(self, task_id):
                                     'Артикул по Бренду № 2': clean_excel_string(pn2),
                                     'Источник': src
                                 })
+                            # промежуточный лог
+                            task.log = '\n'.join(log_messages[-100:])
+                            task.save(); ws_send()
                     
                     except Exception as e:
                         log(f"Ошибка при обработке артикула {current_number} в строке {index + 1}: {str(e)}")

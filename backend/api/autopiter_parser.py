@@ -499,8 +499,10 @@ def split_combined_brands(brands: List[str]) -> List[str]:
     
     return sorted(list(result))
 
-def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None) -> List[str]:
-	"""Получает бренды с Armtek по артикулу. Для скорости сразу используем Selenium."""
+def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None, logger=None) -> List[str]:
+	"""Получает бренды с Armtek по артикулу. Для скорости сразу используем Selenium.
+	logger: опциональный callable для записи сообщений в лог задачи.
+	"""
 	try:
 		log_debug(f"Armtek: начало обработки артикула {artikul}")
 		# 1) Selenium без прокси (чаще всего быстрее и стабильнее)
@@ -527,7 +529,13 @@ def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None) -> L
 		# if brands:
 		# 	return filter_armtek_brands(split_combined_brands(brands))
 
-		log_debug(f"Armtek: бренды не найдены для {artikul}")
+		msg = f"Armtek: бренды не найдены для {artikul}"
+		log_debug(msg)
+		if logger:
+			try:
+				logger(msg)
+			except Exception:
+				pass
 		return []
 	except Exception as e:
 		log_debug(f"Ошибка Armtek для {artikul}: {str(e)}")
@@ -588,8 +596,11 @@ def parse_armtek_api(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
     
     return []
 
-def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str]:
-	"""Selenium-парсинг Armtek: ждем появления элементов и собираем бренды"""
+def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None) -> List[str]:
+	"""Selenium-парсинг Armtek: ждем появления элементов и собираем бренды.
+	Если на странице отображено сообщение "По вашему запросу ничего не найдено",
+	возвращаем пустой список и логируем событие.
+	"""
 	brands: Set[str] = set()
 	temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_{uuid.uuid4().hex[:8]}_")
 	try:
@@ -625,6 +636,21 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str
 		except Exception:
 			pass
 		
+		# Ранний выход: проверяем блок "ничего не найдено"
+		try:
+			nf = driver.find_elements(By.CSS_SELECTOR, 'div.not-found__title p.font__headline5, p.font__headline5')
+			if any('ничего не найдено' in (el.text or '').lower() for el in nf):
+				msg = f"Armtek: по запросу {artikul} ничего не найдено"
+				log_debug(msg)
+				if logger:
+					try:
+						logger(msg)
+					except Exception:
+						pass
+				return []
+		except Exception:
+			pass
+
 		# Сбор брендов по селекторам
 		brand_selectors = [
 			'.font__body2.brand--selecting',
