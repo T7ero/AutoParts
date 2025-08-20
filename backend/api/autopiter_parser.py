@@ -16,7 +16,7 @@ import os
 import tempfile
 import uuid
 import random
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Set
 from selenium.common.exceptions import TimeoutException
 import gc
 
@@ -499,88 +499,93 @@ def split_combined_brands(brands: List[str]) -> List[str]:
     return sorted(list(result))
 
 def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None) -> List[str]:
-    """Получает бренды с Armtek по артикулу с поддержкой прокси"""
-    try:
-        log_debug(f"Armtek: начало обработки артикула {artikul}")
-        
-        # Если прокси не передан, пробуем получить из списка
-        if not proxy:
-            proxy_dict = get_next_proxy()
-            if proxy_dict:
-                # Получаем полный URL прокси
-                proxy_url = proxy_dict.get('http', '')
-                if proxy_url.startswith('http://'):
-                    proxy_url = proxy_url[7:]  # Убираем 'http://'
-                proxy = proxy_url  # Используем полный прокси с аутентификацией
-                log_debug(f"Armtek: автоматически получен прокси: {proxy}")
-        
-        # Сначала пробуем API
-        api_url = f"https://armtek.ru/api/search?query={artikul}&limit=50"
-        log_debug(f"Armtek API: запрос к {api_url}")
-        
-        try:
-            response = make_request(api_url, proxy, max_retries=1)
-            if response and response.status_code == 200:
-                try:
-                    # Проверяем, что ответ действительно JSON
-                    content_type = response.headers.get('content-type', '')
-                    if 'application/json' in content_type or 'text/json' in content_type:
-                        data = response.json()
-                        if data and 'brands' in data:
-                            brands = [brand.strip() for brand in data['brands'] if brand.strip()]
-                            if brands:
-                                log_debug(f"Armtek API: найдено {len(brands)} брендов")
-                                # Применяем разделение объединенных брендов
-                                split_brands = split_combined_brands(brands)
-                                return filter_armtek_brands(split_brands)
-                    else:
-                        log_debug(f"Armtek API: неверный content-type: {content_type}")
-                except json.JSONDecodeError as e:
-                    log_debug(f"Armtek API: ошибка декодирования JSON: {str(e)}")
-                    log_debug(f"Armtek API: ответ: {response.text[:200]}...")
-        except Exception as e:
-            log_debug(f"Armtek API: ошибка {str(e)}")
-        
-        # Если API не работает, пробуем HTTP
-        http_url = f"https://armtek.ru/search?text={artikul}"
-        log_debug(f"Armtek HTTP: запрос к {http_url}")
-        
-        try:
-            response = make_request(http_url, proxy, max_retries=1)
-            if response and response.status_code == 200:
-                brands = parse_armtek_http_response(response.text, artikul)
-                if brands:
-                    log_debug(f"Armtek HTTP: найдено {len(brands)} брендов")
-                    # Применяем разделение объединенных брендов
-                    split_brands = split_combined_brands(brands)
-                    return filter_armtek_brands(split_brands)
-        except Exception as e:
-            log_debug(f"Armtek HTTP: ошибка {str(e)}")
-        
-        # Если HTTP не работает, пробуем альтернативный метод
-        log_debug(f"Armtek: пробуем альтернативный метод для {artikul}")
-        brands = parse_armtek_alternative(artikul, proxy)
-        if brands:
-            log_debug(f"Armtek альтернативный: найдено {len(brands)} брендов")
-            # Применяем разделение объединенных брендов
-            split_brands = split_combined_brands(brands)
-            return filter_armtek_brands(split_brands)
-        
-        # Если все методы не работают, используем Selenium как последний вариант
-        log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
-        brands = parse_armtek_selenium(artikul, proxy)
-        if brands:
-            log_debug(f"Armtek Selenium: найдено {len(brands)} брендов")
-            # Применяем разделение объединенных брендов
-            split_brands = split_combined_brands(brands)
-            return filter_armtek_brands(split_brands)
-        
-        log_debug(f"Armtek: все методы не дали результатов для {artikul}")
-        return []
-        
-    except Exception as e:
-        log_debug(f"Ошибка Armtek для {artikul}: {str(e)}")
-        return []
+	"""Получает бренды с Armtek по артикулу с поддержкой прокси"""
+	try:
+		log_debug(f"Armtek: начало обработки артикула {artikul}")
+		
+		# Если прокси не передан, пробуем получить из списка
+		if not proxy:
+			proxy_dict = get_next_proxy()
+			if proxy_dict:
+				# Получаем полный URL прокси
+				proxy_url = proxy_dict.get('http', '')
+				if proxy_url.startswith('http://'):
+					proxy_url = proxy_url[7:]  # Убираем 'http://'
+				proxy = proxy_url  # Используем полный прокси с аутентификацией
+				log_debug(f"Armtek: автоматически получен прокси: {proxy}")
+		
+		# Сначала пробуем API
+		api_url = f"https://armtek.ru/api/search?query={artikul}&limit=50"
+		log_debug(f"Armtek API: запрос к {api_url}")
+		
+		try:
+			response = make_request(api_url, proxy, max_retries=1)
+			if response and response.status_code == 200:
+				try:
+					# Проверяем, что ответ действительно JSON
+					content_type = response.headers.get('content-type', '')
+					if 'application/json' in content_type or 'text/json' in content_type:
+						data = response.json()
+						if data and 'brands' in data:
+							brands = [brand.strip() for brand in data['brands'] if brand.strip()]
+							if brands:
+								log_debug(f"Armtek API: найдено {len(brands)} брендов")
+								# Применяем разделение объединенных брендов
+								split_brands = split_combined_brands(brands)
+								return filter_armtek_brands(split_brands)
+					else:
+						log_debug(f"Armtek API: неверный content-type: {content_type}")
+				except json.JSONDecodeError as e:
+					log_debug(f"Armtek API: ошибка декодирования JSON: {str(e)}")
+					log_debug(f"Armtek API: ответ: {response.text[:200]}...")
+		except Exception as e:
+			log_debug(f"Armtek API: ошибка {str(e)}")
+		
+		# Если API не работает, пробуем HTTP
+		http_url = f"https://armtek.ru/search?text={artikul}"
+		log_debug(f"Armtek HTTP: запрос к {http_url}")
+		
+		try:
+			response = make_request(http_url, proxy, max_retries=1)
+			if response and response.status_code == 200:
+				brands = parse_armtek_http_response(response.text, artikul)
+				if brands:
+					log_debug(f"Armtek HTTP: найдено {len(brands)} брендов")
+					# Применяем разделение объединенных брендов
+					split_brands = split_combined_brands(brands)
+					return filter_armtek_brands(split_brands)
+		except Exception as e:
+			log_debug(f"Armtek HTTP: ошибка {str(e)}")
+		
+		# Если HTTP не работает, пробуем альтернативный метод
+		log_debug(f"Armtek: пробуем альтернативный метод для {artikul}")
+		brands = parse_armtek_alternative(artikul, proxy)
+		if brands:
+			log_debug(f"Armtek альтернативный: найдено {len(brands)} брендов")
+			# Применяем разделение объединенных брендов
+			split_brands = split_combined_brands(brands)
+			return filter_armtek_brands(split_brands)
+		
+		# Если все методы не работают, используем Selenium как последний вариант
+		log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
+		# Если прокси с авторизацией, для Selenium сначала пробуем БЕЗ прокси
+		selenium_proxy = None if (proxy and '@' in proxy) else proxy
+		brands = parse_armtek_selenium(artikul, selenium_proxy)
+		if not brands and selenium_proxy is None and proxy:
+			# Вторая попытка: попробовать с прокси (если вдруг без прокси не удалось)
+			brands = parse_armtek_selenium(artikul, proxy)
+		if brands:
+			log_debug(f"Armtek Selenium: найдено {len(brands)} брендов")
+			# Применяем разделение объединенных брендов
+			split_brands = split_combined_brands(brands)
+			return filter_armtek_brands(split_brands)
+		
+		log_debug(f"Armtek: все методы не дали результатов для {artikul}")
+		return []
+		
+	except Exception as e:
+		log_debug(f"Ошибка Armtek для {artikul}: {str(e)}")
+		return []
 
 def parse_armtek_api(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
     """Попытка получить данные через API Armtek"""
@@ -638,187 +643,77 @@ def parse_armtek_api(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
     return []
 
 def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None) -> List[str]:
-    """Парсинг Armtek через Selenium с уникальными user-data-dir"""
-    log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
-    
-    # Создаем уникальную временную директорию для каждого запуска
-    temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_{uuid.uuid4().hex[:8]}_")
-    
-    driver = None
-    try:
-        # Принудительная очистка перед запуском
-        cleanup_chrome_processes()
-        time.sleep(0.5)  # Уменьшаем время ожидания для ускорения
-        
-        # Пробуем несколько способов инициализации драйвера
-        driver_init_methods = [
-            # Метод 1: с уникальным user-data-dir
-            lambda: _create_chrome_driver(temp_dir, with_user_data=True, proxy=proxy),
-            # Метод 2: без user-data-dir
-            lambda: _create_chrome_driver(temp_dir, with_user_data=False, proxy=proxy),
-            # Метод 3: с минимальными опциями
-            lambda: _create_chrome_driver_minimal(temp_dir, proxy=proxy),
-        ]
-        
-        driver = None
-        for i, init_method in enumerate(driver_init_methods):
-            try:
-                log_debug(f"Armtek Selenium: попытка инициализации драйвера {i+1}")
-                driver = init_method()
-                log_debug(f"Armtek Selenium: драйвер успешно инициализирован методом {i+1}")
-                break
-            except Exception as e:
-                log_debug(f"Armtek Selenium: ошибка инициализации драйвера {i+1}: {str(e)}")
-                if i == len(driver_init_methods) - 1:  # Последняя попытка
-                    log_debug("Armtek Selenium: все методы инициализации не удались")
-                    return []
-                time.sleep(0.5)  # Уменьшаем паузу между попытками для ускорения
-        
-        if driver is None:
-            log_debug("Armtek Selenium: не удалось инициализировать драйвер")
-            return []
-        
-        driver.set_page_load_timeout(SELENIUM_TIMEOUT)
-        driver.set_script_timeout(SELENIUM_TIMEOUT)
-        driver.implicitly_wait(5)
-        
-        url = f"https://armtek.ru/search?text={quote(artikul)}"
-        log_debug(f"Armtek Selenium: переход на {url}")
-        
-        driver.get(url)
-        time.sleep(2)  # Уменьшаем время ожидания для ускорения
-        
-        # Ждем загрузки результатов
-        try:
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".product-item, .search-result, .item"))
-            )
-        except TimeoutException:
-            log_debug("Armtek Selenium: таймаут ожидания результатов")
-            # Проверяем, есть ли результаты на странице
-            pass
-        
-        # Парсим результаты
-        brands = set()
-        
-        # Различные селекторы для поиска брендов (обновленные для Armtek)
-        brand_selectors = [
-            ".font__body2.brand--selecting",  # Основной селектор для брендов
-            ".brand--selecting",              # Альтернативный селектор
-            ".font__body2",                   # Общий селектор для текста
-            ".brand-name", 
-            ".product-brand", 
-            ".manufacturer-name",
-            ".vendor-title", 
-            ".item-brand", 
-            ".brand__name",
-            ".product-item .brand",
-            ".search-result .brand", 
-            ".item .brand",
-            ".product-name .brand",
-            "[data-brand]",
-            ".manufacturer",
-            ".vendor",
-            ".product-card .brand",
-            ".catalog-item .brand",
-            ".search-item .brand",
-            ".catalog-item__brand",
-            ".product__brand",
-            ".item__brand",
-            ".brand-item",
-            ".brand-link",
-            ".brand-title",
-            ".brand-name",
-            ".product-brand",
-            ".manufacturer-name",
-            ".vendor-title",
-            ".item-brand",
-            ".brand__name"
-        ]
-        
-        for selector in brand_selectors:
-            try:
-                elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                for element in elements:
-                    brand_text = element.text.strip()
-                    if brand_text and len(brand_text) > 1:
-                        brands.add(brand_text)
-                        log_debug(f"Armtek Selenium: найден бренд '{brand_text}' по селектору '{selector}'")
-            except Exception as e:
-                log_debug(f"Armtek Selenium: ошибка при поиске по селектору {selector}: {str(e)}")
-                continue
-        
-        # Если бренды не найдены, пробуем парсить по тексту страницы
-        if not brands:
-            try:
-                page_text = driver.page_source
-                brands = parse_armtek_page_text(page_text, artikul)
-                if brands:
-                    log_debug(f"Armtek Selenium: найдено {len(brands)} брендов через парсинг текста")
-            except Exception as e:
-                log_debug(f"Armtek Selenium: ошибка при парсинге текста страницы: {str(e)}")
-        
-        # Дополнительный поиск по тексту страницы
-        if not brands:
-            try:
-                # Ищем потенциальные бренды в тексте страницы
-                page_text = driver.page_source
-                # Разбиваем текст на слова и ищем потенциальные бренды
-                words = re.findall(r'\b[A-Z][a-zA-Z0-9-]+\b', page_text)
-                for word in words:
-                    if len(word) > 2 and len(word) < 20 and not word.isdigit():
-                        # Проверяем, что это похоже на бренд
-                        if re.match(r'^[A-Z][a-zA-Z0-9-]+$', word):
-                            brands.add(word)
-                            log_debug(f"Armtek Selenium: найден потенциальный бренд '{word}' в тексте")
-            except Exception as e:
-                log_debug(f"Armtek Selenium: ошибка при поиске брендов в тексте: {str(e)}")
-        
-        # Поиск по атрибутам data-brand в HTML
-        if not brands:
-            try:
-                page_source = driver.page_source
-                # Ищем все атрибуты data-brand
-                data_brand_matches = re.findall(r'data-brand="([^"]+)"', page_source)
-                for match in data_brand_matches:
-                    if match and len(match) > 2 and not match.isdigit():
-                        brands.add(match.strip())
-                        log_debug(f"Armtek Selenium: найден бренд '{match}' в data-brand")
-            except Exception as e:
-                log_debug(f"Armtek Selenium: ошибка при поиске data-brand: {str(e)}")
-        
-        # Поиск по Angular атрибутам
-        if not brands:
-            try:
-                page_source = driver.page_source
-                # Ищем Angular атрибуты _ngcontent
-                ng_brand_matches = re.findall(r'_ngcontent[^>]*class="[^"]*brand[^"]*"[^>]*>([^<]+)</', page_source)
-                for match in ng_brand_matches:
-                    if match and len(match.strip()) > 2 and not match.strip().isdigit():
-                        brands.add(match.strip())
-                        log_debug(f"Armtek Selenium: найден бренд '{match}' в Angular атрибуте")
-            except Exception as e:
-                log_debug(f"Armtek Selenium: ошибка при поиске Angular атрибутов: {str(e)}")
-        
-        log_debug(f"Armtek Selenium: итого найдено {len(brands)} брендов")
-        return list(brands)
-        
-    except Exception as e:
-        log_debug(f"Armtek Selenium error: {str(e)}")
-        return []
-    finally:
-        try:
-            if driver:
-                driver.quit()
-        except Exception as e:
-            log_debug(f"Armtek Selenium: ошибка при закрытии драйвера: {str(e)}")
-        
-        # Очищаем временную директорию
-        try:
-            import shutil
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        except Exception as e:
-            log_debug(f"Armtek Selenium: ошибка при очистке временной директории: {str(e)}")
+	"""Selenium-парсинг Armtek: ждем появления элементов и собираем бренды"""
+	brands: Set[str] = set()
+	temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_{uuid.uuid4().hex[:8]}_")
+	try:
+		log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
+		# Если прокси содержит авторизацию, игнорируем его для Selenium (Chrome не поддерживает в CLI)
+		effective_proxy = None if (proxy and '@' in proxy) else proxy
+		driver = _create_chrome_driver(temp_dir=temp_dir, with_user_data=True, proxy=effective_proxy)
+		if driver is None:
+			log_debug("Armtek Selenium: не удалось создать драйвер")
+			return []
+		url = f"https://armtek.ru/search?text={artikul}"
+		driver.get(url)
+		
+		# Явные ожидания появления результатов
+		wait = WebDriverWait(driver, 20)
+		selectors_to_wait = [
+			(By.CSS_SELECTOR, '.results-list__items'),
+			(By.CSS_SELECTOR, '.font__body2.brand--selecting'),
+		]
+		for by, sel in selectors_to_wait:
+			try:
+				wait.until(EC.presence_of_element_located((by, sel)))
+				break
+			except Exception:
+				continue
+		
+		# Прокручиваем страницу для подгрузки
+		try:
+			driver.execute_script('window.scrollTo(0, document.body.scrollHeight/2);')
+			time.sleep(0.5)
+			driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+			time.sleep(0.5)
+		except Exception:
+			pass
+		
+		# Сбор брендов по селекторам
+		brand_selectors = [
+			'.font__body2.brand--selecting',
+			'.brand--selecting',
+			'.brand-name',
+			'.product-brand',
+			'.manufacturer-name',
+			'.vendor-title',
+			'.item-brand',
+			'.brand__name',
+		]
+		for selector in brand_selectors:
+			try:
+				for el in driver.find_elements(By.CSS_SELECTOR, selector):
+					text = el.text.strip()
+					if text and len(text) > 1:
+						brands.add(text)
+						log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
+			except Exception as e:
+				log_debug(f"Armtek Selenium: ошибка поиска по селектору {selector}: {str(e)}")
+		
+		# Если брендов нет — пробуем из HTML
+		if not brands:
+			page_source = driver.page_source
+			brands |= parse_armtek_page_text(page_source, artikul)
+			if brands:
+				log_debug(f"Armtek Selenium: найдено {len(brands)} брендов из HTML")
+		
+		return list(brands)
+	finally:
+		try:
+			driver.quit()
+		except Exception:
+			pass
+		shutil.rmtree(temp_dir, ignore_errors=True)
 
 def _create_chrome_driver(temp_dir: str, with_user_data: bool = True, proxy: Optional[str] = None):
     """Создает Chrome драйвер с настройками и прокси"""
@@ -923,8 +818,7 @@ def parse_armtek_page_text(page_text: str, artikul: str) -> set:
     """Парсит бренды из текста страницы Armtek"""
     brands = set()
     
-    # Ищем бренды в тексте страницы
-    # Паттерны для поиска брендов
+    # Паттерны (включая кириллицу)
     brand_patterns = [
         r'data-brand="([^"]+)"',
         r'brand["\s]*[:=]\s*["\']([^"\']+)["\']',
@@ -933,45 +827,16 @@ def parse_armtek_page_text(page_text: str, artikul: str) -> set:
         r'brand-name="([^"]+)"',
         r'manufacturer="([^"]+)"',
         r'vendor="([^"]+)"',
-        r'data-brand="([^"]+)"',
-        r'brand["\s]*[:=]\s*([^\s,]+)',
-        r'производитель["\s]*[:=]\s*([^\s,]+)',
-        r'бренд["\s]*[:=]\s*([^\s,]+)'
     ]
-    
     for pattern in brand_patterns:
-        matches = re.findall(pattern, page_text, re.IGNORECASE)
-        for match in matches:
+        for match in re.findall(pattern, page_text, re.IGNORECASE):
             if match and len(match) > 1:
                 brands.add(match.strip())
     
-    # Дополнительный поиск по тексту страницы
-    if not brands:
-        try:
-            # Ищем потенциальные бренды в тексте
-            # Разбиваем текст на слова и ищем потенциальные бренды
-            words = re.findall(r'\b[A-Z][a-zA-Z0-9-]+\b', page_text)
-            for word in words:
-                if len(word) > 2 and len(word) < 20 and not word.isdigit():
-                    # Проверяем, что это похоже на бренд
-                    if re.match(r'^[A-Z][a-zA-Z0-9-]+$', word):
-                        brands.add(word)
-        except Exception as e:
-            pass
-    
-    # Поиск по структурированным данным
-    if not brands:
-        try:
-            # Ищем JSON данные в скриптах
-            script_matches = re.findall(r'<script[^>]*>([^<]+)</script>', page_text, re.IGNORECASE)
-            for script in script_matches:
-                # Ищем бренды в JSON
-                json_brand_matches = re.findall(r'"brand"\s*:\s*"([^"]+)"', script)
-                for match in json_brand_matches:
-                    if match and len(match) > 2 and not match.isdigit():
-                        brands.add(match.strip())
-        except Exception as e:
-            pass
+    # Дополнительная эвристика: слова-бренды (латиница/кириллица)
+    for word in re.findall(r'\b[А-ЯЁA-Z][А-ЯЁA-Zа-яёa-z0-9-]{1,19}\b', page_text):
+        if len(word) > 1 and not word.isdigit():
+            brands.add(word)
     
     return brands
 
@@ -1038,207 +903,68 @@ def parse_armtek_http(artikul: str, proxies: Optional[Dict] = None) -> List[str]
     return sorted(brands) if brands else []
 
 def filter_armtek_brands(brands: List[str]) -> List[str]:
-    """Фильтрует бренды Armtek, оставляя только разрешенные бренды"""
-    # Расширенный белый список разрешенных брендов
-    allowed_brands = {
-        'QUNZE', 'NIPPON', 'MOTORS MATTO', 'JMC', 'KOBELCO', 'PRC', 
-        'HUANG LIN', 'ERISTIC', 'HINO', 'OOTOKO', 'MITSUBISHI', 'TOYOTA',
-        'AUTOKAT', 'ZEVS', 'PITWORK', 'HITACHI', 'NISSAN', 'DETOOL', 'CHEMIPRO',
-        'STELLOX', 'FURO', 'EDCON', 'REPARTS',
-        # Добавлено из пожеланий: считать брендами
-        'HTP', 'FVR', 'ISUZU', 'G-BRAKE', 'АККОР', 'ДИЗЕЛЬ',
-        # Новые бренды из логов
-        'EMEK', 'HOT-PARTS', 'CARMECH', 'JAPACO', 'AUTOCOMPONENT',
-        # Дополнительные бренды, которые должны быть найдены
-        'EMEK', 'HOT-PARTS', 'ISUZU', 'CARMECH', 'G-BRAKE',
-        # Новые бренды из списка пользователя
-        'QINYAN', 'AMZ', 'ERREVI', 'PETERS', 'EMMERRE', 'SIMPECO', 'BPW', 'FEBI', 
-        'AUGER', 'BKAVTO', 'MANSONS', 'EXOVO', 'ALON', 'AMR', 'AOSS', 'KONNOR', 
-        'SAMPA', 'WABCO', 'ТОНАР', 'SMB', 'SCHMITZ', 'INTERNATIONAL', 'НЕФАЗ', 
-        'SEIWA', 'AIC', 'MARSHALL', 'FACET', 'DDA', 'PEORA', 'METALCAUCHO', 
-        'SAF', 'MASUMA', 'VOLVO', 'NIGRIN', 'SPIDAN', 'RUVILLE', 'SITRAK', 
-        'AVTOSHTAMP', 'IVECO', 'MATADOR', 'LMI', 'RHIAG', 'VIKA', 'TRICO', 
-        'ROCK FORCE', 'HARLEY DAVIDSON', 'АДС', 'STEMOT', 'AYFAR', 
-        'SIGAM', 'QUICK BRAKE', 'GATES', 'FRECCIA', 'VENDOR', 'GTOOL', 'SIDAT', 
-        'BRECAV', 'РОСОМЗ', 'SPJ', 'DELTA'
-    }
-    
-    filtered = []
-    
-    for brand in brands:
-        brand_clean = brand.strip()
-        if not brand_clean:
-            continue
-            
-        # Проверяем, есть ли бренд в белом списке (регистронезависимо)
-        brand_upper = brand_clean.upper()
-        if brand_upper in allowed_brands:
-            # Возвращаем оригинальное написание из белого списка
-            for allowed_brand in allowed_brands:
-                if allowed_brand.upper() == brand_upper:
-                    filtered.append(allowed_brand)
-                    break
-        # Также добавляем бренды, которые содержат ключевые слова
-        elif any(keyword in brand_upper for keyword in [
-            'EMEK', 'HOT', 'PARTS', 'CARMECH', 'JAPACO', 'AUTO', 'COMPONENT', 'ISUZU', 'G-BRAKE',
-            'QINYAN', 'AMZ', 'ERREVI', 'PETERS', 'EMMERRE', 'SIMPECO', 'BPW', 'FEBI', 
-            'AUGER', 'BKAVTO', 'MANSONS', 'EXOVO', 'ALON', 'AMR', 'AOSS', 'KONNOR', 
-            'SAMPA', 'WABCO', 'ТОНАР', 'SMB', 'SCHMITZ', 'INTERNATIONAL', 'НЕФАЗ', 
-            'SEIWA', 'AIC', 'MARSHALL', 'FACET', 'DDA', 'PEORA', 'METALCAUCHO', 
-            'SAF', 'MASUMA', 'VOLVO', 'NIGRIN', 'SPIDAN', 'RUVILLE', 'SITRAK', 
-            'AVTOSHTAMP', 'IVECO', 'MATADOR', 'LMI', 'RHIAG', 'VIKA', 'TRICO', 
-            'ROCK FORCE', 'HARLEY DAVIDSON', 'АДС', 'STEMOT', 'AYFAR', 
-            'SIGAM', 'QUICK BRAKE', 'GATES', 'FRECCIA', 'VENDOR', 'GTOOL', 'SIDAT', 
-            'BRECAV', 'РОСОМЗ', 'SPJ', 'DELTA'
-        ]):
-            filtered.append(brand_clean)
-        # Специальная обработка для составных брендов
-        elif 'HOT-PARTS' in brand_upper or 'HOT_PARTS' in brand_upper:
-            filtered.append('HOT-PARTS')
-        elif 'G-BRAKE' in brand_upper or 'GBRAKE' in brand_upper:
-            filtered.append('G-BRAKE')
-        elif 'QUICK BRAKE' in brand_upper or 'QUICKBRAKE' in brand_upper:
-            filtered.append('QUICK BRAKE')
-        elif 'HARLEY DAVIDSON' in brand_upper or 'HARLEYDAVIDSON' in brand_upper:
-            filtered.append('HARLEY DAVIDSON')
-        elif 'ROCK FORCE' in brand_upper or 'ROCKFORCE' in brand_upper:
-            filtered.append('ROCK FORCE')
-    
-    return sorted(list(set(filtered)))  # Убираем дубликаты и сортируем
+	"""Фильтрация брендов Armtek (не удалять 'ДИЗЕЛЬ')"""
+	filtered: List[str] = []
+	for b in brands:
+		brand = b.strip()
+		if not brand:
+			continue
+		# Не удаляем бренд ДИЗЕЛЬ
+		if brand.lower() in {"дизель", "дизель-авто"}:
+			filtered.append(brand)
+			continue
+		# Базовая фильтрация мусора (цифры, слишком короткие и т.п.)
+		if len(brand) < 2:
+			continue
+		if brand.isdigit():
+			continue
+		filtered.append(brand)
+	return sorted(set(filtered))
 
-def parse_armtek_http_response(html_content: str, artikul: str) -> List[str]:
-    """Парсит HTTP ответ от Armtek и извлекает бренды"""
-    soup = BeautifulSoup(html_content, "html.parser")
-    brands = set()
-    
-    # Ищем бренды в различных элементах
-    brand_selectors = [
-        '.brand-name',
-        '.product-brand',
-        '.manufacturer-name',
-        '.vendor-title',
-        '.item-brand',
-        '.brand__name',
-        '.product-card .brand',
-        '.catalog-item .brand',
-        '.search-result .brand',
-        '.item .brand',
-        '[data-brand]',
-        '.manufacturer',
-        '.vendor',
-        '.producer',
-        '.brand--selecting',
-        '.font__body2.brand--selecting',
-        '.product-item .brand',
-        '.search-item .brand',
-        '.catalog-item__brand',
-        '.product__brand',
-        '.item__brand',
-        '.brand-item',
-        '.brand-link',
-        '.brand-title'
-    ]
-    
-    for selector in brand_selectors:
-        try:
-            for tag in soup.select(selector):
-                brand = tag.get_text(strip=True)
-                if brand and len(brand) > 2 and not brand.isdigit():
-                    brands.add(brand)
-        except Exception as e:
-            log_debug(f"Armtek HTTP: ошибка при поиске по селектору {selector}: {str(e)}")
-            continue
-    
-    # Поиск по атрибутам data-brand
-    try:
-        for tag in soup.find_all(attrs={"data-brand": True}):
-            brand = tag.get("data-brand", "").strip()
-            if brand and len(brand) > 2 and not brand.isdigit():
-                brands.add(brand)
-    except Exception as e:
-        log_debug(f"Armtek HTTP: ошибка при поиске по data-brand: {str(e)}")
-    
-    # Поиск по структурированным данным (JSON-LD)
-    try:
-        script_tags = soup.find_all('script', type='application/ld+json')
-        for script in script_tags:
-            try:
-                data = json.loads(script.string)
-                if isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict) and item.get("@type") == "Product":
-                            brand = item.get("brand", {}).get("name") if isinstance(item.get("brand"), dict) else item.get("brand")
-                            if brand:
-                                brands.add(str(brand))
-                elif isinstance(data, dict) and data.get("@type") == "Product":
-                    brand = data.get("brand", {}).get("name") if isinstance(data.get("brand"), dict) else data.get("brand")
-                    if brand:
-                        brands.add(str(brand))
-            except json.JSONDecodeError:
-                continue
-    except Exception as e:
-        log_debug(f"Armtek HTTP: ошибка при парсинге JSON-LD: {str(e)}")
-    
-    # Поиск по тексту страницы (fallback)
-    if not brands:
-        try:
-            # Ищем бренды в тексте страницы
-            brand_patterns = [
-                r'data-brand="([^"]+)"',
-                r'brand["\s]*[:=]\s*["\']([^"\']+)["\']',
-                r'производитель["\s]*[:=]\s*["\']([^"\']+)["\']',
-                r'бренд["\s]*[:=]\s*["\']([^"\']+)["\']',
-                r'brand["\s]*[:=]\s*([^\s,]+)',
-                r'производитель["\s]*[:=]\s*([^\s,]+)',
-                r'бренд["\s]*[:=]\s*([^\s,]+)',
-                r'data-brand="([^"]+)"',
-                r'brand-name="([^"]+)"',
-                r'manufacturer="([^"]+)"',
-                r'vendor="([^"]+)"'
-            ]
-            
-            for pattern in brand_patterns:
-                matches = re.findall(pattern, html_content, re.IGNORECASE)
-                for match in matches:
-                    if match and len(match) > 2 and not match.isdigit():
-                        brands.add(match.strip())
-        except Exception as e:
-            log_debug(f"Armtek HTTP: ошибка при поиске по паттернам: {str(e)}")
-    
-    # Дополнительный поиск по тексту страницы
-    if not brands:
-        try:
-            # Ищем потенциальные бренды в тексте
-            text_content = soup.get_text()
-            # Разбиваем текст на слова и ищем потенциальные бренды
-            words = re.findall(r'\b[A-Z][a-zA-Z0-9-]+\b', text_content)
-            for word in words:
-                if len(word) > 2 and len(word) < 20 and not word.isdigit():
-                    # Проверяем, что это похоже на бренд
-                    if re.match(r'^[A-Z][a-zA-Z0-9-]+$', word):
-                        brands.add(word)
-        except Exception as e:
-            log_debug(f"Armtek HTTP: ошибка при поиске брендов в тексте: {str(e)}")
-    
-    # Поиск по структурированным данным в скриптах
-    if not brands:
-        try:
-            # Ищем JSON данные в скриптах
-            script_tags = soup.find_all('script')
-            for script in script_tags:
-                if script.string:
-                    # Ищем бренды в JSON
-                    json_brand_matches = re.findall(r'"brand"\s*:\s*"([^"]+)"', script.string)
-                    for match in json_brand_matches:
-                        if match and len(match) > 2 and not match.isdigit():
-                            brands.add(match.strip())
-        except Exception as e:
-            log_debug(f"Armtek HTTP: ошибка при поиске брендов в скриптах: {str(e)}")
-    
-    # Фильтруем и возвращаем бренды
-    filtered_brands = filter_armtek_brands(list(brands))
-    log_debug(f"Armtek HTTP: найдено {len(filtered_brands)} брендов для {artikul}")
-    return filtered_brands
+def parse_armtek_http_response(html: str, artikul: str) -> List[str]:
+	"""Парсит HTML ответа Armtek, извлекая бренды"""
+	soup = BeautifulSoup(html, 'html.parser')
+	brands: Set[str] = set()
+	
+	# 1) Явные селекторы
+	selectors = [
+		'.font__body2.brand--selecting',
+		'.brand--selecting',
+		'.brand-name', '.product-brand', '.manufacturer-name',
+		'.vendor-title', '.item-brand', '.brand__name',
+		'.catalog-item__brand', '.product__brand', '.item__brand'
+	]
+	for sel in selectors:
+		for el in soup.select(sel):
+			text = el.get_text(strip=True)
+			if text:
+				brands.add(text)
+	
+	# 2) data-brand
+	for el in soup.find_all(attrs={"data-brand": True}):
+		val = (el.get("data-brand") or '').strip()
+		if val:
+			brands.add(val)
+	
+	# 3) JSON-LD/скрипты
+	for script in soup.find_all('script'):
+		if not script.string:
+			continue
+		for m in re.findall(r'"brand"\s*:\s*"([^"]+)"', script.string):
+			m = m.strip()
+			if m:
+				brands.add(m)
+	
+	# 4) Текстовая эвристика (с поддержкой кириллицы)
+	if not brands:
+		text_content = soup.get_text(" ")
+		for word in re.findall(r'\b[А-ЯЁA-Z][А-ЯЁA-Zа-яёa-z0-9-]{1,19}\b', text_content):
+			if len(word) > 1 and not word.isdigit():
+				brands.add(word)
+	
+	filtered = filter_armtek_brands(list(brands))
+	log_debug(f"Armtek HTTP: найдено {len(filtered)} брендов для {artikul}")
+	return filtered
 
 def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> List[str]:
     """Получает бренды с Emex по артикулу с улучшенной обработкой блокировок"""
