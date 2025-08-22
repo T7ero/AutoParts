@@ -651,8 +651,13 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		except Exception:
 			pass
 
-		# Сбор брендов по селекторам
+		# Сбор брендов по селекторам - сначала точные селекторы для карточек товаров
 		brand_selectors = [
+			# Точные селекторы для карточек товаров Armtek
+			'.font__caption1.brand--selectable',
+			'.pin-brand-name span.font__caption1.brand--selectable',
+			'.product-card__content .pin-brand-name .brand--selectable',
+			# Старые селекторы как fallback
 			'.font__body2.brand--selecting',
 			'.brand--selecting',
 			'.brand-name',
@@ -662,15 +667,49 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			'.item-brand',
 			'.brand__name',
 		]
-		for selector in brand_selectors:
+		
+		# Сначала пробуем точные селекторы карточек товаров
+		exact_selectors = [
+			'.font__caption1.brand--selectable',
+			'.pin-brand-name span.font__caption1.brand--selectable',
+			'.product-card__content .pin-brand-name .brand--selectable',
+		]
+		
+		for selector in exact_selectors:
 			try:
-				for el in driver.find_elements(By.CSS_SELECTOR, selector):
+				elements = driver.find_elements(By.CSS_SELECTOR, selector)
+				for el in elements:
 					text = el.text.strip()
-					if text and len(text) > 1:
-						brands.add(text)
-						log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
+					if text and len(text) > 1 and len(text) < 50:  # Ограничиваем длину
+						# Дополнительная фильтрация мусора
+						if not any(garbage in text.lower() for garbage in [
+							'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
+							'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
+							'автозапчасти', 'аккумуляторы', 'аксессуары', 'акции', 'бренды', 'ваш', 'возврат',
+							'войти', 'выбор', 'вывод', 'гараж', 'гарантийная', 'главная', 'госномеру',
+							'грузовые', 'дней', 'доставка', 'инструмент', 'интернет', 'искать', 'искомый',
+							'как', 'каталог', 'китайские', 'компании', 'контакты', 'корзина', 'легковые',
+							'магазины', 'москва', 'мотозапчасти', 'моторные', 'мы', 'нет', 'новости', 'ооо',
+							'оплата', 'оптовым', 'партнерам', 'планировщик', 'по', 'подбор', 'пожалуйста',
+							'поиск', 'покупателям', 'поставщикам', 'правовая', 'программа', 'работа',
+							'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины'
+						]):
+							brands.add(text)
+							log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
 			except Exception as e:
 				log_debug(f"Armtek Selenium: ошибка поиска по селектору {selector}: {str(e)}")
+		
+		# Если точные селекторы не дали результатов, пробуем остальные
+		if not brands:
+			for selector in brand_selectors[3:]:  # Пропускаем уже проверенные точные селекторы
+				try:
+					for el in driver.find_elements(By.CSS_SELECTOR, selector):
+						text = el.text.strip()
+						if text and len(text) > 1:
+							brands.add(text)
+							log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
+				except Exception as e:
+					log_debug(f"Armtek Selenium: ошибка поиска по селектору {selector}: {str(e)}")
 		
 		# Если брендов нет — пробуем из HTML
 		if not brands:
@@ -787,10 +826,25 @@ def _create_chrome_driver_minimal(temp_dir: str, proxy: Optional[str] = None):
         return None
 
 def parse_armtek_page_text(page_text: str, artikul: str) -> set:
-    """Парсит бренды из текста страницы Armtek"""
+    """Парсит бренды из текста страницы Armtek с улучшенной фильтрацией"""
     brands = set()
     
-    # Паттерны (включая кириллицу)
+    # Список мусорных слов для исключения
+    garbage_words = {
+        'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
+        'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
+        'автозапчасти', 'аккумуляторы', 'аксессуары', 'акции', 'бренды', 'ваш', 'возврат',
+        'войти', 'выбор', 'вывод', 'гараж', 'гарантийная', 'главная', 'госномеру',
+        'грузовые', 'дней', 'доставка', 'инструмент', 'интернет', 'искать', 'искомый',
+        'как', 'каталог', 'китайские', 'компании', 'контакты', 'корзина', 'легковые',
+        'магазины', 'москва', 'мотозапчасти', 'моторные', 'мы', 'нет', 'новости', 'ооо',
+        'оплата', 'оптовым', 'партнерам', 'планировщик', 'по', 'подбор', 'пожалуйста',
+        'поиск', 'покупателям', 'поставщикам', 'правовая', 'программа', 'работа',
+        'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины',
+        'armtekparts', 'armtekru', 'canvastext', 'roboto', 'ldwbs', 'oracj', 'twmh'
+    }
+    
+    # Паттерны для поиска брендов в HTML атрибутах
     brand_patterns = [
         r'data-brand="([^"]+)"',
         r'brand["\s]*[:=]\s*["\']([^"\']+)["\']',
@@ -800,14 +854,20 @@ def parse_armtek_page_text(page_text: str, artikul: str) -> set:
         r'manufacturer="([^"]+)"',
         r'vendor="([^"]+)"',
     ]
+    
     for pattern in brand_patterns:
         for match in re.findall(pattern, page_text, re.IGNORECASE):
-            if match and len(match) > 1:
-                brands.add(match.strip())
+            if match and len(match) > 1 and len(match) < 50:
+                brand = match.strip()
+                if brand.lower() not in garbage_words:
+                    brands.add(brand)
     
-    # Дополнительная эвристика: слова-бренды (латиница/кириллица)
+    # Дополнительная эвристика: слова-бренды (латиница/кириллица) с улучшенной фильтрацией
     for word in re.findall(r'\b[А-ЯЁA-Z][А-ЯЁA-Zа-яёa-z0-9-]{1,19}\b', page_text):
-        if len(word) > 1 and not word.isdigit():
+        if (len(word) > 1 and len(word) < 50 and 
+            not word.isdigit() and 
+            word.lower() not in garbage_words and
+            not any(char.isdigit() for char in word[:2])):  # Исключаем артикулы
             brands.add(word)
     
     return brands
@@ -875,22 +935,51 @@ def parse_armtek_http(artikul: str, proxies: Optional[Dict] = None) -> List[str]
     return sorted(brands) if brands else []
 
 def filter_armtek_brands(brands: List[str]) -> List[str]:
-	"""Фильтрация брендов Armtek (не удалять 'ДИЗЕЛЬ')"""
+	"""Фильтрация брендов Armtek с улучшенной очисткой от мусора"""
 	filtered: List[str] = []
+	
+	# Расширенный список мусорных слов
+	garbage_words = {
+		'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
+		'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
+		'автозапчасти', 'аккумуляторы', 'аксессуары', 'акции', 'бренды', 'ваш', 'возврат',
+		'войти', 'выбор', 'вывод', 'гараж', 'гарантийная', 'главная', 'госномеру',
+		'грузовые', 'дней', 'доставка', 'инструмент', 'интернет', 'искать', 'искомый',
+		'как', 'каталог', 'китайские', 'компании', 'контакты', 'корзина', 'легковые',
+		'магазины', 'москва', 'мотозапчасти', 'моторные', 'мы', 'нет', 'новости', 'ооо',
+		'оплата', 'оптовым', 'партнерам', 'планировщик', 'по', 'подбор', 'пожалуйста',
+		'поиск', 'покупателям', 'поставщикам', 'правовая', 'программа', 'работа',
+		'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины',
+		'armtekparts', 'armtekru', 'canvastext', 'roboto', 'ldwbs', 'oracj', 'twmh',
+		'brand', 'new', 'test', 'tag', 'date', 'end', 'error', 'function', 'manager'
+	}
+	
 	for b in brands:
 		brand = b.strip()
 		if not brand:
 			continue
+			
 		# Не удаляем бренд ДИЗЕЛЬ
 		if brand.lower() in {"дизель", "дизель-авто"}:
 			filtered.append(brand)
 			continue
-		# Базовая фильтрация мусора (цифры, слишком короткие и т.п.)
-		if len(brand) < 2:
+			
+		# Базовая фильтрация мусора
+		if len(brand) < 2 or len(brand) > 50:
 			continue
 		if brand.isdigit():
 			continue
+		if brand.lower() in garbage_words:
+			continue
+			
+		# Исключаем артикулы и технические коды
+		if any(char.isdigit() for char in brand[:3]):
+			continue
+		if brand.startswith(('M', 'H', 'T', 'Z', 'D')) and any(char.isdigit() for char in brand[1:4]):
+			continue
+			
 		filtered.append(brand)
+		
 	return sorted(set(filtered))
 
 def parse_armtek_http_response(html: str, artikul: str) -> List[str]:
