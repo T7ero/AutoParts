@@ -935,33 +935,23 @@ def parse_armtek_http(artikul: str, proxies: Optional[Dict] = None) -> List[str]
     return sorted(brands) if brands else []
 
 def filter_armtek_brands(brands: List[str]) -> List[str]:
-	"""Фильтрация брендов Armtek с улучшенной очисткой от мусора"""
+	"""Фильтрация брендов Armtek с минимальной очисткой от мусора"""
 	filtered: List[str] = []
 	
-	# Расширенный список мусорных слов
+	# Минимальный список мусорных слов - только самые очевидные
 	garbage_words = {
 		'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
 		'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
-		'автозапчасти', 'аккумуляторы', 'аксессуары', 'акции', 'бренды', 'ваш', 'возврат',
-		'войти', 'выбор', 'вывод', 'гараж', 'гарантийная', 'главная', 'госномеру',
-		'грузовые', 'дней', 'доставка', 'инструмент', 'интернет', 'искать', 'искомый',
-		'как', 'каталог', 'китайские', 'компании', 'контакты', 'корзина', 'легковые',
-		'магазины', 'москва', 'мотозапчасти', 'моторные', 'мы', 'нет', 'новости', 'ооо',
-		'оплата', 'оптовым', 'партнерам', 'планировщик', 'по', 'подбор', 'пожалуйста',
-		'поиск', 'покупателям', 'поставщикам', 'правовая', 'программа', 'работа',
-		'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины',
 		'armtekparts', 'armtekru', 'canvastext', 'roboto', 'ldwbs', 'oracj', 'twmh',
-		'brand', 'new', 'test', 'tag', 'date', 'end', 'error', 'function', 'manager'
+		'brand', 'new', 'test', 'tag', 'date', 'end', 'error', 'function', 'manager',
+		# Только самые очевидные мусорные слова из интерфейса
+		'главная', 'войти', 'корзина', 'каталог', 'поиск', 'новости', 'акции',
+		'контакты', 'о компании', 'правовая информация', 'программа лояльности'
 	}
 	
 	for b in brands:
 		brand = b.strip()
 		if not brand:
-			continue
-			
-		# Не удаляем бренд ДИЗЕЛЬ
-		if brand.lower() in {"дизель", "дизель-авто"}:
-			filtered.append(brand)
 			continue
 			
 		# Базовая фильтрация мусора
@@ -972,10 +962,8 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
 		if brand.lower() in garbage_words:
 			continue
 			
-		# Исключаем артикулы и технические коды
-		if any(char.isdigit() for char in brand[:3]):
-			continue
-		if brand.startswith(('M', 'H', 'T', 'Z', 'D')) and any(char.isdigit() for char in brand[1:4]):
+		# Убираем только очевидные артикулы (начинающиеся с цифр)
+		if brand[0].isdigit() and len(brand) > 3:
 			continue
 			
 		filtered.append(brand)

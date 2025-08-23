@@ -291,6 +291,7 @@ def process_parsing_task(self, task_id):
                 return inner
             
             # Оптимизированная обработка с ротацией прокси для Emex
+            log(f"Начинаем парсинг {len(numbers)} артикулов для строки {index + 1}")
             for i, num in enumerate(numbers):
                 try:
                     # Autopiter для текущего артикула (если выбран)
@@ -377,8 +378,13 @@ def process_parsing_task(self, task_id):
                     continue
                 
                 log(f"Обрабатываем строку {index + 1}: {len(numbers_to_parse)} артикулов")
+                # Обновляем прогресс и логи для отображения в интерфейсе
+                progress = int((index + 1) / total_rows * 100)
+                task.progress = progress
                 task.log = '\n'.join(log_messages[-100:])
-                task.save(); ws_send()
+                task.status = 'in_progress'
+                task.save()
+                ws_send()
                 
                 # Обрабатываем каждый артикул отдельно для создания отдельных строк
                 for current_number in numbers_to_parse:
@@ -448,7 +454,7 @@ def process_parsing_task(self, task_id):
                         # Armtek (Selenium) - оптимизированная версия (если выбран)
                         def parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b):
                             results = []
-                            log(f"Armtek: начало обработки {len(numbers)} артикулов")
+                            log(f"Armtek: начало обработки {len(numbers)} артикулов для строки {index + 1}")
                             
                             def parse_one(num):
                                 # Проверяем кэш перед парсингом
@@ -497,7 +503,7 @@ def process_parsing_task(self, task_id):
                                     except Exception as e:
                                         log(f"Error processing armtek result: {str(e)}")
                             
-                            log(f"Armtek: завершена обработка, найдено {len(results)} результатов")
+                            log(f"Armtek: завершена обработка для строки {index + 1}, найдено {len(results)} результатов")
                             return results
                         
                         if 'armtek' in selected_sources:
