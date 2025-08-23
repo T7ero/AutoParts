@@ -23,6 +23,36 @@ from channels.layers import get_channel_layer
 from typing import List, Dict, Optional
 from celery.utils.log import get_task_logger
 
+# Кэш для ускорения работы парсера
+PARSER_CACHE = {}
+CACHE_EXPIRATION = 3600  # 1 час
+NEGATIVE_CACHE_EXPIRATION = 1800  # 30 минут для пустых результатов
+
+def get_cache_key(artikul: str, source: str) -> str:
+    """Создает ключ кэша для артикула и источника"""
+    return f"{artikul.lower().strip()}_{source}"
+
+def get_from_cache(artikul: str, source: str) -> Optional[List[str]]:
+    """Получает результат из кэша"""
+    key = get_cache_key(artikul, source)
+    if key in PARSER_CACHE:
+        cache_entry = PARSER_CACHE[key]
+        if time.time() - cache_entry['timestamp'] < cache_entry['expiration']:
+            return cache_entry['result']
+        else:
+            del PARSER_CACHE[key]  # Удаляем устаревшую запись
+    return None
+
+def set_cache(artikul: str, source: str, result: List[str], is_empty: bool = False):
+    """Сохраняет результат в кэш"""
+    key = get_cache_key(artikul, source)
+    expiration = NEGATIVE_CACHE_EXPIRATION if is_empty else CACHE_EXPIRATION
+    PARSER_CACHE[key] = {
+        'result': result,
+        'timestamp': time.time(),
+        'expiration': expiration
+    }
+
 def clean_excel_string(s):
     if not isinstance(s, str):
         return s
@@ -221,6 +251,12 @@ def process_parsing_task(self, task_id):
             
             def parse_one(site, parser_func, max_retries=1):
                 def inner(num, proxy=None):
+                    # Проверяем кэш перед парсингом
+                    cached_result = get_from_cache(num, site)
+                    if cached_result is not None:
+                        log(f"{site.capitalize()}: результат из кэша для {num} → {cached_result}")
+                        return [(brand, part_number, name, b, num, site) for b in cached_result]
+                    
                     for attempt in range(max_retries):
                         try:
                             if attempt == 0:
@@ -236,6 +272,11 @@ def process_parsing_task(self, task_id):
                             # Уменьшаем задержку для ускорения
                             time.sleep(0.05 if site == 'autopiter' else 0.05)  # Уменьшаем для Emex
                             brands = parser_func(num, proxy)
+                            
+                            # Сохраняем результат в кэш
+                            is_empty = len(brands) == 0
+                            set_cache(num, site, brands, is_empty)
+                            
                             log(f"{site}: {num} → {brands}")
                             return [(brand, part_number, name, b, num, site) for b in brands]
                         except Exception as e:
@@ -244,6 +285,8 @@ def process_parsing_task(self, task_id):
                                 time.sleep(0.2)  # Еще больше уменьшаем время ожидания
                             else:
                                 log(f"Failed to parse {site} for {num} after {max_retries} attempts")
+                                # Сохраняем пустой результат в кэш
+                                set_cache(num, site, [], True)
                                 return []
                 return inner
             
@@ -292,10 +335,14 @@ def process_parsing_task(self, task_id):
         # Основной цикл с улучшенной обработкой ошибок и предотвращением бесконечного цикла
         for index, row in df.iterrows():
             try:
-                # Проверка таймаута каждые 25 строк для более частой проверки
-                if index % 25 == 0:
-                    if time.time() - task._timeout_check > 82800:  # 23 часа
-                        log("Task timeout approaching, finishing up...")
+                # Проверка таймаута каждые 100 строк для менее частой проверки
+                if index % 100 == 0:
+                    elapsed_time = time.time() - task._timeout_check
+                    if elapsed_time > 165600:  # 46 часов - мягкий лимит
+                        log(f"Task timeout approaching ({elapsed_time/3600:.1f} hours), finishing up...")
+                        break
+                    elif elapsed_time > 172800:  # 48 часов - жесткий лимит
+                        log(f"Task timeout reached ({elapsed_time/3600:.1f} hours), forcing stop...")
                         break
                 
                 # Правильное чтение данных из Excel согласно требованиям
@@ -404,6 +451,12 @@ def process_parsing_task(self, task_id):
                             log(f"Armtek: начало обработки {len(numbers)} артикулов")
                             
                             def parse_one(num):
+                                # Проверяем кэш перед парсингом
+                                cached_result = get_from_cache(num, 'armtek')
+                                if cached_result is not None:
+                                    log(f"Armtek: результат из кэша для {num} → {cached_result}")
+                                    return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in cached_result]
+                                
                                 max_retries = 1
                                 for attempt in range(max_retries):
                                     try:
@@ -417,6 +470,11 @@ def process_parsing_task(self, task_id):
                                         # Уменьшаем задержку для ускорения
                                         time.sleep(0.1)
                                         brands = get_brands_by_artikul_armtek(num, proxy)
+                                        
+                                        # Сохраняем результат в кэш
+                                        is_empty = len(brands) == 0
+                                        set_cache(num, 'armtek', brands, is_empty)
+                                        
                                         log(f"armtek: {num} → {brands}")
                                         return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in brands]
                                     except Exception as e:
@@ -425,6 +483,8 @@ def process_parsing_task(self, task_id):
                                             time.sleep(0.5)
                                         else:
                                             log(f"Failed to parse armtek for {num} after {max_retries} attempts")
+                                            # Сохраняем пустой результат в кэш
+                                            set_cache(num, 'armtek', [], True)
                                             return []
                             
                             # Увеличиваем количество потоков для ускорения
