@@ -22,7 +22,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from typing import List, Dict, Optional
 from celery.utils.log import get_task_logger
-
+import datetime
 # Кэш для ускорения работы парсера
 PARSER_CACHE = {}
 CACHE_EXPIRATION = 3600  # 1 час
@@ -339,10 +339,10 @@ def process_parsing_task(self, task_id):
                 # Проверка таймаута каждые 100 строк для менее частой проверки
                 if index % 100 == 0:
                     elapsed_time = time.time() - task._timeout_check
-                    if elapsed_time > 165600:  # 46 часов - мягкий лимит
+                    if elapsed_time > 252000:  # 70 часов - мягкий лимит
                         log(f"Task timeout approaching ({elapsed_time/3600:.1f} hours), finishing up...")
                         break
-                    elif elapsed_time > 172800:  # 48 часов - жесткий лимит
+                    elif elapsed_time > 259200:  # 72 часа - жесткий лимит
                         log(f"Task timeout reached ({elapsed_time/3600:.1f} hours), forcing stop...")
                         break
                 
@@ -381,8 +381,20 @@ def process_parsing_task(self, task_id):
                 # Обновляем прогресс и логи для отображения в интерфейсе
                 progress = int((index + 1) / total_rows * 100)
                 task.progress = progress
-                task.log = '\n'.join(log_messages[-100:])
                 task.status = 'in_progress'
+                
+                # Сохраняем логи в базе данных для отображения в интерфейсе
+                current_log = f"[{datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Обрабатываем строку {index + 1}: {len(numbers_to_parse)} артикулов"
+                if task.log:
+                    task.log += '\n' + current_log
+                else:
+                    task.log = current_log
+                
+                # Ограничиваем размер логов (последние 1000 символов)
+                if len(task.log) > 10000:
+                    lines = task.log.split('\n')
+                    task.log = '\n'.join(lines[-50:])  # Последние 50 строк
+                
                 task.save()
                 ws_send()
                 
@@ -577,9 +589,25 @@ def process_parsing_task(self, task_id):
             except Exception as e:
                 log(f"Error processing row {index + 1}: {str(e)}")
                 task._processed_rows += 1  # Увеличиваем счетчик даже при ошибке
+                
+                # Добавляем логирование ошибки в базу данных
+                error_log = f"[{datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Ошибка обработки строки {index + 1}: {str(e)}"
+                if task.log:
+                    task.log += '\n' + error_log
+                else:
+                    task.log = error_log
+                task.save()
                 continue
         
-        log(f"Обработка завершена. Обработано строк: {task._processed_rows} из {total_rows}")
+        completion_log = f"[{datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Обработка завершена. Обработано строк: {task._processed_rows} из {total_rows}"
+        log(completion_log)
+        
+        # Добавляем в базу данных
+        if task.log:
+            task.log += '\n' + completion_log
+        else:
+            task.log = completion_log
+        task.save()
         
         # Создаем результаты с улучшенной обработкой ошибок
         try:
