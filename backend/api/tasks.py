@@ -22,7 +22,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from typing import List, Dict, Optional
 from celery.utils.log import get_task_logger
-import datetime
+from datetime import datetime
 # Кэш для ускорения работы парсера
 PARSER_CACHE = {}
 CACHE_EXPIRATION = 3600  # 1 час
