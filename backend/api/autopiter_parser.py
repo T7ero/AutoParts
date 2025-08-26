@@ -1356,3 +1356,81 @@ def parse_armtek_alternative(artikul: str, proxy: Optional[str] = None) -> List[
     
     log_debug(f"Armtek альтернативный: все эндпоинты не дали результатов для {artikul}")
     return []
+
+# Вспомогательные методы для работы с пулом драйверов Armtek
+def _create_chrome_driver_minimal():
+    """Создает минимальный Chrome драйвер для Armtek"""
+    options = Options()
+    options.add_argument('--headless=new')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--disable-extensions')
+    options.add_argument('--disable-plugins')
+    options.add_argument('--disable-images')
+    options.add_argument('--disable-javascript')
+    options.add_argument('--disable-web-security')
+    options.add_argument('--disable-features=VizDisplayCompositor')
+    options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+    
+    # Уникальная временная директория для каждого драйвера
+    temp_dir = os.path.join(tempfile.gettempdir(), f'chrome_armtek_{uuid.uuid4().hex[:8]}')
+    options.add_argument(f'--user-data-dir={temp_dir}')
+    
+    try:
+        driver = webdriver.Chrome(options=options)
+        driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+        driver.implicitly_wait(2)
+        return driver
+    except Exception as e:
+        log_debug(f"Ошибка создания драйвера: {str(e)}")
+        return None
+
+def _parse_with_driver(artikul: str, driver):
+    """Парсит Armtek с использованием существующего драйвера"""
+    try:
+        url = f"https://armtek.ru/search?text={quote(artikul)}"
+        driver.get(url)
+        
+        # Ждем загрузки страницы
+        time.sleep(2)
+        
+        # Проверяем на "ничего не найдено"
+        page_text = driver.page_source.lower()
+        if 'ничего не найдено' in page_text or 'не найдено' in page_text:
+            return []
+        
+        # Ищем бренды по селекторам
+        brands = set()
+        
+        # Основные селекторы для брендов
+        selectors = [
+            '.font__body2.brand--selecting',
+            '.brand--selecting',
+            '[data-brand]',
+            '.brand-name'
+        ]
+        
+        for selector in selectors:
+            try:
+                elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                for elem in elements:
+                    brand_text = elem.text.strip()
+                    if brand_text and len(brand_text) > 1:
+                        brands.add(brand_text.upper())
+            except Exception:
+                continue
+        
+        # Если ничего не найдено, пробуем парсинг по тексту
+        if not brands:
+            brands = parse_armtek_page_text(driver.page_source)
+        
+        return list(brands)
+        
+    except Exception as e:
+        log_debug(f"Ошибка парсинга с драйвером для {artikul}: {str(e)}")
+        return []
+
+# Добавляем методы к функции get_brands_by_artikul_armtek
+get_brands_by_artikul_armtek._create_chrome_driver_minimal = _create_chrome_driver_minimal
+get_brands_by_artikul_armtek._parse_with_driver = _parse_with_driver
