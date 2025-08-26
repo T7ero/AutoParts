@@ -238,6 +238,22 @@ def task_logs(request, task_id):
                 'message': f"Задача завершена с ошибкой: {task.error_message or 'Неизвестная ошибка'}"
             })
         
+        # Добавляем накопленные логи из поля task.log (поддержка текущей строки парсинга)
+        if getattr(task, 'log', None):
+            import re
+            for line in str(task.log).split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                # Парсим время в формате [dd.mm.yyyy, HH:MM:SS]
+                m = re.match(r"^\[(\d{2}\.\d{2}\.\d{4}), (\d{2}:\d{2}:\d{2})\]\s*(.*)$", line)
+                if m:
+                    dt = f"{m.group(1).split('.')[2]}-{m.group(1).split('.')[1]}-{m.group(1).split('.')[0]}T{m.group(2)}"
+                    msg = m.group(3)
+                    logs.append({'timestamp': dt, 'message': msg})
+                else:
+                    logs.append({'timestamp': task.updated_at.isoformat(), 'message': line})
+
         # Пытаемся получить дополнительную информацию из Celery
         if celery_result.info:
             if isinstance(celery_result.info, dict):
@@ -283,8 +299,8 @@ def task_logs(request, task_id):
                 'message': f"Время выполнения: {duration.total_seconds():.1f} секунд"
             })
         
-        # Сортируем логи по времени
-        logs.sort(key=lambda x: x['timestamp'])
+        # Сортируем логи по времени (если timestamps отсутствуют, они будут в конце)
+        logs = [l for l in logs if l.get('timestamp')] + [l for l in logs if not l.get('timestamp')]
         
         return Response({
             'task_id': task_id,

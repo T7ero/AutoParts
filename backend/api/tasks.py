@@ -143,7 +143,7 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
     
     return filtered
 
-@shared_task(bind=True, time_limit=86400, soft_time_limit=82800)  # 24 часа максимум, 23 часа мягкий лимит
+@shared_task(bind=True, time_limit=259200, soft_time_limit=252000)  # 72 часа максимум, 70 часов мягкий лимит
 def process_parsing_task(self, task_id):
     # Проверяем, не завершена ли уже задача
     try:
@@ -248,7 +248,9 @@ def process_parsing_task(self, task_id):
         def parse_all_parallel(numbers, brand, part_number, name):
             results = {'autopiter': [], 'emex': []}
             state = {"emex_disabled": False, "emex_failures": 0}
-            
+            ARTICLE_TIMEOUT = 20  # общий таймаут на один артикул
+            emex_semaphore = threading.Semaphore(2)  # ограничиваем одновременные Emex-запросы
+
             def parse_one(site, parser_func, max_retries=1):
                 def inner(num, proxy=None):
                     # Проверяем кэш перед парсингом
@@ -290,47 +292,45 @@ def process_parsing_task(self, task_id):
                                 return []
                 return inner
             
-            # Оптимизированная обработка с ротацией прокси для Emex
+            # Параллельная обработка артикулов с семафором для Emex
             log(f"Начинаем парсинг {len(numbers)} артикулов для строки {index + 1}")
-            for i, num in enumerate(numbers):
-                try:
-                    # Autopiter для текущего артикула (если выбран)
-                    if 'autopiter' in selected_sources:
-                        autopiter_results = parse_one('autopiter', get_brands_by_artikul)(num)
-                        results['autopiter'].extend(autopiter_results)
-                    
-                    # Emex: без создания новых потоков (устранение 'can't start new thread')
-                    if 'emex' in selected_sources and not state['emex_disabled']:
-                        proxy = get_proxy_string()
-                        if proxy:
-                            log(f"Emex: использование прокси для артикула {num}")
-                        else:
-                            log(f"Emex: прокси недоступен для артикула {num}")
 
+            def worker(num):
+                local = {'autopiter': [], 'emex': []}
+                if 'autopiter' in selected_sources:
+                    local['autopiter'].extend(parse_one('autopiter', get_brands_by_artikul)(num))
+                if 'emex' in selected_sources and not state['emex_disabled']:
+                    with emex_semaphore:
+                        proxy = get_proxy_string()
                         try:
-                            # Вызов синхронно, таймауты заданы внутри get_brands_by_artikul_emex
-                            emex_results = parse_one('emex', get_brands_by_artikul_emex)(num, proxy)
-                            if emex_results:
+                            emex_res = parse_one('emex', get_brands_by_artikul_emex)(num, proxy)
+                            if emex_res:
                                 state['emex_failures'] = 0
                             else:
                                 state['emex_failures'] += 1
-                            results['emex'].extend(emex_results)
-
-                            # Если подряд 5 неудач — отключаем Emex для текущей партии
+                            local['emex'].extend(emex_res)
                             if state['emex_failures'] >= 5:
                                 state['emex_disabled'] = True
                                 log("Emex: слишком много неудач подряд, временно отключаем Emex для этой партии")
                         except Exception as e:
                             state['emex_failures'] += 1
                             log(f"Emex: критическая ошибка для артикула {num}: {str(e)}")
-                    
-                    # Уменьшенная пауза между артикулами
-                    if i % 5 == 0 and i > 0:
-                        time.sleep(0.1)  # Уменьшаем паузу
-                    
-                except Exception as e:
-                    log(f"Ошибка обработки артикула {num}: {str(e)}")
-            
+                return local
+
+            max_workers = min(4, max(1, len(numbers)))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futs = {executor.submit(worker, n): n for n in numbers}
+                for fut in concurrent.futures.as_completed(futs, timeout=max(ARTICLE_TIMEOUT, 20) * len(numbers)):
+                    num = futs[fut]
+                    try:
+                        res = fut.result(timeout=ARTICLE_TIMEOUT)
+                        results['autopiter'].extend(res.get('autopiter', []))
+                        results['emex'].extend(res.get('emex', []))
+                    except concurrent.futures.TimeoutError:
+                        log(f"Таймаут обработки артикула {num}")
+                    except Exception as e:
+                        log(f"Ошибка обработки артикула {num}: {str(e)}")
+
             return results
         
         # Основной цикл с улучшенной обработкой ошибок и предотвращением бесконечного цикла
