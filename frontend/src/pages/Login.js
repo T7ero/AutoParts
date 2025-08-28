@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import { useAuth } from '../contexts/AuthContext';
 
 function Login() {
   const [username, setUsername] = useState('');
@@ -8,6 +8,7 @@ function Login() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const { login } = useAuth();
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -15,15 +16,26 @@ function Login() {
     setError(null);
 
     try {
-      const response = await axios.post('/api/auth/token/', {
-        username,
-        password
+      const response = await fetch('/api/auth/token/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          username,
+          password
+        })
       });
 
-      localStorage.setItem('token', response.data.token);
-      navigate('/');
+      if (response.ok) {
+        const data = await response.json();
+        login(data.token);
+        navigate('/');
+      } else {
+        setError('Неверное имя пользователя или пароль');
+      }
     } catch (err) {
-      setError('Неверное имя пользователя или пароль');
+      setError('Ошибка подключения к серверу');
     } finally {
       setLoading(false);
     }

@@ -114,6 +114,7 @@ class PriceListTask(models.Model):
     not_found_items = models.IntegerField(default=0, verbose_name="Не найдено позиций")
     log = models.TextField(blank=True, verbose_name="Лог выполнения")
     result_file = models.FileField(upload_to='results/', null=True, blank=True, verbose_name="Файл результата")
+    error_message = models.TextField(blank=True, verbose_name="Сообщение об ошибке")
     
     # Фильтры для анализа цен
     competitor_brand_filter = models.CharField(max_length=100, blank=True, verbose_name="Фильтр бренда конкурента")

@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Disclosure } from '@headlessui/react';
 import { Bars3Icon, XMarkIcon, SunIcon, MoonIcon } from '@heroicons/react/24/outline';
 import { useTheme } from '../contexts/ThemeContext';
+import { useAuth } from '../contexts/AuthContext';
 
 const navigation = [
   { name: 'Главная', href: '/' },
@@ -15,11 +16,11 @@ const navigation = [
 
 function Navbar() {
   const navigate = useNavigate();
-  const isAuthenticated = localStorage.getItem('token');
+  const { token, logout } = useAuth();
   const { isDark, toggleTheme } = useTheme();
 
   const handleLogout = () => {
-    localStorage.removeItem('token');
+    logout();
     navigate('/login');
   };
 
@@ -70,7 +71,7 @@ function Navbar() {
                   )}
                 </button>
                 
-                {isAuthenticated ? (
+                {token ? (
                   <button
                     onClick={handleLogout}
                     className="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 transition-colors"

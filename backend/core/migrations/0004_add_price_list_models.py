@@ -26,6 +26,7 @@ class Migration(migrations.Migration):
                 ('not_found_items', models.IntegerField(default=0, verbose_name='Не найдено позиций')),
                 ('log', models.TextField(blank=True, verbose_name='Лог выполнения')),
                 ('result_file', models.FileField(blank=True, null=True, upload_to='results/', verbose_name='Файл результата')),
+                ('error_message', models.TextField(blank=True, verbose_name='Сообщение об ошибке')),
                 ('competitor_brand_filter', models.CharField(blank=True, max_length=100, verbose_name='Фильтр бренда конкурента')),
                 ('include_price_analysis', models.BooleanField(default=True, verbose_name='Включить анализ цен')),
                 ('user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='core.user', verbose_name='Пользователь')),
