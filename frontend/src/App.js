@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard';
 import Upload from './pages/Upload';
 import Tasks from './pages/Tasks';
 import Logs from './pages/Logs';
+import PriceListAnalysis from './pages/PriceListAnalysis';
 
 function App() {
   return (
@@ -21,6 +22,7 @@ function App() {
               <Route path="/upload" element={<Upload />} />
               <Route path="/tasks" element={<Tasks />} />
               <Route path="/logs" element={<Logs />} />
+              <Route path="/price-list-analysis" element={<PriceListAnalysis />} />
             </Routes>
           </main>
         </div>

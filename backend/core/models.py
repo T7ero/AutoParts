@@ -86,3 +86,62 @@ class ParsingTask(models.Model):
 
     def __str__(self):
         return f"Задача {self.id} - {self.status}" 
+
+class PriceListTask(models.Model):
+    """Задача анализа прайс-листа на площадках"""
+    STATUS_CHOICES = [
+        ('pending', 'Ожидает'),
+        ('processing', 'Обрабатывается'),
+        ('completed', 'Завершена'),
+        ('failed', 'Ошибка'),
+    ]
+    
+    PLATFORM_CHOICES = [
+        ('autopiter', 'АвтоПитер'),
+        ('armtek', 'Армтек'),
+        ('emex', 'Емекс'),
+    ]
+    
+    user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="Пользователь")
+    file = models.FileField(upload_to='uploads/', verbose_name="Файл прайс-листа")
+    platform = models.CharField(max_length=20, choices=PLATFORM_CHOICES, verbose_name="Площадка")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name="Статус")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
+    completed_at = models.DateTimeField(null=True, blank=True, verbose_name="Дата завершения")
+    total_items = models.IntegerField(default=0, verbose_name="Всего позиций")
+    processed_items = models.IntegerField(default=0, verbose_name="Обработано позиций")
+    found_items = models.IntegerField(default=0, verbose_name="Найдено позиций")
+    not_found_items = models.IntegerField(default=0, verbose_name="Не найдено позиций")
+    log = models.TextField(blank=True, verbose_name="Лог выполнения")
+    result_file = models.FileField(upload_to='results/', null=True, blank=True, verbose_name="Файл результата")
+    
+    # Фильтры для анализа цен
+    competitor_brand_filter = models.CharField(max_length=100, blank=True, verbose_name="Фильтр бренда конкурента")
+    include_price_analysis = models.BooleanField(default=True, verbose_name="Включить анализ цен")
+    
+    class Meta:
+        verbose_name = "Задача анализа прайс-листа"
+        verbose_name_plural = "Задачи анализа прайс-листа"
+        ordering = ['-created_at']
+
+class PriceListItem(models.Model):
+    """Позиция из прайс-листа"""
+    task = models.ForeignKey(PriceListTask, on_delete=models.CASCADE, related_name='items', verbose_name="Задача")
+    supplier_code = models.CharField(max_length=20, blank=True, verbose_name="Код поставщика")
+    manufacturer = models.CharField(max_length=100, verbose_name="Производитель")
+    article = models.CharField(max_length=100, verbose_name="Артикул")
+    nomenclature = models.TextField(verbose_name="Номенклатура")
+    quantity = models.IntegerField(default=0, verbose_name="Количество")
+    our_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="Наша цена")
+    
+    # Результаты парсинга
+    is_found = models.BooleanField(default=False, verbose_name="Найдено на площадке")
+    marketplace_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="Цена на площадке")
+    min_competitor_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="Мин. цена конкурента")
+    competitor_brand = models.CharField(max_length=100, blank=True, verbose_name="Бренд конкурента с мин. ценой")
+    error_message = models.TextField(blank=True, verbose_name="Сообщение об ошибке")
+    
+    class Meta:
+        verbose_name = "Позиция прайс-листа"
+        verbose_name_plural = "Позиции прайс-листа"
+        unique_together = ['task', 'manufacturer', 'article'] 

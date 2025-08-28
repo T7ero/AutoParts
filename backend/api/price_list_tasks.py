@@ -1,0 +1,223 @@
+from celery import shared_task
+from django.utils import timezone
+from datetime import datetime
+import pandas as pd
+import os
+import time
+import concurrent.futures
+from typing import List, Dict
+from decimal import Decimal
+
+from core.models import PriceListTask, PriceListItem
+from .price_list_parser import (
+    parse_price_list_file,
+    check_autopiter_item,
+    check_emex_item,
+    check_armtek_item,
+    create_result_excel
+)
+
+@shared_task(bind=True, time_limit=86400, soft_time_limit=82800)  # 24 часа
+def process_price_list_task(self, task_id: int):
+    """Основная задача для анализа прайс-листа на площадках"""
+    
+    try:
+        # Получаем задачу
+        task = PriceListTask.objects.get(id=task_id)
+        task.status = 'processing'
+        task.save()
+        
+        def log(msg):
+            """Логирование с сохранением в базу"""
+            timestamp = datetime.now().strftime('%d.%m.%Y, %H:%M:%S')
+            log_message = f"[{timestamp}] {msg}"
+            print(log_message)
+            
+            # Добавляем в лог задачи
+            if not task.log:
+                task.log = log_message
+            else:
+                task.log += f"\n{log_message}"
+            
+            # Ограничиваем размер лога
+            log_lines = task.log.split('\n')
+            if len(log_lines) > 1000:
+                task.log = '\n'.join(log_lines[-1000:])
+            
+            task.save()
+        
+        log(f"Начинаем анализ прайс-листа на площадке {task.get_platform_display()}")
+        
+        # Парсим файл прайс-листа
+        log(f"Парсим файл: {task.file.name}")
+        items_data = parse_price_list_file(task.file.path)
+        
+        if not items_data:
+            log("Ошибка: не удалось распарсить файл прайс-листа")
+            task.status = 'failed'
+            task.save()
+            return
+        
+        task.total_items = len(items_data)
+        task.save()
+        
+        log(f"Найдено {len(items_data)} позиций для анализа")
+        
+        # Создаем записи в базе данных
+        db_items = []
+        for item_data in items_data:
+            db_item = PriceListItem.objects.create(
+                task=task,
+                supplier_code=item_data['supplier_code'],
+                manufacturer=item_data['manufacturer'],
+                article=item_data['article'],
+                nomenclature=item_data['nomenclature'],
+                quantity=item_data['quantity'],
+                our_price=Decimal(str(item_data['our_price'])) if item_data['our_price'] else None
+            )
+            db_items.append(db_item)
+        
+        log(f"Создано {len(db_items)} записей в базе данных")
+        
+        # Функция для анализа одной позиции
+        def analyze_item(item: PriceListItem) -> Dict:
+            """Анализирует одну позицию на выбранной площадке"""
+            try:
+                log(f"Анализируем: {item.manufacturer} {item.article}")
+                
+                # Выбираем функцию анализа в зависимости от площадки
+                if task.platform == 'autopiter':
+                    result = check_autopiter_item(
+                        item.supplier_code,
+                        item.manufacturer,
+                        item.article,
+                        task.competitor_brand_filter
+                    )
+                elif task.platform == 'emex':
+                    result = check_emex_item(
+                        item.supplier_code,
+                        item.manufacturer,
+                        item.article,
+                        task.competitor_brand_filter
+                    )
+                elif task.platform == 'armtek':
+                    result = check_armtek_item(
+                        item.supplier_code,
+                        item.manufacturer,
+                        item.article,
+                        task.competitor_brand_filter
+                    )
+                else:
+                    result = {
+                        'is_found': False,
+                        'marketplace_price': None,
+                        'min_competitor_price': None,
+                        'competitor_brand': None,
+                        'error_message': f'Неизвестная площадка: {task.platform}'
+                    }
+                
+                # Обновляем запись в базе
+                item.is_found = result['is_found']
+                item.marketplace_price = Decimal(str(result['marketplace_price'])) if result['marketplace_price'] else None
+                item.min_competitor_price = Decimal(str(result['min_competitor_price'])) if result['min_competitor_price'] else None
+                item.competitor_brand = result['competitor_brand']
+                item.error_message = result['error_message']
+                item.save()
+                
+                # Обновляем счетчики
+                task.processed_items += 1
+                if result['is_found']:
+                    task.found_items += 1
+                else:
+                    task.not_found_items += 1
+                task.save()
+                
+                log(f"Обработано {task.processed_items}/{task.total_items}: {'найдено' if result['is_found'] else 'не найдено'}")
+                
+                return result
+                
+            except Exception as e:
+                log(f"Ошибка анализа позиции {item.manufacturer} {item.article}: {str(e)}")
+                item.error_message = str(e)
+                item.save()
+                
+                task.processed_items += 1
+                task.not_found_items += 1
+                task.save()
+                
+                return {
+                    'is_found': False,
+                    'marketplace_price': None,
+                    'min_competitor_price': None,
+                    'competitor_brand': None,
+                    'error_message': str(e)
+                }
+        
+        # Параллельная обработка позиций
+        max_workers = 3  # Ограничиваем количество потоков для стабильности
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Запускаем анализ всех позиций
+            futures = {executor.submit(analyze_item, item): item for item in db_items}
+            
+            # Обрабатываем результаты по мере завершения
+            for future in concurrent.futures.as_completed(futures, timeout=82800):  # 23 часа таймаут
+                try:
+                    result = future.result(timeout=300)  # 5 минут на позицию
+                except Exception as e:
+                    log(f"Ошибка получения результата: {str(e)}")
+        
+        # Создаем файл результата
+        log("Создаем файл результата...")
+        
+        # Подготавливаем данные для Excel
+        result_data = []
+        for item in db_items:
+            result_data.append({
+                'manufacturer': item.manufacturer,
+                'article': item.article,
+                'nomenclature': item.nomenclature,
+                'is_found': item.is_found,
+                'platform': task.get_platform_display(),
+                'marketplace_price': float(item.marketplace_price) if item.marketplace_price else None,
+                'min_competitor_price': float(item.min_competitor_price) if item.min_competitor_price else None,
+                'competitor_brand': item.competitor_brand
+            })
+        
+        # Создаем файл результата
+        result_filename = f"price_list_results_{task_id}_{int(time.time())}.xlsx"
+        result_path = os.path.join('media', 'results', result_filename)
+        
+        if create_result_excel(result_data, result_path):
+            task.result_file = result_path
+            log(f"Файл результата создан: {result_filename}")
+        else:
+            log("Ошибка создания файла результата")
+        
+        # Завершаем задачу
+        task.status = 'completed'
+        task.completed_at = timezone.now()
+        task.save()
+        
+        log(f"Анализ завершен. Обработано: {task.processed_items}, Найдено: {task.found_items}, Не найдено: {task.not_found_items}")
+        
+        return {
+            'status': 'completed',
+            'task_id': task_id,
+            'processed_items': task.processed_items,
+            'found_items': task.found_items,
+            'not_found_items': task.not_found_items,
+            'result_file': task.result_file.name if task.result_file else None
+        }
+        
+    except Exception as e:
+        log(f"Критическая ошибка: {str(e)}")
+        task.status = 'failed'
+        task.error_message = str(e)
+        task.save()
+        
+        return {
+            'status': 'failed',
+            'task_id': task_id,
+            'error': str(e)
+        }
