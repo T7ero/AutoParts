@@ -7,7 +7,7 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0003_add_sources_field'),
+        ('core', '0002_auto_add_log_and_result_files'),
     ]
 
     operations = [
