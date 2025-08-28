@@ -1,13 +1,15 @@
 # Generated manually for price list analysis module
 
 from django.db import migrations, models
+from django.conf import settings
 import django.db.models.deletion
 
 
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0002_auto_add_log_and_result_files'),
+        ('core', '0005_parsingtask_sources'),
+        migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
@@ -29,7 +31,7 @@ class Migration(migrations.Migration):
                 ('error_message', models.TextField(blank=True, verbose_name='Сообщение об ошибке')),
                 ('competitor_brand_filter', models.CharField(blank=True, max_length=100, verbose_name='Фильтр бренда конкурента')),
                 ('include_price_analysis', models.BooleanField(default=True, verbose_name='Включить анализ цен')),
-                ('user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='core.user', verbose_name='Пользователь')),
+                ('user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to=settings.AUTH_USER_MODEL, verbose_name='Пользователь')),
             ],
             options={
                 'verbose_name': 'Задача анализа прайс-листа',
