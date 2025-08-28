@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { apiFetch } from '../utils/api';
 
 const PriceListAnalysis = () => {
     const { token } = useAuth();
@@ -15,7 +16,7 @@ const PriceListAnalysis = () => {
     const [currentPage, setCurrentPage] = useState(1);
     const [totalPages, setTotalPages] = useState(1);
 
-    const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
+    const API_BASE = process.env.REACT_APP_API_URL || '/api';
 
     useEffect(() => {
         loadTasks();
@@ -24,12 +25,11 @@ const PriceListAnalysis = () => {
     const loadTasks = async () => {
         try {
             setLoading(true);
-            const response = await fetch(`${API_BASE}/price-list-tasks/`, {
+            const response = await apiFetch(`${API_BASE}/price-list-tasks/`, {
                 headers: {
-                    'Authorization': `Token ${token}`,
                     'Content-Type': 'application/json'
                 }
-            });
+            }, token);
             
             if (response.ok) {
                 const data = await response.json();
@@ -63,13 +63,10 @@ const PriceListAnalysis = () => {
             formData.append('competitor_brand_filter', competitorBrandFilter);
             formData.append('include_price_analysis', includePriceAnalysis);
 
-            const response = await fetch(`${API_BASE}/price-list-tasks/create/`, {
+            const response = await apiFetch(`${API_BASE}/price-list-tasks/create/`, {
                 method: 'POST',
-                headers: {
-                    'Authorization': `Token ${token}`
-                },
                 body: formData
-            });
+            }, token);
 
             if (response.ok) {
                 const data = await response.json();
@@ -91,12 +88,11 @@ const PriceListAnalysis = () => {
 
     const loadTaskDetails = async (taskId) => {
         try {
-            const response = await fetch(`${API_BASE}/price-list-tasks/${taskId}/`, {
+            const response = await apiFetch(`${API_BASE}/price-list-tasks/${taskId}/`, {
                 headers: {
-                    'Authorization': `Token ${token}`,
                     'Content-Type': 'application/json'
                 }
-            });
+            }, token);
             
             if (response.ok) {
                 const data = await response.json();
@@ -110,12 +106,11 @@ const PriceListAnalysis = () => {
 
     const loadTaskItems = async (taskId, page = 1) => {
         try {
-            const response = await fetch(`${API_BASE}/price-list-tasks/${taskId}/items/?page=${page}&page_size=50`, {
+            const response = await apiFetch(`${API_BASE}/price-list-tasks/${taskId}/items/?page=${page}&page_size=50`, {
                 headers: {
-                    'Authorization': `Token ${token}`,
                     'Content-Type': 'application/json'
                 }
-            });
+            }, token);
             
             if (response.ok) {
                 const data = await response.json();
@@ -130,11 +125,7 @@ const PriceListAnalysis = () => {
 
     const downloadResult = async (taskId) => {
         try {
-            const response = await fetch(`${API_BASE}/price-list-tasks/${taskId}/download/`, {
-                headers: {
-                    'Authorization': `Token ${token}`
-                }
-            });
+            const response = await apiFetch(`${API_BASE}/price-list-tasks/${taskId}/download/`, {}, token);
             
             if (response.ok) {
                 const blob = await response.blob();
@@ -159,13 +150,12 @@ const PriceListAnalysis = () => {
         }
 
         try {
-            const response = await fetch(`${API_BASE}/price-list-tasks/${taskId}/delete/`, {
+            const response = await apiFetch(`${API_BASE}/price-list-tasks/${taskId}/delete/`, {
                 method: 'DELETE',
                 headers: {
-                    'Authorization': `Token ${token}`,
                     'Content-Type': 'application/json'
                 }
-            });
+            }, token);
 
             if (response.ok) {
                 alert('Задача удалена');
