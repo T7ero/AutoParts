@@ -154,7 +154,7 @@ const PriceListAnalysis = () => {
     };
 
     const deleteTask = async (taskId) => {
-        if (!confirm('Вы уверены, что хотите удалить эту задачу?')) {
+        if (!window.confirm('Вы уверены, что хотите удалить эту задачу?')) {
             return;
         }
 

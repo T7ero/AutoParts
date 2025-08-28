@@ -146,7 +146,7 @@ function Navbar() {
                 </button>
               </div>
               
-              {isAuthenticated ? (
+              {token ? (
                 <Disclosure.Button
                   as="button"
                   onClick={handleLogout}
