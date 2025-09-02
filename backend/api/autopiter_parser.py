@@ -667,6 +667,20 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			'.item-brand',
 			'.brand__name',
 		]
+
+		# Определяем границу секции "Возможные замены", чтобы исключить бренды из замен
+		replacements_header_y = None
+		try:
+			# Ищем заголовок секции "Возможные замены"
+			repl_headers = driver.find_elements(
+				By.XPATH,
+				"//p[contains(@class,'font__headline6') and contains(normalize-space(.), 'Возможные замены')]"
+			)
+			if repl_headers:
+				replacements_header_y = repl_headers[0].location.get('y')
+				log_debug(f"Armtek Selenium: найдена секция 'Возможные замены' на y={replacements_header_y}")
+		except Exception:
+			pass
 		
 		# Сначала пробуем точные селекторы карточек товаров
 		exact_selectors = [
@@ -681,6 +695,14 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 				for el in elements:
 					text = el.text.strip()
 					if text and len(text) > 1 and len(text) < 50:  # Ограничиваем длину
+						# Если известна граница "Возможные замены", исключаем элементы ниже этой границы
+						try:
+							if replacements_header_y is not None:
+								el_y = el.location.get('y')
+								if el_y is not None and el_y >= replacements_header_y:
+									continue
+						except Exception:
+							pass
 						# Дополнительная фильтрация мусора
 						if not any(garbage in text.lower() for garbage in [
 							'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
@@ -704,6 +726,14 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			for selector in brand_selectors[3:]:  # Пропускаем уже проверенные точные селекторы
 				try:
 					for el in driver.find_elements(By.CSS_SELECTOR, selector):
+						# Исключаем бренды из секции "Возможные замены"
+						try:
+							if replacements_header_y is not None:
+								el_y = el.location.get('y')
+								if el_y is not None and el_y >= replacements_header_y:
+									continue
+						except Exception:
+							pass
 						text = el.text.strip()
 						if text and len(text) > 1:
 							brands.add(text)
