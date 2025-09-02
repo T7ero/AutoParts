@@ -169,20 +169,30 @@ def process_parsing_task(self, task_id):
     channel_layer = get_channel_layer()
     
     def ws_send():
-        async_to_sync(channel_layer.group_send)(
-            f'task_{task.id}',
-            {
-                'type': 'task_update',
-                'data': {
-                    'id': task.id,
-                    'status': task.status,
-                    'progress': task.progress,
-                    'error_message': task.error_message,
-                    'result_files': task.result_files,
-                    'log': (task.log or '')[-2000:],  # последние 2000 символов
+        try:
+            # Проверяем количество активных потоков перед отправкой
+            active_threads = threading.active_count()
+            if active_threads > 50:  # Если слишком много потоков, пропускаем отправку
+                log(f"Пропускаем ws_send: слишком много активных потоков ({active_threads})")
+                return
+                
+            async_to_sync(channel_layer.group_send)(
+                f'task_{task.id}',
+                {
+                    'type': 'task_update',
+                    'data': {
+                        'id': task.id,
+                        'status': task.status,
+                        'progress': task.progress,
+                        'error_message': task.error_message,
+                        'result_files': task.result_files,
+                        'log': (task.log or '')[-2000:],  # последние 2000 символов
+                    }
                 }
-            }
-        )
+            )
+        except Exception as e:
+            # Логируем ошибку но не прерываем выполнение
+            log(f"Ошибка ws_send: {str(e)}")
     
     try:
         # Загружаем прокси при старте задачи
@@ -317,19 +327,14 @@ def process_parsing_task(self, task_id):
                             log(f"Emex: критическая ошибка для артикула {num}: {str(e)}")
                 return local
 
-            max_workers = min(4, max(1, len(numbers)))
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futs = {executor.submit(worker, n): n for n in numbers}
-                for fut in concurrent.futures.as_completed(futs, timeout=max(ARTICLE_TIMEOUT, 20) * len(numbers)):
-                    num = futs[fut]
-                    try:
-                        res = fut.result(timeout=ARTICLE_TIMEOUT)
-                        results['autopiter'].extend(res.get('autopiter', []))
-                        results['emex'].extend(res.get('emex', []))
-                    except concurrent.futures.TimeoutError:
-                        log(f"Таймаут обработки артикула {num}")
-                    except Exception as e:
-                        log(f"Ошибка обработки артикула {num}: {str(e)}")
+            # Последовательная обработка для предотвращения исчерпания потоков
+            for num in numbers:
+                try:
+                    res = worker(num)
+                    results['autopiter'].extend(res.get('autopiter', []))
+                    results['emex'].extend(res.get('emex', []))
+                except Exception as e:
+                    log(f"Ошибка обработки артикула {num}: {str(e)}")
 
             return results
         
@@ -383,7 +388,7 @@ def process_parsing_task(self, task_id):
                 task.progress = progress
                 task.status = 'in_progress'
                 
-                # Сохраняем логи в базе данных для отображения в интерфейсе
+                # Сохраняем логи в базу данных для отображения в интерфейсе
                 current_log = f"[{datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Обрабатываем строку {index + 1}: {len(numbers_to_parse)} артикулов"
                 if task.log:
                     task.log += '\n' + current_log
@@ -487,14 +492,16 @@ def process_parsing_task(self, task_id):
                                         
                                         # Уменьшаем задержку для ускорения
                                         time.sleep(0.1)
-                                        brands = get_brands_by_artikul_armtek(num, proxy)
+                                        # Используем новую функцию для поиска кросс-номеров
+                                        from .autopiter_parser import parse_armtek_cross_numbers
+                                        cross_numbers = parse_armtek_cross_numbers(num, proxy)
                                         
                                         # Сохраняем результат в кэш
-                                        is_empty = len(brands) == 0
-                                        set_cache(num, 'armtek', brands, is_empty)
+                                        is_empty = len(cross_numbers) == 0
+                                        set_cache(num, 'armtek', cross_numbers, is_empty)
                                         
-                                        log(f"armtek: {num} → {brands}")
-                                        return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in brands]
+                                        log(f"armtek: {num} → найдено {len(cross_numbers)} кросс-номеров")
+                                        return [(brand_from_e, part_number_from_f, name_from_b, cross_num, num, 'armtek') for cross_num in cross_numbers]
                                     except Exception as e:
                                         log(f"Error parsing armtek for {num} (attempt {attempt + 1}): {str(e)}")
                                         if attempt < max_retries - 1:
@@ -505,28 +512,26 @@ def process_parsing_task(self, task_id):
                                             set_cache(num, 'armtek', [], True)
                                             return []
                             
-                            # Увеличиваем количество потоков для ускорения
-                            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                                futs = {executor.submit(parse_one, num): num for num in numbers}
-                                for fut in concurrent.futures.as_completed(futs, timeout=240):  # Уменьшаем таймаут
-                                    try:
-                                        for res in fut.result():
-                                            results.append(res)
-                                    except Exception as e:
-                                        log(f"Error processing armtek result: {str(e)}")
+                            # Последовательная обработка для предотвращения исчерпания потоков
+                            for num in numbers:
+                                try:
+                                    for res in parse_one(num):
+                                        results.append(res)
+                                except Exception as e:
+                                    log(f"Error processing armtek result for {num}: {str(e)}")
                             
                             log(f"Armtek: завершена обработка для строки {index + 1}, найдено {len(results)} результатов")
                             return results
                         
                         if 'armtek' in selected_sources:
                             armtek_results = parse_armtek_parallel([current_number], brand_from_e, part_number_from_f, name_from_b)
-                            for (b1, pn1, n1, b2, pn2, src) in armtek_results:
+                            for (b1, pn1, n1, cross_num, original_num, src) in armtek_results:
                                 results_armtek.append({
                                     'Бренд № 1': clean_excel_string(brand_from_e),
                                     'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
                                     'Наименование': clean_excel_string(name_from_b),
-                                    'Бренд № 2': clean_excel_string(b2),
-                                    'Артикул по Бренду № 2': clean_excel_string(pn2),
+                                    'Кросс-номер': clean_excel_string(cross_num),  # Найденный кросс-номер
+                                    'Исходный артикул': clean_excel_string(original_num),  # Исходный артикул
                                     'Источник': src
                                 })
                             # промежуточный лог

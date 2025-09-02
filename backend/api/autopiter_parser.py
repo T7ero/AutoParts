@@ -1434,3 +1434,120 @@ def _parse_with_driver(artikul: str, driver):
 # Добавляем методы к функции get_brands_by_artikul_armtek
 get_brands_by_artikul_armtek._create_chrome_driver_minimal = _create_chrome_driver_minimal
 get_brands_by_artikul_armtek._parse_with_driver = _parse_with_driver
+
+def parse_armtek_cross_numbers(artikul: str, proxy: Optional[str] = None, logger=None) -> List[str]:
+	"""Selenium-парсинг Armtek: ищем реальные кросс-номера вместо выдуманных артикулов"""
+	cross_numbers: Set[str] = set()
+	temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_{uuid.uuid4().hex[:8]}_")
+	try:
+		log_debug(f"Armtek Selenium: поиск кросс-номеров для артикула {artikul}")
+		# Если прокси содержит авторизацию, игнорируем его для Selenium (Chrome не поддерживает в CLI)
+		effective_proxy = None if (proxy and '@' in proxy) else proxy
+		driver = _create_chrome_driver(temp_dir=temp_dir, with_user_data=True, proxy=effective_proxy)
+		if driver is None:
+			log_debug("Armtek Selenium: не удалось создать драйвер")
+			return []
+		url = f"https://armtek.ru/search?text={artikul}"
+		driver.get(url)
+		
+		# Явные ожидания появления результатов
+		wait = WebDriverWait(driver, SELENIUM_TIMEOUT)
+		selectors_to_wait = [
+			(By.CSS_SELECTOR, '.results-list__items'),
+			(By.CSS_SELECTOR, '.font__body2.brand--selecting'),
+			(By.CSS_SELECTOR, '.font__caption1.brand--selectable'),
+		]
+		for by, sel in selectors_to_wait:
+			try:
+				wait.until(EC.presence_of_element_located((by, sel)))
+				break
+			except Exception:
+				continue
+		
+		# Прокручиваем страницу для подгрузки
+		try:
+			driver.execute_script('window.scrollTo(0, document.body.scrollHeight/2);')
+			time.sleep(0.2)
+			driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+			time.sleep(0.2)
+		except Exception:
+			pass
+		
+		# Ранний выход: проверяем блок "ничего не найдено"
+		try:
+			nf = driver.find_elements(By.CSS_SELECTOR, 'div.not-found__title p.font__headline5, p.font__headline5')
+			if any('ничего не найдено' in (el.text or '').lower() for el in nf):
+				msg = f"Armtek: по запросу {artikul} ничего не найдено"
+				log_debug(msg)
+				if logger:
+					try:
+						logger(msg)
+					except Exception:
+						pass
+				return []
+		except Exception:
+			pass
+
+		# Ищем реальные кросс-номера в карточках товаров
+		try:
+			# Ищем артикулы в карточках товаров
+			article_selectors = [
+				'.product-card__article',
+				'.article-number',
+				'.product-article',
+				'.item-article',
+				'.catalog-item__article',
+				'[data-article]',
+				'.font__caption1.article--selectable',
+			]
+			
+			for selector in article_selectors:
+				try:
+					elements = driver.find_elements(By.CSS_SELECTOR, selector)
+					for el in elements:
+						text = el.text.strip()
+						if text and len(text) > 3 and len(text) < 30:
+							# Проверяем, что это похоже на артикул
+							if re.match(r'^[A-Z0-9\-\.]+$', text):
+								cross_numbers.add(text)
+								log_debug(f"Armtek: найден кросс-номер '{text}' по селектору '{selector}'")
+				except Exception as e:
+					log_debug(f"Armtek Selenium: ошибка поиска по селектору {selector}: {str(e)}")
+			
+			# Если не нашли артикулы, ищем в тексте карточек
+			if not cross_numbers:
+				try:
+					product_cards = driver.find_elements(By.CSS_SELECTOR, '.product-card, .catalog-item, .item-card')
+					for card in product_cards:
+						card_text = card.text
+						# Ищем артикулы в тексте карточки
+						articles = re.findall(r'\b[A-Z]{2,}[0-9\-\.]{2,}\b', card_text)
+						for article in articles:
+							if len(article) > 3 and len(article) < 30:
+								cross_numbers.add(article)
+								log_debug(f"Armtek: найден кросс-номер '{article}' в тексте карточки")
+				except Exception as e:
+					log_debug(f"Armtek Selenium: ошибка поиска в карточках: {str(e)}")
+			
+		except Exception as e:
+			log_debug(f"Armtek Selenium: ошибка поиска кросс-номеров: {str(e)}")
+		
+		# Фильтруем результаты - убираем исходный артикул и слишком похожие
+		filtered_cross_numbers = set()
+		for cross in cross_numbers:
+			if cross != artikul and not cross.startswith(artikul) and not artikul.startswith(cross):
+				filtered_cross_numbers.add(cross)
+		
+		if filtered_cross_numbers:
+			log_debug(f"Armtek: найдено {len(filtered_cross_numbers)} уникальных кросс-номеров")
+			return sorted(list(filtered_cross_numbers))
+		else:
+			log_debug("Armtek: кросс-номера не найдены")
+			return []
+		
+	finally:
+		try:
+			driver.quit()
+		except Exception:
+			pass
+		shutil.rmtree(temp_dir, ignore_errors=True)
