@@ -478,7 +478,10 @@ def process_parsing_task(self, task_id):
                                 cached_result = get_from_cache(num, 'armtek')
                                 if cached_result is not None:
                                     log(f"Armtek: результат из кэша для {num} → {cached_result}")
-                                    return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in cached_result]
+                                    if cached_result:
+                                        return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in cached_result]
+                                    else:
+                                        return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
                                 
                                 max_retries = 1
                                 for attempt in range(max_retries):
@@ -492,16 +495,20 @@ def process_parsing_task(self, task_id):
                                         
                                         # Уменьшаем задержку для ускорения
                                         time.sleep(0.1)
-                                        # Используем новую функцию для поиска кросс-номеров
-                                        from .autopiter_parser import parse_armtek_cross_numbers
-                                        cross_numbers = parse_armtek_cross_numbers(num, proxy)
+                                        # Используем функцию для поиска брендов
+                                        from .autopiter_parser import get_brands_by_artikul_armtek
+                                        brands = get_brands_by_artikul_armtek(num, proxy)
                                         
                                         # Сохраняем результат в кэш
-                                        is_empty = len(cross_numbers) == 0
-                                        set_cache(num, 'armtek', cross_numbers, is_empty)
+                                        is_empty = len(brands) == 0
+                                        set_cache(num, 'armtek', brands, is_empty)
                                         
-                                        log(f"armtek: {num} → найдено {len(cross_numbers)} кросс-номеров")
-                                        return [(brand_from_e, part_number_from_f, name_from_b, cross_num, num, 'armtek') for cross_num in cross_numbers]
+                                        if brands:
+                                            log(f"armtek: {num} → найдено {len(brands)} брендов")
+                                            return [(brand_from_e, part_number_from_f, name_from_b, brand, num, 'armtek') for brand in brands]
+                                        else:
+                                            log(f"armtek: {num} → бренды не найдены")
+                                            return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
                                     except Exception as e:
                                         log(f"Error parsing armtek for {num} (attempt {attempt + 1}): {str(e)}")
                                         if attempt < max_retries - 1:
@@ -525,13 +532,13 @@ def process_parsing_task(self, task_id):
                         
                         if 'armtek' in selected_sources:
                             armtek_results = parse_armtek_parallel([current_number], brand_from_e, part_number_from_f, name_from_b)
-                            for (b1, pn1, n1, cross_num, original_num, src) in armtek_results:
+                            for (b1, pn1, n1, brand, original_num, src) in armtek_results:
                                 results_armtek.append({
                                     'Бренд № 1': clean_excel_string(brand_from_e),
                                     'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
                                     'Наименование': clean_excel_string(name_from_b),
-                                    'Кросс-номер': clean_excel_string(cross_num),  # Найденный кросс-номер
-                                    'Исходный артикул': clean_excel_string(original_num),  # Исходный артикул
+                                    'Бренд № 2': clean_excel_string(brand),  # Найденный бренд
+                                    'Артикул по Бренду № 2': clean_excel_string(original_num),  # Исходный артикул
                                     'Источник': src
                                 })
                             # промежуточный лог
