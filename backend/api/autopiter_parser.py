@@ -17,6 +17,7 @@ import shutil
 import tempfile
 import uuid
 import random
+import threading
 from typing import List, Dict, Optional, Tuple, Set
 from selenium.common.exceptions import TimeoutException
 import gc
@@ -42,6 +43,11 @@ TIMEOUT = 8  # Уменьшаем для ускорения
 SELENIUM_TIMEOUT = 8  # Уменьшаем для ускорения
 PAGE_LOAD_TIMEOUT = 8  # Уменьшаем для ускорения
 
+# Настройки для пула драйверов
+DRIVER_POOL_SIZE = 3
+DRIVER_CREATION_RETRIES = 3
+DRIVER_TIMEOUT_RETRIES = 2
+
 # Кеширование
 REQUEST_CACHE = {}
 CACHE_EXPIRATION = 600
@@ -53,8 +59,83 @@ PROXY_INDEX = 0
 # Набор проблемных прокси, которые следует временно исключать
 BAD_PROXIES = set()
 
+# Пул драйверов для Armtek
+DRIVER_POOL = []
+DRIVER_POOL_LOCK = threading.Lock()
+DRIVER_LAST_USED = {}
+
 def log_debug(message):
     print(f"[DEBUG] {message}")
+
+def get_driver_from_pool() -> Optional[webdriver.Chrome]:
+    """Получает драйвер из пула или создает новый"""
+    global DRIVER_POOL, DRIVER_POOL_LOCK
+    
+    with DRIVER_POOL_LOCK:
+        if DRIVER_POOL:
+            driver = DRIVER_POOL.pop()
+            DRIVER_LAST_USED[id(driver)] = time.time()
+            return driver
+    
+    # Создаем новый драйвер
+    temp_dir = tempfile.mkdtemp(prefix=f"chrome_pool_{uuid.uuid4().hex[:8]}_")
+    for attempt in range(DRIVER_CREATION_RETRIES):
+        try:
+            driver = _create_chrome_driver_robust(temp_dir)
+            if driver:
+                DRIVER_LAST_USED[id(driver)] = time.time()
+                return driver
+            time.sleep(1)
+        except Exception as e:
+            log_debug(f"Попытка {attempt + 1} создания драйвера: {str(e)}")
+            time.sleep(2)
+    
+    return None
+
+def return_driver_to_pool(driver: webdriver.Chrome):
+    """Возвращает драйвер в пул или закрывает его"""
+    global DRIVER_POOL, DRIVER_POOL_LOCK
+    
+    if driver is None:
+        return
+    
+    try:
+        # Проверяем, не слишком ли старый драйвер
+        driver_id = id(driver)
+        if driver_id in DRIVER_LAST_USED:
+            age = time.time() - DRIVER_LAST_USED[driver_id]
+            if age > 300:  # 5 минут
+                driver.quit()
+                if driver_id in DRIVER_LAST_USED:
+                    del DRIVER_LAST_USED[driver_id]
+                return
+        
+        with DRIVER_POOL_LOCK:
+            if len(DRIVER_POOL) < DRIVER_POOL_SIZE:
+                DRIVER_POOL.append(driver)
+            else:
+                driver.quit()
+                if driver_id in DRIVER_LAST_USED:
+                    del DRIVER_LAST_USED[driver_id]
+    except Exception as e:
+        log_debug(f"Ошибка возврата драйвера в пул: {str(e)}")
+        try:
+            driver.quit()
+        except:
+            pass
+
+def cleanup_driver_pool():
+    """Очищает пул драйверов"""
+    global DRIVER_POOL, DRIVER_POOL_LOCK, DRIVER_LAST_USED
+    
+    with DRIVER_POOL_LOCK:
+        for driver in DRIVER_POOL:
+            try:
+                driver.quit()
+            except:
+                pass
+        DRIVER_POOL.clear()
+        DRIVER_LAST_USED.clear()
 
 def load_proxies_from_file(file_path: str = "proxies.txt") -> List[str]:
     """Загружает список прокси из файла"""
@@ -602,37 +683,65 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 	возвращаем пустой список и логируем событие.
 	"""
 	brands: Set[str] = set()
-	temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_{uuid.uuid4().hex[:8]}_")
+	driver = None
+	
 	try:
 		log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
+		
+		# Получаем драйвер из пула или создаем новый
+		driver = get_driver_from_pool()
+		if driver is None:
+			log_debug("Armtek Selenium: не удалось получить драйвер из пула")
+			return []
+		
 		# Если прокси содержит авторизацию, игнорируем его для Selenium (Chrome не поддерживает в CLI)
 		effective_proxy = None if (proxy and '@' in proxy) else proxy
-		driver = _create_chrome_driver(temp_dir=temp_dir, with_user_data=True, proxy=effective_proxy)
-		if driver is None:
-			log_debug("Armtek Selenium: не удалось создать драйвер")
-			return []
-		url = f"https://armtek.ru/search?text={artikul}"
-		driver.get(url)
 		
-		# Явные ожидания появления результатов
+		url = f"https://armtek.ru/search?text={artikul}"
+		
+		# Retry логика для загрузки страницы
+		for page_attempt in range(DRIVER_TIMEOUT_RETRIES):
+			try:
+				driver.get(url)
+				break
+			except Exception as e:
+				log_debug(f"Попытка {page_attempt + 1} загрузки страницы: {str(e)}")
+				if page_attempt < DRIVER_TIMEOUT_RETRIES - 1:
+					time.sleep(2)
+				else:
+					log_debug("Не удалось загрузить страницу")
+					return []
+		
+		# Явные ожидания появления результатов с улучшенной логикой
 		wait = WebDriverWait(driver, SELENIUM_TIMEOUT)
 		selectors_to_wait = [
 			(By.CSS_SELECTOR, '.results-list__items'),
 			(By.CSS_SELECTOR, '.font__body2.brand--selecting'),
+			(By.CSS_SELECTOR, '.font__caption1.brand--selectable'),
 		]
+		
+		page_loaded = False
 		for by, sel in selectors_to_wait:
 			try:
 				wait.until(EC.presence_of_element_located((by, sel)))
+				page_loaded = True
 				break
 			except Exception:
 				continue
 		
-		# Прокручиваем страницу для подгрузки
+		if not page_loaded:
+			log_debug("Armtek Selenium: страница не загрузилась или нет результатов")
+			return []
+		
+		# Оптимизированная прокрутка страницы
 		try:
-			driver.execute_script('window.scrollTo(0, document.body.scrollHeight/2);')
-			time.sleep(0.2)
+			# Прокручиваем по частям для ускорения
+			driver.execute_script('window.scrollTo(0, document.body.scrollHeight/3);')
+			time.sleep(0.1)
+			driver.execute_script('window.scrollTo(0, document.body.scrollHeight*2/3);')
+			time.sleep(0.1)
 			driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
-			time.sleep(0.2)
+			time.sleep(0.1)
 		except Exception:
 			pass
 		
@@ -750,67 +859,99 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		
 		return list(brands)
 	finally:
-		try:
-			driver.quit()
-		except Exception:
-			pass
-		shutil.rmtree(temp_dir, ignore_errors=True)
+		# Возвращаем драйвер в пул вместо закрытия
+		if driver:
+			return_driver_to_pool(driver)
+
+def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> Optional[webdriver.Chrome]:
+    """Создает Chrome драйвер с улучшенной обработкой ошибок и retry логикой"""
+    for attempt in range(DRIVER_CREATION_RETRIES):
+        try:
+            chrome_options = Options()
+            chrome_options.add_argument('--headless')
+            chrome_options.add_argument('--no-sandbox')
+            chrome_options.add_argument('--disable-dev-shm-usage')
+            chrome_options.add_argument('--disable-gpu')
+            chrome_options.add_argument('--window-size=1920,1080')
+            chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            chrome_options.add_experimental_option('useAutomationExtension', False)
+            
+            # Добавляем user-data-dir для стабильности сессий
+            chrome_options.add_argument(f'--user-data-dir={temp_dir}')
+            
+            # Настройка прокси
+            if proxy:
+                if '@' in proxy:
+                    # Формат: login:password@ip:port
+                    auth_part, proxy_part = proxy.split('@', 1)
+                    if ':' in auth_part:
+                        username, password = auth_part.split(':', 1)
+                        # Для Chrome с аутентификацией прокси используем расширение
+                        chrome_options.add_argument(f'--proxy-server={proxy_part}')
+                        # Добавляем расширение для аутентификации прокси
+                        chrome_options.add_argument('--load-extension=/tmp/proxy-auth-extension')
+                    else:
+                        chrome_options.add_argument(f'--proxy-server={proxy}')
+                else:
+                    # Формат: ip:port
+                    chrome_options.add_argument(f'--proxy-server={proxy}')
+                
+                log_debug(f"Armtek Selenium: добавлен прокси {proxy}")
+            
+            # Дополнительные опции для стабильности и производительности
+            chrome_options.add_argument('--disable-extensions')
+            chrome_options.add_argument('--disable-plugins')
+            chrome_options.add_argument('--disable-images')
+            chrome_options.add_argument('--disable-javascript')
+            chrome_options.add_argument('--disable-web-security')
+            chrome_options.add_argument('--allow-running-insecure-content')
+            chrome_options.add_argument('--disable-background-timer-throttling')
+            chrome_options.add_argument('--disable-backgrounding-occluded-windows')
+            chrome_options.add_argument('--disable-renderer-backgrounding')
+            chrome_options.add_argument('--disable-features=TranslateUI')
+            chrome_options.add_argument('--disable-ipc-flooding-protection')
+            
+            # Пытаемся найти ChromeDriver в разных местах
+            service = None
+            chrome_paths = [
+                '/usr/bin/chromedriver',
+                '/usr/local/bin/chromedriver',
+                'chromedriver',
+                './chromedriver'
+            ]
+            
+            for chrome_path in chrome_paths:
+                try:
+                    service = Service(executable_path=chrome_path)
+                    break
+                except Exception:
+                    continue
+            
+            if service is None:
+                service = Service()  # Автоопределение
+            
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            
+            # Устанавливаем таймауты
+            driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+            driver.implicitly_wait(3)  # Уменьшаем для ускорения
+            
+            return driver
+            
+        except Exception as e:
+            log_debug(f"Попытка {attempt + 1} создания Chrome драйвера: {str(e)}")
+            if attempt < DRIVER_CREATION_RETRIES - 1:
+                time.sleep(2 ** attempt)  # Экспоненциальная задержка
+            else:
+                log_debug(f"Не удалось создать Chrome драйвер после {DRIVER_CREATION_RETRIES} попыток")
+                return None
+    
+    return None
 
 def _create_chrome_driver(temp_dir: str, with_user_data: bool = True, proxy: Optional[str] = None):
-    """Создает Chrome драйвер с настройками и прокси"""
-    try:
-        chrome_options = Options()
-        chrome_options.add_argument('--headless')
-        chrome_options.add_argument('--no-sandbox')
-        chrome_options.add_argument('--disable-dev-shm-usage')
-        chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--window-size=1920,1080')
-        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        chrome_options.add_experimental_option('useAutomationExtension', False)
-        
-        if with_user_data:
-            chrome_options.add_argument(f'--user-data-dir={temp_dir}')
-        
-        # Настройка прокси
-        if proxy:
-            if '@' in proxy:
-                # Формат: login:password@ip:port
-                auth_part, proxy_part = proxy.split('@', 1)
-                if ':' in auth_part:
-                    username, password = auth_part.split(':', 1)
-                    # Для Chrome с аутентификацией прокси используем расширение
-                    chrome_options.add_argument(f'--proxy-server={proxy_part}')
-                    # Добавляем расширение для аутентификации прокси
-                    chrome_options.add_argument('--load-extension=/tmp/proxy-auth-extension')
-                else:
-                    chrome_options.add_argument(f'--proxy-server={proxy}')
-            else:
-                # Формат: ip:port
-                chrome_options.add_argument(f'--proxy-server={proxy}')
-            
-            log_debug(f"Armtek Selenium: добавлен прокси {proxy}")
-        
-        # Дополнительные опции для стабильности
-        chrome_options.add_argument('--disable-extensions')
-        chrome_options.add_argument('--disable-plugins')
-        chrome_options.add_argument('--disable-images')
-        chrome_options.add_argument('--disable-javascript')
-        chrome_options.add_argument('--disable-web-security')
-        chrome_options.add_argument('--allow-running-insecure-content')
-        
-        service = Service()
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        
-        # Устанавливаем таймауты
-        driver.set_page_load_timeout(15)
-        driver.implicitly_wait(5)
-        
-        return driver
-        
-    except Exception as e:
-        log_debug(f"Ошибка создания Chrome драйвера: {str(e)}")
-        return None
+    """Создает Chrome драйвер с настройками и прокси (для обратной совместимости)"""
+    return _create_chrome_driver_robust(temp_dir, proxy)
 
 def _create_chrome_driver_minimal(temp_dir: str, proxy: Optional[str] = None):
     """Создает Chrome драйвер с минимальными настройками и прокси"""

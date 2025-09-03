@@ -7,6 +7,7 @@ from .autopiter_parser import (
     get_brands_by_artikul_armtek, 
     get_brands_by_artikul_emex, 
     cleanup_chrome_processes,
+    cleanup_driver_pool,
     get_next_proxy,
     get_proxy_string,
     load_proxies_from_file,
@@ -589,7 +590,8 @@ def process_parsing_task(self, task_id):
                     if (index + 1) % 5 == 0:
                         try:
                             cleanup_chrome_processes()
-                            log("Performed periodic Chrome cleanup")
+                            cleanup_driver_pool()
+                            log("Performed periodic Chrome and driver pool cleanup")
                         except Exception as e:
                             log(f"Error during Chrome cleanup: {str(e)}")
 
@@ -701,8 +703,9 @@ def process_parsing_task(self, task_id):
         log(f"Task завершен. Result files: {task.result_files}")
         ws_send()
         
-        # Очистка Chrome процессов
+        # Очистка Chrome процессов и пула драйверов
         cleanup_chrome_processes()
+        cleanup_driver_pool()
         
         # Финальная очистка и подтверждение завершения
         log(f"Task {task_id} успешно завершена. Обработано строк: {task._processed_rows}")
@@ -722,4 +725,5 @@ def process_parsing_task(self, task_id):
         task.save()
         ws_send()
         cleanup_chrome_processes()
+        cleanup_driver_pool()
         raise 
