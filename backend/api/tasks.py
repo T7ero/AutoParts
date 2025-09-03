@@ -94,7 +94,7 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
         'палец sitrak', 'переключатели подрулевые в сборе', 'мтз', 'сад и огород',
         'fmsi', 'ac delco', 'achim', 'achr', 'b-tech', 'beru', 'champion', 'chery', 'dragonzap',
         'ford', 'hot-parts', 'lucas', 'mobis', 'ngk', 'nissan', 'robiton', 'tesla', 'trw', 'vag',
-        'valeo', 'auto-comfort', 'autotech', 'createk', 'howo', 'kamaz', 'leo trade', 'prc',
+        'valeo', 'autotech', 'createk', 'howo', 'kamaz', 'leo trade', 'prc',
         'shaanxi', 'shacman', 'sitrak', 'weichai', 'zg.link', 'ast', 'foton', 'htp', 'jmc',
         'shaft-gear', 'wayteko', 'zevs', 'jac', 'faw', 'gspartshinotoyota', 'gspartshino',
         'toyota / lexus', 'toyota/lexus', 'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus',
@@ -124,12 +124,36 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
     }
     
     filtered = []
+    # Словарь для объединения составных брендов
+    compound_brands = {
+        'auto': 'AUTO-COMFORT',
+        'comfort': 'AUTO-COMFORT',
+        'hot': 'HOT-PARTS',
+        'parts': 'HOT-PARTS',
+        'g': 'G-BRAKE',
+        'brake': 'G-BRAKE',
+        'diesel': 'ДИЗЕЛЬ',
+        'дизель': 'ДИЗЕЛЬ',
+        'zevs': 'ZEVS',
+        'z': 'ZEVS'
+    }
+    
+    # Сначала объединяем составные бренды
+    processed_brands = set()
     for brand in brands:
         brand_clean = brand.strip()
         if not brand_clean:
             continue
             
         brand_lower = brand_clean.lower()
+        
+        # Проверяем, является ли это частью составного бренда
+        if brand_lower in compound_brands:
+            compound_brand = compound_brands[brand_lower]
+            if compound_brand not in processed_brands:
+                processed_brands.add(compound_brand)
+                filtered.append(compound_brand)
+            continue
         
         # Проверяем, что бренд не является мусором
         if (brand_clean and 
@@ -354,27 +378,22 @@ def process_parsing_task(self, task_id):
                 # Правильное чтение данных из Excel согласно требованиям
                 # A1: "Бренд № 1" - данные из колонки E входного файла (индекс 4)
                 brand_from_e = str(row.iloc[4]).strip() if len(row) > 4 else ''
-                # B1: "Артикул по Бренду № 1" - данные из колонки F входного файла (индекс 5)
+                # B1: "Артикул по Бренду № 1" - данные из колонки F входного файла (индекс 5) - для записи в итоговый файл
                 part_number_from_f = str(row.iloc[5]).strip() if len(row) > 5 else ''
                 # C1: "Наименование" - данные из колонки B входного файла (индекс 1)
                 name_from_b = str(row.iloc[1]).strip() if len(row) > 1 else ''
-                # E1: "Артикул по Бренду № 2" - данные из колонки G входного файла (индекс 6)
+                # E1: "Артикул по Бренду № 2" - данные из колонки G входного файла (индекс 6) - для парсинга
                 cross_number_from_g = str(row.iloc[6]).strip() if len(row) > 6 else ''
-                # Основной артикул для парсинга - из колонки F (индекс 5)
-                part_number = part_number_from_f
                 
-                # Обрабатываем строку даже если основной артикул пустой, но есть кросс-номера
-                if not part_number and not cross_number_from_g:
-                    log(f"Пропускаем строку {index + 1}: нет артикула и кросс-номеров")
+                # Для парсинга используем ТОЛЬКО кросс-номера из столбца G (индекс 6)
+                # Артикул из столбца F (индекс 5) используется только для записи в итоговый файл
+                if not cross_number_from_g:
+                    log(f"Пропускаем строку {index + 1}: нет кросс-номеров для парсинга")
                     task._processed_rows += 1  # Увеличиваем счетчик
                     continue
                 
-                # Создаем список всех артикулов для парсинга
-                numbers_to_parse = []
-                if part_number:
-                    numbers_to_parse.append(part_number)
-                if cross_number_from_g:
-                    numbers_to_parse.extend([n.strip() for n in cross_number_from_g.split(';') if n.strip()])
+                # Создаем список кросс-номеров для парсинга (только из столбца G)
+                numbers_to_parse = [n.strip() for n in cross_number_from_g.split(';') if n.strip()]
                 
                 # Если нет артикулов для парсинга, пропускаем
                 if not numbers_to_parse:
@@ -504,8 +523,10 @@ def process_parsing_task(self, task_id):
                                         set_cache(num, 'armtek', brands, is_empty)
                                         
                                         if brands:
-                                            log(f"armtek: {num} → найдено {len(brands)} брендов")
-                                            return [(brand_from_e, part_number_from_f, name_from_b, brand, num, 'armtek') for brand in brands]
+                                            # Фильтруем бренды для Armtek так же, как для других источников
+                                            filtered_brands = filter_garbage_brands(brands)
+                                            log(f"armtek: {num} → найдено {len(filtered_brands)} брендов")
+                                            return [(brand_from_e, part_number_from_f, name_from_b, brand, num, 'armtek') for brand in filtered_brands]
                                         else:
                                             log(f"armtek: {num} → бренды не найдены")
                                             return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
