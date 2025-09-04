@@ -66,6 +66,56 @@ def clean_excel_string(s):
         cleaned = cleaned[:32000]
     return cleaned
 
+def safe_cell_to_str(value: object) -> str:
+    """Безопасно конвертирует ячейку Excel в строку: пусто, если NaN/None."""
+    try:
+        if value is None:
+            return ''
+        # pandas NaN/NaT
+        if isinstance(value, float) and pd.isna(value):
+            return ''
+        if pd.isna(value):
+            return ''
+    except Exception:
+        pass
+    return str(value).strip()
+
+def normalize_article_for_compare(article: str) -> str:
+    """Нормализует артикул для сравнения: верхний регистр, убираем пробелы/точки/тире/подчеркивания."""
+    if not article:
+        return ''
+    a = article.upper().strip()
+    # Убираем все не буквенно-цифровые символы
+    a = re.sub(r"[^0-9A-ZА-ЯЁ]+", "", a)
+    return a
+
+def normalize_brand_for_compare(brand: str) -> str:
+    if not brand:
+        return ''
+    b = brand.upper().strip()
+    b = re.sub(r"\s+", " ", b)
+    b = b.replace('-', ' ').replace('_', ' ')
+    b = re.sub(r"\s+", " ", b)
+    return b
+
+def dedupe_rows(rows: list) -> list:
+    """Удаляет дубли из списка словарей по нормализованным полям."""
+    seen = set()
+    unique = []
+    for d in rows:
+        key = (
+            normalize_brand_for_compare(d.get('Бренд № 1', '')),
+            normalize_article_for_compare(d.get('Артикул по Бренду № 1', '')),
+            normalize_brand_for_compare(d.get('Бренд № 2', '')),
+            normalize_article_for_compare(d.get('Артикул по Бренду № 2', '')),
+            (d.get('Источник') or '').lower().strip(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(d)
+    return unique
+
 def filter_garbage_brands(brands: List[str]) -> List[str]:
     """Фильтрует мусорные бренды из результатов Autopiter и Emex"""
     garbage_words = {
@@ -376,25 +426,26 @@ def process_parsing_task(self, task_id):
                         log(f"Task timeout reached ({elapsed_time/3600:.1f} hours), forcing stop...")
                         break
                 
-                # Правильное чтение данных из Excel согласно требованиям
+                # Правильное чтение данных из Excel с защитой от NaN
                 # A1: "Бренд № 1" - данные из колонки E входного файла (индекс 4)
-                brand_from_e = str(row.iloc[4]).strip() if len(row) > 4 else ''
+                brand_from_e = safe_cell_to_str(row.iloc[4]) if len(row) > 4 else ''
                 # B1: "Артикул по Бренду № 1" - данные из колонки F входного файла (индекс 5) - для записи в итоговый файл
-                part_number_from_f = str(row.iloc[5]).strip() if len(row) > 5 else ''
+                part_number_from_f = safe_cell_to_str(row.iloc[5]) if len(row) > 5 else ''
                 # C1: "Наименование" - данные из колонки B входного файла (индекс 1)
-                name_from_b = str(row.iloc[1]).strip() if len(row) > 1 else ''
+                name_from_b = safe_cell_to_str(row.iloc[1]) if len(row) > 1 else ''
                 # E1: "Артикул по Бренду № 2" - данные из колонки G входного файла (индекс 6) - для парсинга
-                cross_number_from_g = str(row.iloc[6]).strip() if len(row) > 6 else ''
+                cross_number_from_g = safe_cell_to_str(row.iloc[6]) if len(row) > 6 else ''
                 
-                # Для парсинга используем ТОЛЬКО кросс-номера из столбца G (индекс 6)
-                # Артикул из столбца F (индекс 5) используется только для записи в итоговый файл
-                if not cross_number_from_g:
-                    log(f"Пропускаем строку {index + 1}: нет кросс-номеров для парсинга")
-                    task._processed_rows += 1  # Увеличиваем счетчик
+                # Для парсинга используем кросс-номера из столбца G (если есть),
+                # иначе fallback: используем артикул из столбца F
+                numbers_source_value = cross_number_from_g if cross_number_from_g else part_number_from_f
+                if not numbers_source_value:
+                    log(f"Пропускаем строку {index + 1}: нет кросс-номеров и артикула для парсинга (G/F пустые)")
+                    task._processed_rows += 1
                     continue
                 
                 # Создаем список кросс-номеров для парсинга (только из столбца G)
-                numbers_to_parse = [n.strip() for n in cross_number_from_g.split(';') if n.strip()]
+                numbers_to_parse = [n.strip() for n in numbers_source_value.split(';') if n.strip()]
                 
                 # Если нет артикулов для парсинга, пропускаем
                 if not numbers_to_parse:
@@ -599,18 +650,22 @@ def process_parsing_task(self, task_id):
                 if (index + 1) % batch_size == 0:
                     try:
                         if results_autopiter:
+                            # Удаляем дубли
+                            results_autopiter = dedupe_rows(results_autopiter)
                             df_autopiter = pd.DataFrame(results_autopiter)
                             autopiter_file = f'media/results/autopiter_results_{task.id}.xlsx'
                             df_autopiter.to_excel(autopiter_file, index=False, engine='openpyxl')
                             task.result_files = task.result_files or {}
                             task.result_files['autopiter'] = autopiter_file
                         if results_armtek:
+                            results_armtek = dedupe_rows(results_armtek)
                             df_armtek = pd.DataFrame(results_armtek)
                             armtek_file = f'media/results/armtek_results_{task.id}.xlsx'
                             df_armtek.to_excel(armtek_file, index=False, engine='openpyxl')
                             task.result_files = task.result_files or {}
                             task.result_files['armtek'] = armtek_file
                         if results_emex:
+                            results_emex = dedupe_rows(results_emex)
                             df_emex = pd.DataFrame(results_emex)
                             emex_file = f'media/results/emex_results_{task.id}.xlsx'
                             df_emex.to_excel(emex_file, index=False, engine='openpyxl')
@@ -647,6 +702,7 @@ def process_parsing_task(self, task_id):
         # Создаем результаты с улучшенной обработкой ошибок
         try:
             if results_autopiter:
+                results_autopiter = dedupe_rows(results_autopiter)
                 df_autopiter = pd.DataFrame(results_autopiter)
                 autopiter_file = f'media/results/autopiter_results_{task.id}.xlsx'
                 try:
@@ -663,6 +719,7 @@ def process_parsing_task(self, task_id):
                 log(f"Файл Autopiter добавлен в result_files: {autopiter_file}")
             
             if results_armtek:
+                results_armtek = dedupe_rows(results_armtek)
                 df_armtek = pd.DataFrame(results_armtek)
                 armtek_file = f'media/results/armtek_results_{task.id}.xlsx'
                 try:
@@ -679,6 +736,7 @@ def process_parsing_task(self, task_id):
                 log(f"Файл Armtek добавлен в result_files: {armtek_file}")
             
             if results_emex:
+                results_emex = dedupe_rows(results_emex)
                 df_emex = pd.DataFrame(results_emex)
                 emex_file = f'media/results/emex_results_{task.id}.xlsx'
                 try:
