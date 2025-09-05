@@ -81,13 +81,40 @@ def safe_cell_to_str(value: object) -> str:
     return str(value).strip()
 
 def normalize_article_for_compare(article: str) -> str:
-    """Нормализует артикул для сравнения: верхний регистр, убираем пробелы/точки/тире/подчеркивания."""
+    """Нормализует артикул для сравнения: верхний регистр, убираем все разделители."""
     if not article:
         return ''
     a = article.upper().strip()
-    # Убираем все не буквенно-цифровые символы
+    # Убираем все не буквенно-цифровые символы (тире, точки, пробелы, подчеркивания и т.д.)
     a = re.sub(r"[^0-9A-ZА-ЯЁ]+", "", a)
     return a
+
+def split_compound_article(article: str) -> list:
+    """Разбивает составной артикул на отдельные части (например: '55110-48700 551104E700' -> ['5511048700', '551104E700'])"""
+    if not article:
+        return []
+    
+    # Нормализуем артикул
+    normalized = normalize_article_for_compare(article)
+    if not normalized:
+        return []
+    
+    # Ищем составные артикулы (два артикула подряд)
+    # Паттерн: цифры+буквы, затем еще цифры+буквы
+    parts = []
+    
+    # Простое разбиение по пробелам в оригинальном артикуле
+    original_parts = article.upper().strip().split()
+    for part in original_parts:
+        clean_part = normalize_article_for_compare(part)
+        if clean_part and len(clean_part) >= 3:  # Минимальная длина артикула
+            parts.append(clean_part)
+    
+    # Если не нашли части, возвращаем нормализованный артикул
+    if not parts:
+        parts = [normalized]
+    
+    return parts
 
 def normalize_brand_for_compare(brand: str) -> str:
     if not brand:
@@ -99,21 +126,47 @@ def normalize_brand_for_compare(brand: str) -> str:
     return b
 
 def dedupe_rows(rows: list) -> list:
-    """Удаляет дубли из списка словарей по нормализованным полям."""
+    """Удаляет дубли из списка словарей по нормализованным полям с учетом составных артикулов."""
     seen = set()
     unique = []
+    
     for d in rows:
-        key = (
-            normalize_brand_for_compare(d.get('Бренд № 1', '')),
-            normalize_article_for_compare(d.get('Артикул по Бренду № 1', '')),
-            normalize_brand_for_compare(d.get('Бренд № 2', '')),
-            normalize_article_for_compare(d.get('Артикул по Бренду № 2', '')),
-            (d.get('Источник') or '').lower().strip(),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(d)
+        # Нормализуем основные поля
+        brand1 = normalize_brand_for_compare(d.get('Бренд № 1', ''))
+        article1 = normalize_article_for_compare(d.get('Артикул по Бренду № 1', ''))
+        brand2 = normalize_brand_for_compare(d.get('Бренд № 2', ''))
+        source = (d.get('Источник') or '').lower().strip()
+        
+        # Получаем артикул № 2 и разбиваем его на части
+        article2_raw = d.get('Артикул по Бренду № 2', '')
+        article2_parts = split_compound_article(article2_raw)
+        
+        # Создаем ключи для всех возможных комбинаций
+        keys_to_check = []
+        
+        if article2_parts:
+            # Для каждого артикула из составного создаем отдельный ключ
+            for article2_part in article2_parts:
+                key = (brand1, article1, brand2, article2_part, source)
+                keys_to_check.append(key)
+        else:
+            # Если нет частей, используем нормализованный артикул
+            article2_normalized = normalize_article_for_compare(article2_raw)
+            key = (brand1, article1, brand2, article2_normalized, source)
+            keys_to_check.append(key)
+        
+        # Проверяем, есть ли уже такой ключ
+        is_duplicate = any(key in seen for key in keys_to_check)
+        
+        if not is_duplicate:
+            # Добавляем все ключи в seen
+            for key in keys_to_check:
+                seen.add(key)
+            unique.append(d)
+        else:
+            # Логируем дубликат для отладки
+            print(f"Найден дубликат: {d}")
+    
     return unique
 
 def filter_garbage_brands(brands: List[str]) -> List[str]:
@@ -491,25 +544,31 @@ def process_parsing_task(self, task_id):
                                 if filtered_brands:
                                     # Создаем отдельную запись для каждого отфильтрованного бренда
                                     for filtered_brand in filtered_brands:
-                                        d = {
-                                            'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                                            'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                                            'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                            'Бренд № 2': clean_excel_string(filtered_brand),  # Результат парсинга
-                                            'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
-                                            'Источник': src
-                                        }
-                                        results_autopiter.append(d)
+                                        # Нормализуем артикул для предотвращения дублей
+                                        normalized_article = normalize_article_for_compare(pn2)
+                                        if normalized_article:  # Только если артикул не пустой после нормализации
+                                            d = {
+                                                'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                                                'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                                                'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                                                'Бренд № 2': clean_excel_string(filtered_brand),  # Результат парсинга
+                                                'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                                'Источник': src
+                                            }
+                                            results_autopiter.append(d)
                             else:
-                                d = {
-                                    'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                                    'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                    'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
-                                    'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
-                                    'Источник': src
-                                }
-                                results_autopiter.append(d)
+                                # Нормализуем артикул для предотвращения дублей
+                                normalized_article = normalize_article_for_compare(pn2)
+                                if normalized_article:  # Только если артикул не пустой после нормализации
+                                    d = {
+                                        'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                                        'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                                        'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                                        'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
+                                        'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                        'Источник': src
+                                    }
+                                    results_autopiter.append(d)
                         
                         # Обрабатываем результаты Emex для текущего артикула
                         for (b1, pn1, n1, b2, pn2, src) in parallel_results['emex']:
@@ -519,25 +578,31 @@ def process_parsing_task(self, task_id):
                                 if filtered_brands:
                                     # Создаем отдельную запись для каждого отфильтрованного бренда
                                     for filtered_brand in filtered_brands:
-                                        d = {
-                                            'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                                            'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                                            'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                            'Бренд № 2': clean_excel_string(filtered_brand),  # Результат парсинга
-                                            'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
-                                            'Источник': src
-                                        }
-                                        results_emex.append(d)
+                                        # Нормализуем артикул для предотвращения дублей
+                                        normalized_article = normalize_article_for_compare(pn2)
+                                        if normalized_article:  # Только если артикул не пустой после нормализации
+                                            d = {
+                                                'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                                                'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                                                'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                                                'Бренд № 2': clean_excel_string(filtered_brand),  # Результат парсинга
+                                                'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                                'Источник': src
+                                            }
+                                            results_emex.append(d)
                             else:
-                                d = {
-                                    'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                                    'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                    'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
-                                    'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
-                                    'Источник': src
-                                }
-                                results_emex.append(d)
+                                # Нормализуем артикул для предотвращения дублей
+                                normalized_article = normalize_article_for_compare(pn2)
+                                if normalized_article:  # Только если артикул не пустой после нормализации
+                                    d = {
+                                        'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                                        'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                                        'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                                        'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
+                                        'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                        'Источник': src
+                                    }
+                                    results_emex.append(d)
                         
                         # Armtek (Selenium) - оптимизированная версия (если выбран)
                         def parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b):
@@ -577,8 +642,24 @@ def process_parsing_task(self, task_id):
                                         if brands:
                                             # Фильтруем бренды для Armtek так же, как для других источников
                                             filtered_brands = filter_garbage_brands(brands)
-                                            log(f"armtek: {num} → найдено {len(filtered_brands)} брендов")
-                                            return [(brand_from_e, part_number_from_f, name_from_b, brand, num, 'armtek') for brand in filtered_brands]
+                                            
+                                            # Дополнительная фильтрация для Armtek: убираем составные артикулы
+                                            # которые могут содержать несуществующие части
+                                            clean_results = []
+                                            for brand in filtered_brands:
+                                                # Проверяем, не является ли это составным артикулом
+                                                if ' ' in brand and len(brand.split()) > 1:
+                                                    # Это составной артикул, пропускаем его
+                                                    log(f"Armtek: пропускаем составной артикул '{brand}' для {num}")
+                                                    continue
+                                                clean_results.append(brand)
+                                            
+                                            if clean_results:
+                                                log(f"armtek: {num} → найдено {len(clean_results)} брендов (после фильтрации)")
+                                                return [(brand_from_e, part_number_from_f, name_from_b, brand, num, 'armtek') for brand in clean_results]
+                                            else:
+                                                log(f"armtek: {num} → все бренды отфильтрованы как составные артикулы")
+                                                return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
                                         else:
                                             log(f"armtek: {num} → бренды не найдены")
                                             return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
