@@ -20,6 +20,15 @@ def create_price_list_task(request):
         platform = request.data.get('platform')
         competitor_brand_filter = request.data.get('competitor_brand_filter', '')
         include_price_analysis = request.data.get('include_price_analysis', True)
+        # Приводим булево к типу bool (фронт может присылать 'true'/'false')
+        if isinstance(include_price_analysis, str):
+            val = include_price_analysis.strip().lower()
+            if val in ('true', '1', 'yes', 'y', 'on'):  # допустимые истины
+                include_price_analysis = True
+            elif val in ('false', '0', 'no', 'n', 'off', ''):
+                include_price_analysis = False
+            else:
+                return Response({'error': 'Значение “include_price_analysis” должно быть True или False.'}, status=status.HTTP_400_BAD_REQUEST)
         
         if not file:
             return Response({'error': 'Файл не предоставлен'}, status=status.HTTP_400_BAD_REQUEST)

@@ -305,8 +305,8 @@ def is_site_available(url: str, proxies: Optional[Dict] = None) -> bool:
         return False
 
 def make_request(url: str, proxy: Optional[str] = None, max_retries: int = 3, timeout: int = 30) -> Optional[requests.Response]:
-    """Выполняет HTTP запрос с поддержкой прокси и повторными попытками"""
-    
+    """Выполняет  HTTP запрос с поддержкой прокси и повторными попытками"""
+
     # Настройка сессии
     session = requests.Session()
     

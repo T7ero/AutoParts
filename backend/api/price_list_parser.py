@@ -142,80 +142,30 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
             result['error_message'] = "Ошибка запроса к АвтоПитер"
             return result
         
+        # Переходим на страницу товара и берем цену по точному селектору
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Ищем наши товары
-        our_items = []
-        competitor_items = []
-        
-        # Парсим результаты поиска
-        items = soup.find_all('div', class_='search-item') or soup.find_all('div', class_='product-item')
-        
-        for item in items:
-            try:
-                # Извлекаем информацию о товаре
-                title_elem = item.find('h3') or item.find('a', class_='title') or item.find('div', class_='title')
-                price_elem = item.find('span', class_='price') or item.find('div', class_='price')
-                supplier_elem = item.find('span', class_='supplier') or item.find('div', class_='supplier')
-                
-                if not title_elem:
-                    continue
-                
-                title = title_elem.get_text(strip=True)
-                price_text = price_elem.get_text(strip=True) if price_elem else ''
-                supplier_text = supplier_elem.get_text(strip=True) if supplier_elem else ''
-                
-                # Извлекаем цену
-                price_match = re.search(r'(\d+(?:\s*\d+)*)', price_text.replace(' ', ''))
-                price = float(price_match.group(1).replace(' ', '')) if price_match else None
-                
-                # Проверяем, наш ли это товар
-                is_our_item = False
-                if supplier_code and supplier_code in SUPPLIER_CODES['autopiter']:
-                    is_our_item = supplier_code in supplier_text
-                else:
-                    # Проверяем по артикулу и производителю
-                    is_our_item = (article.lower() in title.lower() and 
-                                 manufacturer.lower() in title.lower())
-                
-                if is_our_item:
-                    our_items.append({
-                        'title': title,
-                        'price': price,
-                        'supplier': supplier_text
-                    })
-                else:
-                    # Проверяем фильтр бренда конкурента
-                    if not competitor_brand_filter or competitor_brand_filter.lower() in title.lower():
-                        competitor_items.append({
-                            'title': title,
-                            'price': price,
-                            'supplier': supplier_text
-                        })
-                        
-            except Exception as e:
-                continue
-        
-        # Анализируем результаты
-        if our_items:
-            result['is_found'] = True
-            # Берем минимальную цену среди наших товаров
-            our_prices = [item['price'] for item in our_items if item['price']]
-            if our_prices:
-                result['marketplace_price'] = min(our_prices)
-        
-        # Анализируем цены конкурентов
-        if competitor_items:
-            competitor_prices = [item['price'] for item in competitor_items if item['price']]
-            if competitor_prices:
-                min_price = min(competitor_prices)
-                result['min_competitor_price'] = min_price
-                
-                # Находим бренд с минимальной ценой
-                for item in competitor_items:
-                    if item['price'] == min_price:
-                        result['competitor_brand'] = item['supplier']
-                        break
+        first_link = soup.select_one('a[href^="/goods/"]')
+        if not first_link:
+            result['error_message'] = 'Товар не найден на АвтоПитер'
+            return result
+
+        product_url = 'https://autopiter.ru' + first_link.get('href')
+        product_resp = make_request(product_url, timeout=TIMEOUT)
+        if not product_resp or product_resp.status_code != 200:
+            result['error_message'] = 'Не удалось открыть страницу товара АвтоПитер'
+            return result
+
+        product_soup = BeautifulSoup(product_resp.text, 'html.parser')
+        selector = '#main-content > div > div > div.Table__table____693a7dea7e60fe92 > div:nth-child(1) > div.IndividualTableRow__pricesColumn___b7ecc9b28c9245b4 > div.IndividualTableRow__deliveryPriceBlock___b7ecc9b28c9245b4 > div:nth-child(2) > div > div > a'
+        price_anchor = product_soup.select_one(selector)
+        if price_anchor:
+            text = price_anchor.get_text(' ', strip=True)
+            m = re.search(r'(\d[\d\s]*)', text)
+            if m:
+                result['marketplace_price'] = float(m.group(1).replace(' ', ''))
+                result['is_found'] = True
+        else:
+            result['error_message'] = 'Цена по селектору не найдена'
         
     except Exception as e:
         result['error_message'] = f"Ошибка парсинга АвтоПитер: {str(e)}"
