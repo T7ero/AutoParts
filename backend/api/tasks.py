@@ -269,7 +269,7 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
 def process_parsing_task(self, task_id):
     # Проверяем, не завершена ли уже задача
     try:
-    task = ParsingTask.objects.get(id=task_id)
+        task = ParsingTask.objects.get(id=task_id)
         if task.status == 'completed':
             log_debug(f"Task {task_id} уже завершена, пропускаем повторную обработку")
             return None
