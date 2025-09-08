@@ -57,65 +57,93 @@ def log_debug(message):
     print(f"[DEBUG] {message}")
 
 def parse_price_list_file(file_path: str) -> List[Dict]:
-    """Парсит Excel файл прайс-листа и возвращает список позиций"""
+    """Парсит Excel файл прайс-листа и возвращает список позиций.
+    Ищет строку заголовков в первых 20 строках (подходит под ваш шаблон с «шапкой»).
+    """
     try:
-        # Читаем Excel файл
-        df = pd.read_excel(file_path)
-        
-        # Определяем колонки по заголовкам
-        columns = df.columns.tolist()
-        
-        # Ищем нужные колонки
-        supplier_col = None
-        manufacturer_col = None
-        article_col = None
-        nomenclature_col = None
-        quantity_col = None
-        price_col = None
-        
-        for col in columns:
-            col_lower = str(col).lower()
-            if 'код поставщика' in col_lower or 'поставщик' in col_lower:
-                supplier_col = col
-            elif 'производитель' in col_lower or 'бренд' in col_lower:
-                manufacturer_col = col
-            elif 'артикул' in col_lower:
-                article_col = col
-            elif 'номенклатура' in col_lower or 'наименование' in col_lower:
-                nomenclature_col = col
-            elif 'количество' in col_lower or 'в наличии' in col_lower:
-                quantity_col = col
-            elif 'цена' in col_lower or 'оптовые' in col_lower:
-                price_col = col
-        
-        if not manufacturer_col or not article_col:
-            raise ValueError("Не найдены обязательные колонки: Производитель и Артикул")
-        
-        items = []
+        # Читаем без заголовков
+        df_raw = pd.read_excel(file_path, header=None, dtype=str)
+
+        def norm(val):
+            try:
+                return str(val).strip().lower()
+            except Exception:
+                return ''
+
+        header_row = None
+        man_idx = art_idx = None
+        supp_idx = nom_idx = qty_idx = price_idx = None
+
+        scan_rows = min(20, len(df_raw))
+        for i in range(scan_rows):
+            row_vals = [norm(v) for v in df_raw.iloc[i].tolist()]
+            tmp_man = next((j for j, c in enumerate(row_vals) if 'производител' in c or 'бренд' in c), None)
+            tmp_art = next((j for j, c in enumerate(row_vals) if 'артикул' in c), None)
+            if tmp_man is not None and tmp_art is not None:
+                header_row = i
+                man_idx, art_idx = tmp_man, tmp_art
+                supp_idx = next((j for j, c in enumerate(row_vals) if 'код поставщика' in c or ('поставщик' in c and 'код' in c)), None)
+                nom_idx = next((j for j, c in enumerate(row_vals) if 'номенклатура' in c or 'наимен' in c), None)
+                qty_idx = next((j for j, c in enumerate(row_vals) if 'колич' in c or 'в наличии' in c), None)
+                price_idx = next((j for j, c in enumerate(row_vals) if 'цена' in c or 'оптов' in c), None)
+                break
+
+        if header_row is None:
+            raise ValueError('Не найдены обязательные колонки: Производитель и Артикул')
+
+        headers = df_raw.iloc[header_row].tolist()
+        for k in range(len(headers)):
+            if pd.isna(headers[k]) or str(headers[k]).strip() == '':
+                headers[k] = headers[k-1] if k > 0 else f'col_{k}'
+
+        df = df_raw.iloc[header_row + 1:].reset_index(drop=True)
+        df.columns = headers
+
+        supplier_col = df.columns[supp_idx] if supp_idx is not None and supp_idx < len(df.columns) else None
+        manufacturer_col = df.columns[man_idx]
+        article_col = df.columns[art_idx]
+        nomenclature_col = df.columns[nom_idx] if nom_idx is not None and nom_idx < len(df.columns) else None
+        quantity_col = df.columns[qty_idx] if qty_idx is not None and qty_idx < len(df.columns) else None
+        price_col = df.columns[price_idx] if price_idx is not None and price_idx < len(df.columns) else None
+
+        def to_int_safe(v):
+            try:
+                return int(float(str(v).replace(' ', '').replace('\xa0', '')))
+            except Exception:
+                return 0
+
+        def to_float_safe(v):
+            try:
+                s = str(v).replace(' ', '').replace('\xa0', '').replace('₽', '').replace(',', '.')
+                return float(s)
+            except Exception:
+                return None
+
+        items: List[Dict] = []
         for index, row in df.iterrows():
             try:
+                manufacturer = str(row[manufacturer_col]).strip() if pd.notna(row[manufacturer_col]) else ''
+                article = str(row[article_col]).strip() if pd.notna(row[article_col]) else ''
+                if not manufacturer or not article:
+                    continue
                 item = {
-                    'supplier_code': str(row[supplier_col]) if supplier_col and pd.notna(row[supplier_col]) else '',
-                    'manufacturer': str(row[manufacturer_col]).strip() if pd.notna(row[manufacturer_col]) else '',
-                    'article': str(row[article_col]).strip() if pd.notna(row[article_col]) else '',
-                    'nomenclature': str(row[nomenclature_col]) if nomenclature_col and pd.notna(row[nomenclature_col]) else '',
-                    'quantity': int(row[quantity_col]) if quantity_col and pd.notna(row[quantity_col]) else 0,
-                    'our_price': float(row[price_col]) if price_col and pd.notna(row[price_col]) else None,
+                    'supplier_code': (str(row[supplier_col]).strip() if supplier_col and pd.notna(row[supplier_col]) else ''),
+                    'manufacturer': manufacturer,
+                    'article': article,
+                    'nomenclature': (str(row[nomenclature_col]).strip() if nomenclature_col and pd.notna(row[nomenclature_col]) else ''),
+                    'quantity': (to_int_safe(row[quantity_col]) if quantity_col and pd.notna(row[quantity_col]) else 0),
+                    'our_price': (to_float_safe(row[price_col]) if price_col and pd.notna(row[price_col]) else None),
                 }
-                
-                # Проверяем обязательные поля
-                if item['manufacturer'] and item['article']:
-                    items.append(item)
-                    
+                items.append(item)
             except Exception as e:
-                log_debug(f"Ошибка парсинга строки {index + 1}: {str(e)}")
+                log_debug(f'Ошибка парсинга строки {index + 1}: {str(e)}')
                 continue
-        
-        log_debug(f"Парсинг завершен. Найдено {len(items)} позиций")
+
+        log_debug(f'Парсинг завершен. Найдено {len(items)} позиций')
         return items
-        
+
     except Exception as e:
-        log_debug(f"Ошибка парсинга файла: {str(e)}")
+        log_debug(f'Ошибка парсинга файла: {str(e)}')
         return []
 
 def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, competitor_brand_filter: str = None) -> Dict:
