@@ -117,56 +117,50 @@ def split_compound_article(article: str) -> list:
     return parts
 
 def normalize_brand_for_compare(brand: str) -> str:
+    """Нормализует бренд для сравнения: верхний регистр, только буквы/цифры.
+    Убираем пробелы, дефисы, подчеркивания и прочие разделители.
+    """
     if not brand:
         return ''
-    b = brand.upper().strip()
-    b = re.sub(r"\s+", " ", b)
-    b = b.replace('-', ' ').replace('_', ' ')
-    b = re.sub(r"\s+", " ", b)
+    b = str(brand).upper().strip()
+    # Оставляем только буквы и цифры (рус/лат)
+    b = re.sub(r"[^0-9A-ZА-ЯЁ]+", "", b)
     return b
 
 def dedupe_rows(rows: list) -> list:
-    """Удаляет дубли из списка словарей по нормализованным полям с учетом составных артикулов."""
-    seen = set()
-    unique = []
-    
-    for d in rows:
-        # Нормализуем основные поля
-        brand1 = normalize_brand_for_compare(d.get('Бренд № 1', ''))
-        article1 = normalize_article_for_compare(d.get('Артикул по Бренду № 1', ''))
-        brand2 = normalize_brand_for_compare(d.get('Бренд № 2', ''))
-        source = (d.get('Источник') or '').lower().strip()
-        
-        # Получаем артикул № 2 и разбиваем его на части
-        article2_raw = d.get('Артикул по Бренду № 2', '')
-        article2_parts = split_compound_article(article2_raw)
-        
-        # Создаем ключи для всех возможных комбинаций
-        keys_to_check = []
-        
-        if article2_parts:
-            # Для каждого артикула из составного создаем отдельный ключ
-            for article2_part in article2_parts:
-                key = (brand1, article1, brand2, article2_part, source)
-                keys_to_check.append(key)
-        else:
-            # Если нет частей, используем нормализованный артикул
-            article2_normalized = normalize_article_for_compare(article2_raw)
-            key = (brand1, article1, brand2, article2_normalized, source)
-            keys_to_check.append(key)
-        
-        # Проверяем, есть ли уже такой ключ
-        is_duplicate = any(key in seen for key in keys_to_check)
-        
-        if not is_duplicate:
-            # Добавляем все ключи в seen
-            for key in keys_to_check:
-                seen.add(key)
-            unique.append(d)
-        else:
-            # Логируем дубликат для отладки
-            print(f"Найден дубликат: {d}")
-    
+    """Удаляет дубли по ключу (Бренд № 2, Артикул № 2, Источник),
+    причем Артикул № 2 разбивается на составные части и нормализуется,
+    а бренды приводятся к буквенно-цифровому виду без разделителей.
+    Игнорируем различия в 'Бренд № 1', 'Артикул по Бренду № 1', 'Наименование'.
+    """
+    seen: set = set()
+    unique: list = []
+
+    for row in rows:
+        brand2_norm = normalize_brand_for_compare(row.get('Бренд № 2', ''))
+        source_norm = (row.get('Источник') or '').lower().strip()
+
+        article2_raw = row.get('Артикул по Бренду № 2', '')
+        parts = split_compound_article(article2_raw)
+        if not parts:
+            parts = [normalize_article_for_compare(article2_raw)]
+
+        # Если после нормализации артикул пустой — пропускаем строку
+        parts = [p for p in parts if p]
+        if not parts:
+            continue
+
+        keys = [(brand2_norm, p, source_norm) for p in parts]
+
+        if any(k in seen for k in keys):
+            # уже есть один из вариантов — считаем дубликатом
+            continue
+
+        for k in keys:
+            seen.add(k)
+
+        unique.append(row)
+
     return unique
 
 def filter_garbage_brands(brands: List[str]) -> List[str]:
