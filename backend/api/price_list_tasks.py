@@ -117,11 +117,12 @@ def process_price_list_task(self, task_id: int):
                     }
                 
                 # Обновляем запись в базе
-                item.is_found = result['is_found']
-                item.marketplace_price = Decimal(str(result['marketplace_price'])) if result['marketplace_price'] else None
-                item.min_competitor_price = Decimal(str(result['min_competitor_price'])) if result['min_competitor_price'] else None
-                item.competitor_brand = result['competitor_brand']
-                item.error_message = result['error_message']
+                item.is_found = bool(result.get('is_found'))
+                item.marketplace_price = Decimal(str(result['marketplace_price'])) if result.get('marketplace_price') else None
+                item.min_competitor_price = Decimal(str(result['min_competitor_price'])) if result.get('min_competitor_price') else None
+                # полю competitor_brand разрешим быть пустым строковым значением
+                item.competitor_brand = result.get('competitor_brand') or ''
+                item.error_message = result.get('error_message') or ''
                 item.save()
                 
                 # Обновляем счетчики
@@ -186,10 +187,20 @@ def process_price_list_task(self, task_id: int):
         
         # Создаем файл результата
         result_filename = f"price_list_results_{task_id}_{int(time.time())}.xlsx"
-        result_path = os.path.join('media', 'results', result_filename)
+        result_dir = os.path.join('media', 'results')
+        os.makedirs(result_dir, exist_ok=True)
+        result_path = os.path.join(result_dir, result_filename)
         
         if create_result_excel(result_data, result_path):
-            task.result_file = result_path
+            # сохраняем относительный путь в FileField через name
+            try:
+                from django.core.files.base import File
+                # открываем и присваиваем name, чтобы download эндпоинт видел файл
+                with open(result_path, 'rb') as f:
+                    task.result_file.save(result_filename, File(f), save=False)
+            except Exception:
+                # fallback: просто путь
+                task.result_file = result_path
             log(f"Файл результата создан: {result_filename}")
         else:
             log("Ошибка создания файла результата")

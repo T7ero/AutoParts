@@ -164,20 +164,9 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
         
         url = f"https://autopiter.ru/search?q={quote(search_query)}"
         
-        # Делаем запрос
-        response = make_request(url, timeout=TIMEOUT)
-        if not response:
-            result['error_message'] = "Ошибка запроса к АвтоПитер"
-            return result
-        
-        # Переходим на страницу товара и берем цену по точному селектору
-        soup = BeautifulSoup(response.text, 'html.parser')
-        first_link = soup.select_one('a[href^="/goods/"]')
-        if not first_link:
-            result['error_message'] = 'Товар не найден на АвтоПитер'
-            return result
-
-        product_url = 'https://autopiter.ru' + first_link.get('href')
+        # ВАЖНО: на АвтоПитере корректная карточка формируется по прямой ссылке /goods/<артикул>
+        # поэтому сразу идем на страницу товара
+        product_url = f"https://autopiter.ru/goods/{quote(article)}"
         product_resp = make_request(product_url, timeout=TIMEOUT)
         if not product_resp or product_resp.status_code != 200:
             result['error_message'] = 'Не удалось открыть страницу товара АвтоПитер'
