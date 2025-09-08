@@ -173,16 +173,42 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
             return result
 
         product_soup = BeautifulSoup(product_resp.text, 'html.parser')
-        selector = '#main-content > div > div > div.Table__table____693a7dea7e60fe92 > div:nth-child(1) > div.IndividualTableRow__pricesColumn___b7ecc9b28c9245b4 > div.IndividualTableRow__deliveryPriceBlock___b7ecc9b28c9245b4 > div:nth-child(2) > div > div > a'
-        price_anchor = product_soup.select_one(selector)
-        if price_anchor:
-            text = price_anchor.get_text(' ', strip=True)
-            m = re.search(r'(\d[\d\s]*)', text)
+        # Пытаемся достать цену по нескольким устойчивым селекторам
+        candidate_selectors = [
+            'div[class*="IndividualTableRow__deliveryPriceBlock"] a',
+            'div[class*="deliveryPriceBlock"] a',
+            'div[class*="pricesColumn"] a',
+            '#main-content a'
+        ]
+        price_value = None
+        for sel in candidate_selectors:
+            try:
+                for a in product_soup.select(sel):
+                    txt = a.get_text(' ', strip=True)
+                    m = re.search(r'от\s*(\d[\d\s]*)\s*₽', txt)
+                    if not m:
+                        m = re.search(r'\b(\d[\d\s]{2,})\b\s*₽', txt)
+                    if m:
+                        price_value = float(m.group(1).replace(' ', ''))
+                        break
+                if price_value is not None:
+                    break
+            except Exception:
+                continue
+        # Фолбэк по всему тексту страницы
+        if price_value is None:
+            page_text = product_soup.get_text(' ', strip=True)
+            m = re.search(r'от\s*(\d[\d\s]*)\s*₽', page_text)
+            if not m:
+                m = re.search(r'\b(\d[\d\s]{2,})\b\s*₽', page_text)
             if m:
-                result['marketplace_price'] = float(m.group(1).replace(' ', ''))
-                result['is_found'] = True
+                price_value = float(m.group(1).replace(' ', ''))
+
+        if price_value is not None:
+            result['marketplace_price'] = price_value
+            result['is_found'] = True
         else:
-            result['error_message'] = 'Цена по селектору не найдена'
+            result['error_message'] = 'Цена не найдена на странице товара'
         
     except Exception as e:
         result['error_message'] = f"Ошибка парсинга АвтоПитер: {str(e)}"
