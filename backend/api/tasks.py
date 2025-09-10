@@ -700,9 +700,9 @@ def process_parsing_task(self, task_id):
                                             set_cache(num, 'armtek', [], True)
                                             return []
 
-                            # Контролируемый параллелизм: 3 потока для стабильности Selenium
+                            # Контролируемый параллелизм: 4 потока для скорости при стабильности Selenium
                             import concurrent.futures
-                            max_workers = 3
+                            max_workers = 4
                             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                                 future_to_num = {executor.submit(parse_one, num): num for num in unique_numbers}
                                 for future in concurrent.futures.as_completed(future_to_num):

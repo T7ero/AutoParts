@@ -40,13 +40,13 @@ HEADERS = {
 }
 # Оптимизированные таймауты для ускорения работы
 TIMEOUT = 8  # сетевые таймауты
-SELENIUM_TIMEOUT = 9  # явные ожидания Selenium
-PAGE_LOAD_TIMEOUT = 9  # таймаут загрузки страницы
+SELENIUM_TIMEOUT = 10  # явные ожидания Selenium
+PAGE_LOAD_TIMEOUT = 10  # таймаут загрузки страницы
 
 # Настройки для пула драйверов
 DRIVER_POOL_SIZE = 3
 DRIVER_CREATION_RETRIES = 3
-DRIVER_TIMEOUT_RETRIES = 1
+DRIVER_TIMEOUT_RETRIES = 2
 
 # Кеширование
 REQUEST_CACHE = {}
