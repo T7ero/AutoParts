@@ -395,7 +395,7 @@ def process_parsing_task(self, task_id):
         log(f"Начинаем обработку {total_rows} строк")
         ws_send()
         # Батч-обработка: по 50 строк с промежуточным сохранением результатов
-        batch_size = 50
+        batch_size = 10
         
         # Оптимизированная функция для параллельного парсинга с таймаутами и прокси
         def parse_all_parallel(numbers, brand, part_number, name):
@@ -700,9 +700,9 @@ def process_parsing_task(self, task_id):
                                             set_cache(num, 'armtek', [], True)
                                             return []
 
-                            # Контролируемый параллелизм: 2-3 потока для стабильности Selenium
+                            # Контролируемый параллелизм: 3-4 потока для стабильности Selenium
                             import concurrent.futures
-                            max_workers = 3
+                            max_workers = 4
                             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                                 future_to_num = {executor.submit(parse_one, num): num for num in unique_numbers}
                                 for future in concurrent.futures.as_completed(future_to_num):
@@ -753,8 +753,8 @@ def process_parsing_task(self, task_id):
                     # Принудительная очистка памяти
                     gc.collect()
                     
-                    # Периодическая очистка процессов Chrome каждые 5 строк для предотвращения накопления процессов
-                    if (index + 1) % 5 == 0:
+                    # Периодическая очистка процессов Chrome каждые 10 строк (снижаем частоту)
+                    if (index + 1) % 10 == 0:
                         try:
                             cleanup_chrome_processes()
                             cleanup_driver_pool()

@@ -39,14 +39,14 @@ HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 # Оптимизированные таймауты для ускорения работы
-TIMEOUT = 8  # Уменьшаем для ускорения
-SELENIUM_TIMEOUT = 8  # Уменьшаем для ускорения
-PAGE_LOAD_TIMEOUT = 8  # Уменьшаем для ускорения
+TIMEOUT = 8  # сетевые таймауты
+SELENIUM_TIMEOUT = 12  # явные ожидания Selenium
+PAGE_LOAD_TIMEOUT = 12  # таймаут загрузки страницы
 
 # Настройки для пула драйверов
 DRIVER_POOL_SIZE = 3
 DRIVER_CREATION_RETRIES = 3
-DRIVER_TIMEOUT_RETRIES = 2
+DRIVER_TIMEOUT_RETRIES = 1
 
 # Кеширование
 REQUEST_CACHE = {}
@@ -707,7 +707,8 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			except Exception as e:
 				log_debug(f"Попытка {page_attempt + 1} загрузки страницы: {str(e)}")
 				if page_attempt < DRIVER_TIMEOUT_RETRIES - 1:
-					time.sleep(2)
+					# небольшой джиттер, чтобы снизить антибот
+					time.sleep(0.05 + random.random() * 0.1)
 				else:
 					log_debug("Не удалось загрузить страницу")
 					return []
