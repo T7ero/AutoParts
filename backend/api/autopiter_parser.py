@@ -699,16 +699,33 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		
 		url = f"https://armtek.ru/search?text={artikul}"
 		
-		# Retry логика для загрузки страницы
+		# Retry логика для загрузки страницы с обработкой падения вкладки
 		for page_attempt in range(DRIVER_TIMEOUT_RETRIES):
 			try:
+				try:
+					driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+					driver.implicitly_wait(3)
+				except Exception:
+					pass
 				driver.get(url)
 				break
 			except Exception as e:
-				log_debug(f"Попытка {page_attempt + 1} загрузки страницы: {str(e)}")
+				msg = str(e)
+				log_debug(f"Попытка {page_attempt + 1} загрузки страницы: {msg}")
 				if page_attempt < DRIVER_TIMEOUT_RETRIES - 1:
 					# небольшой джиттер, чтобы снизить антибот
 					time.sleep(0.05 + random.random() * 0.1)
+					if 'tab crashed' in msg.lower():
+						# Пересоздаем драйвер из пула
+						try:
+							return_driver_to_pool(driver)
+						except Exception:
+							pass
+						driver = get_driver_from_pool()
+						if driver is None:
+							log_debug("Armtek Selenium: не удалось восстановить драйвер из пула")
+							return []
+					continue
 				else:
 					log_debug("Не удалось загрузить страницу")
 					return []
@@ -860,8 +877,13 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		
 		return list(brands)
 	finally:
-		# Возвращаем драйвер в пул вместо закрытия
+		# Возвращаем драйвер в пул вместо закрытия, предварительно разгружаем вкладку
 		if driver:
+			try:
+				driver.delete_all_cookies()
+				driver.get('about:blank')
+			except Exception:
+				pass
 			return_driver_to_pool(driver)
 
 def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> Optional[webdriver.Chrome]:
