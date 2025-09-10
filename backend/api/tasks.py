@@ -656,8 +656,8 @@ def process_parsing_task(self, task_id):
                                             proxy = get_next_proxy()
                                             log(f"Armtek: попытка {attempt+1} с прокси для {num}")
                                         
-                                        # Уменьшаем задержку для ускорения
-                                        time.sleep(0.1)
+                                        # Минимальный джиттер для снижения антибот-порогов
+                                        time.sleep(0.03 + (0.07 * (hash(num) % 100) / 100.0))
                                         # Используем функцию для поиска брендов
                                         from .autopiter_parser import get_brands_by_artikul_armtek
                                         brands = get_brands_by_artikul_armtek(num, proxy)
@@ -700,9 +700,9 @@ def process_parsing_task(self, task_id):
                                             set_cache(num, 'armtek', [], True)
                                             return []
 
-                            # Контролируемый параллелизм: 3-4 потока для стабильности Selenium
+                            # Контролируемый параллелизм: 3 потока для стабильности Selenium
                             import concurrent.futures
-                            max_workers = 4
+                            max_workers = 3
                             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                                 future_to_num = {executor.submit(parse_one, num): num for num in unique_numbers}
                                 for future in concurrent.futures.as_completed(future_to_num):
