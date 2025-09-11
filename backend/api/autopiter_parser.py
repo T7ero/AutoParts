@@ -734,7 +734,6 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		wait = WebDriverWait(driver, SELENIUM_TIMEOUT)
 		selectors_to_wait = [
 			(By.CSS_SELECTOR, '.results-list__items'),
-			(By.CSS_SELECTOR, '.font__body2.brand--selecting'),
 			(By.CSS_SELECTOR, '.font__caption1.brand--selectable'),
 		]
 		
@@ -784,9 +783,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			'.font__caption1.brand--selectable',
 			'.pin-brand-name span.font__caption1.brand--selectable',
 			'.product-card__content .pin-brand-name .brand--selectable',
-			# Старые селекторы как fallback
-			'.font__body2.brand--selecting',
-			'.brand--selecting',
+			# Без небезопасных фолбэков '.brand--selecting'
 			'.brand-name',
 			'.product-brand',
 			'.manufacturer-name',
@@ -926,7 +923,7 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             chrome_options.add_argument('--disable-extensions')
             chrome_options.add_argument('--disable-plugins')
             chrome_options.add_argument('--disable-images')
-            chrome_options.add_argument('--disable-javascript')
+            # Оставляем JS включенным: отключение провоцирует renderer timeouts на Armtek
             chrome_options.add_argument('--disable-web-security')
             chrome_options.add_argument('--allow-running-insecure-content')
             chrome_options.add_argument('--disable-background-timer-throttling')
