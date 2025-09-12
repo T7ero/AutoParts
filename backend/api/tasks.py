@@ -439,8 +439,8 @@ def process_parsing_task(self, task_id):
         def parse_all_parallel(numbers, brand, part_number, name):
             results = {'autopiter': [], 'emex': []}
             state = {"emex_disabled": False, "emex_failures": 0}
-            ARTICLE_TIMEOUT = 20  # общий таймаут на один артикул
-            emex_semaphore = threading.Semaphore(2)  # ограничиваем одновременные Emex-запросы
+            ARTICLE_TIMEOUT = 15  # общий таймаут на один артикул
+            emex_semaphore = threading.Semaphore(3)  # увеличиваем одновременные Emex-запросы
 
             def parse_one(site, parser_func, max_retries=1):
                 def inner(num, proxy=None):
@@ -463,7 +463,7 @@ def process_parsing_task(self, task_id):
                                 log(f"{site.capitalize()}: попытка {attempt+1} с прокси для {num}")
                             
                             # Уменьшаем задержку для ускорения
-                            time.sleep(0.05 if site == 'autopiter' else 0.05)  # Уменьшаем для Emex
+                            time.sleep(0.03 if site == 'autopiter' else 0.03)
                             brands = parser_func(num, proxy)
                             
                             # Сохраняем результат в кэш

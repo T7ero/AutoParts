@@ -40,8 +40,8 @@ HEADERS = {
 }
 # Оптимизированные таймауты для ускорения работы
 TIMEOUT = 8  # Уменьшаем для ускорения
-SELENIUM_TIMEOUT = 8  # Уменьшаем для ускорения
-PAGE_LOAD_TIMEOUT = 8  # Уменьшаем для ускорения
+SELENIUM_TIMEOUT = 7  # ещё быстрее явные ожидания
+PAGE_LOAD_TIMEOUT = 8  # таймаут загрузки страницы
 
 # Настройки для пула драйверов
 DRIVER_POOL_SIZE = 4
@@ -65,6 +65,7 @@ DRIVER_POOL_LOCK = threading.Lock()
 DRIVER_LAST_USED = {}
 DRIVER_USE_COUNT = {}
 DRIVER_MAX_USES = 30
+ARMTEK_PER_ARTICLE_TIMEOUT = 15  # жёсткий лимит на один артикул, сек
 
 def log_debug(message):
     print(f"[DEBUG] {message}")
@@ -827,17 +828,21 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		except Exception:
 			pass
 		
-		# Сначала пробуем точные селекторы карточек товаров
+		# Сначала пробуем точные селекторы карточек товаров, ограничивая максимум элементов
 		exact_selectors = [
 			'.font__caption1.brand--selectable',
 			'.pin-brand-name span.font__caption1.brand--selectable',
 			'.product-card__content .pin-brand-name .brand--selectable',
 		]
 		
+		deadline = time.time() + ARMTEK_PER_ARTICLE_TIMEOUT
+		max_elements = 40
 		for selector in exact_selectors:
 			try:
-				elements = driver.find_elements(By.CSS_SELECTOR, selector)
+				elements = driver.find_elements(By.CSS_SELECTOR, selector)[:max_elements]
 				for el in elements:
+					if time.time() > deadline:
+						break
 					text = el.text.strip()
 					if text and len(text) > 1 and len(text) < 50:  # Ограничиваем длину
 						# Исключаем элементы, находящиеся после секции "Возможные замены"
@@ -861,11 +866,13 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			except Exception as e:
 				log_debug(f"Armtek Selenium: ошибка поиска по селектору {selector}: {str(e)}")
 		
-		# Если точные селекторы не дали результатов, пробуем остальные
+		# Если точные селекторы не дали результатов, пробуем остальные с ограничением времени
 		if not brands:
 			for selector in brand_selectors[3:]:  # Пропускаем уже проверенные точные селекторы
 				try:
-					for el in driver.find_elements(By.CSS_SELECTOR, selector):
+					for el in driver.find_elements(By.CSS_SELECTOR, selector)[:max_elements]:
+						if time.time() > deadline:
+							break
 						# Исключаем бренды из секции "Возможные замены" по DOM-порядку
 						if not is_before_replacements(el):
 							continue
