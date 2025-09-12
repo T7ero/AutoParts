@@ -44,9 +44,9 @@ SELENIUM_TIMEOUT = 8  # Уменьшаем для ускорения
 PAGE_LOAD_TIMEOUT = 8  # Уменьшаем для ускорения
 
 # Настройки для пула драйверов
-DRIVER_POOL_SIZE = 3
+DRIVER_POOL_SIZE = 4
 DRIVER_CREATION_RETRIES = 3
-DRIVER_TIMEOUT_RETRIES = 2
+DRIVER_TIMEOUT_RETRIES = 2  # 1 без прокси + 1 с прокси
 
 # Кеширование
 REQUEST_CACHE = {}
@@ -63,6 +63,8 @@ BAD_PROXIES = set()
 DRIVER_POOL = []
 DRIVER_POOL_LOCK = threading.Lock()
 DRIVER_LAST_USED = {}
+DRIVER_USE_COUNT = {}
+DRIVER_MAX_USES = 30
 
 def log_debug(message):
     print(f"[DEBUG] {message}")
@@ -75,6 +77,7 @@ def get_driver_from_pool() -> Optional[webdriver.Chrome]:
         if DRIVER_POOL:
             driver = DRIVER_POOL.pop()
             DRIVER_LAST_USED[id(driver)] = time.time()
+            DRIVER_USE_COUNT[id(driver)] = DRIVER_USE_COUNT.get(id(driver), 0)
             return driver
     
     # Создаем новый драйвер
@@ -84,6 +87,7 @@ def get_driver_from_pool() -> Optional[webdriver.Chrome]:
             driver = _create_chrome_driver_robust(temp_dir)
             if driver:
                 DRIVER_LAST_USED[id(driver)] = time.time()
+                DRIVER_USE_COUNT[id(driver)] = 0
                 return driver
             time.sleep(1)
         except Exception as e:
@@ -108,7 +112,20 @@ def return_driver_to_pool(driver: webdriver.Chrome):
                 driver.quit()
                 if driver_id in DRIVER_LAST_USED:
                     del DRIVER_LAST_USED[driver_id]
+                if driver_id in DRIVER_USE_COUNT:
+                    del DRIVER_USE_COUNT[driver_id]
                 return
+        # Рецикл по числу использований
+        DRIVER_USE_COUNT[driver_id] = DRIVER_USE_COUNT.get(driver_id, 0) + 1
+        if DRIVER_USE_COUNT[driver_id] >= DRIVER_MAX_USES:
+            try:
+                driver.quit()
+            finally:
+                if driver_id in DRIVER_LAST_USED:
+                    del DRIVER_LAST_USED[driver_id]
+                if driver_id in DRIVER_USE_COUNT:
+                    del DRIVER_USE_COUNT[driver_id]
+            return
         
         with DRIVER_POOL_LOCK:
             if len(DRIVER_POOL) < DRIVER_POOL_SIZE:
@@ -117,6 +134,8 @@ def return_driver_to_pool(driver: webdriver.Chrome):
                 driver.quit()
                 if driver_id in DRIVER_LAST_USED:
                     del DRIVER_LAST_USED[driver_id]
+                if driver_id in DRIVER_USE_COUNT:
+                    del DRIVER_USE_COUNT[driver_id]
     except Exception as e:
         log_debug(f"Ошибка возврата драйвера в пул: {str(e)}")
         try:
@@ -699,15 +718,22 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		
 		url = f"https://armtek.ru/search?text={artikul}"
 		
-		# Retry логика для загрузки страницы
+		# Retry логика для загрузки страницы (1 без прокси, 1 с прокси)
 		for page_attempt in range(DRIVER_TIMEOUT_RETRIES):
 			try:
+				# Обновляем таймауты перед каждым заходом
+				try:
+					driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+					driver.implicitly_wait(3)
+				except Exception:
+					pass
 				driver.get(url)
 				break
 			except Exception as e:
 				log_debug(f"Попытка {page_attempt + 1} загрузки страницы: {str(e)}")
 				if page_attempt < DRIVER_TIMEOUT_RETRIES - 1:
-					time.sleep(2)
+					# небольшой джиттер
+					time.sleep(0.2 + random.random() * 0.4)
 				else:
 					log_debug("Не удалось загрузить страницу")
 					return []

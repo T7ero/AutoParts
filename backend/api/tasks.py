@@ -1,5 +1,11 @@
 import pandas as pd
 from celery import shared_task
+import os
+import json
+try:
+    import redis
+except Exception:
+    redis = None
 from django.core.files import File
 from core.models import ParsingTask
 from .autopiter_parser import (
@@ -24,10 +30,18 @@ from channels.layers import get_channel_layer
 from typing import List, Dict, Optional
 from celery.utils.log import get_task_logger
 from datetime import datetime
-# Кэш для ускорения работы парсера
+# Кэш для ускорения работы парсера (Redis, если доступен)
 PARSER_CACHE = {}
 CACHE_EXPIRATION = 3600  # 1 час
 NEGATIVE_CACHE_EXPIRATION = 1800  # 30 минут для пустых результатов
+
+_redis_client = None
+REDIS_URL = os.getenv('REDIS_URL') or os.getenv('CELERY_BROKER_URL')
+if redis and REDIS_URL and REDIS_URL.startswith('redis://'):
+    try:
+        _redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+    except Exception:
+        _redis_client = None
 
 def get_cache_key(artikul: str, source: str) -> str:
     """Создает ключ кэша для артикула и источника"""
@@ -36,6 +50,13 @@ def get_cache_key(artikul: str, source: str) -> str:
 def get_from_cache(artikul: str, source: str) -> Optional[List[str]]:
     """Получает результат из кэша"""
     key = get_cache_key(artikul, source)
+    if _redis_client:
+        try:
+            val = _redis_client.get(f"parser:{key}")
+            if val:
+                return json.loads(val)
+        except Exception:
+            pass
     if key in PARSER_CACHE:
         cache_entry = PARSER_CACHE[key]
         if time.time() - cache_entry['timestamp'] < cache_entry['expiration']:
@@ -48,6 +69,11 @@ def set_cache(artikul: str, source: str, result: List[str], is_empty: bool = Fal
     """Сохраняет результат в кэш"""
     key = get_cache_key(artikul, source)
     expiration = NEGATIVE_CACHE_EXPIRATION if is_empty else CACHE_EXPIRATION
+    if _redis_client:
+        try:
+            _redis_client.setex(f"parser:{key}", expiration, json.dumps(result, ensure_ascii=False))
+        except Exception:
+            pass
     PARSER_CACHE[key] = {
         'result': result,
         'timestamp': time.time(),
@@ -394,8 +420,20 @@ def process_parsing_task(self, task_id):
 
         log(f"Начинаем обработку {total_rows} строк")
         ws_send()
-        # Батч-обработка: по 50 строк с промежуточным сохранением результатов
-        batch_size = 50
+        # Батч-обработка и чекпоинты: каждые 20 строк
+        batch_size = 20
+        checkpoint_every = 20
+
+        # Возобновление с чекпоинта
+        start_index = 0
+        try:
+            if task.log and 'checkpoint:' in task.log:
+                for line in reversed(task.log.split('\n')):
+                    if line.startswith('checkpoint:'):
+                        start_index = int(line.split(':', 1)[1])
+                        break
+        except Exception:
+            start_index = 0
         
         # Оптимизированная функция для параллельного парсинга с таймаутами и прокси
         def parse_all_parallel(numbers, brand, part_number, name):
@@ -483,6 +521,8 @@ def process_parsing_task(self, task_id):
         
         # Основной цикл с улучшенной обработкой ошибок и предотвращением бесконечного цикла
         for index, row in df.iterrows():
+            if index < start_index:
+                continue
             try:
                 # Проверка таймаута каждые 100 строк для менее частой проверки
                 if index % 100 == 0:
@@ -742,9 +782,12 @@ def process_parsing_task(self, task_id):
                         except Exception as e:
                             log(f"Error during Chrome cleanup: {str(e)}")
 
-                # Чекпоинт каждые batch_size строк — записываем на диск промежуточные результаты
-                if (index + 1) % batch_size == 0:
+                # Чекпоинт каждые checkpoint_every строк — сохраняем промежуточные результаты и отметку
+                if (index + 1) % checkpoint_every == 0:
                     try:
+                        # отметка чекпоинта для автопродолжения
+                        task.log = (task.log + f"\ncheckpoint:{index + 1}") if task.log else f"checkpoint:{index + 1}"
+                        task.save()
                         if results_autopiter:
                             # Удаляем дубли
                             results_autopiter = dedupe_rows(results_autopiter)
