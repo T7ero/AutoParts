@@ -131,9 +131,9 @@ def proxy_status(request):
 def reset_proxy_index(request):
     """Сбросить индекс прокси"""
     try:
-        from .autopiter_parser import PROXY_INDEX
-        global PROXY_INDEX
-        PROXY_INDEX = 0
+        # Меняем значение в модуле напрямую, без global
+        from . import autopiter_parser as ap
+        ap.PROXY_INDEX = 0
         
         return Response({'message': 'Индекс прокси сброшен'}, status=status.HTTP_200_OK)
     except Exception as e:
