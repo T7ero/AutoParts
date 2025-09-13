@@ -736,8 +736,8 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 				continue
 		
 		if not page_loaded:
-			log_debug("Armtek Selenium: страница не загрузилась или нет результатов")
-			return []
+			log_debug("Armtek Selenium: страница не загрузилась или нет результатов, используем fallback")
+			return parse_armtek_fallback(artikul, proxy)
 		
 		# Оптимизированная прокрутка страницы
 		try:
@@ -909,9 +909,12 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             chrome_options.add_argument('--disable-extensions')
             chrome_options.add_argument('--disable-plugins')
             chrome_options.add_argument('--disable-images')
-            chrome_options.add_argument('--disable-javascript')
+            # chrome_options.add_argument('--disable-javascript')  # Убираем для стабильности
             chrome_options.add_argument('--disable-web-security')
             chrome_options.add_argument('--allow-running-insecure-content')
+            chrome_options.add_argument('--disable-dev-shm-usage')
+            chrome_options.add_argument('--no-sandbox')
+            chrome_options.add_argument('--disable-gpu')
             chrome_options.add_argument('--disable-background-timer-throttling')
             chrome_options.add_argument('--disable-backgrounding-occluded-windows')
             chrome_options.add_argument('--disable-renderer-backgrounding')
@@ -1031,19 +1034,26 @@ def parse_armtek_fallback(artikul: str, proxy: Optional[str] = None) -> List[str
         soup = BeautifulSoup(response.text, 'html.parser')
         brands = set()
         
-        # Только основные селекторы для чистых брендов
+        # Расширенные селекторы для fallback
         selectors = [
             '.font__caption1.brand--selectable',
             '.font__body2.brand--selecting', 
-            '.brand--selecting'
+            '.brand--selecting',
+            '.font__body2.brand--selectable',
+            '.brand--selectable',
+            '.brand-name',
+            '.product-brand',
+            '[class*="brand"]',
+            '.font__caption1',
+            '.font__body2'
         ]
         
         for selector in selectors:
             elements = soup.select(selector)
-            for el in elements[:5]:  # Ограничиваем до 5 элементов
+            for el in elements[:10]:  # Увеличиваем до 10 элементов для fallback
                 text = el.get_text(strip=True)
-                if text and len(text) > 1 and len(text) < 30:  # Строже фильтрация
-                    # Строгая фильтрация мусора
+                if text and len(text) > 1 and len(text) < 50:  # Более мягкая фильтрация для fallback
+                    # Менее строгая фильтрация для fallback
                     if not any(garbage in text.lower() for garbage in [
                         'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
                         'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
@@ -1055,11 +1065,14 @@ def parse_armtek_fallback(artikul: str, proxy: Optional[str] = None) -> List[str
                         'оплата', 'оптовым', 'партнерам', 'планировщик', 'по', 'подбор', 'пожалуйста',
                         'поиск', 'покупателям', 'поставщикам', 'правовая', 'программа', 'работа',
                         'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины',
-                        'рессора', 'для', 'интернет', 'любой', 'возможн', 'ассортим'  # Дополнительные мусорные слова
+                        'рессора', 'для', 'любой', 'возможн', 'ассортим', 'интернет', 'любой',
+                        'шайба', 'подвески', 'стремянки', 'din125', 'bpw', 'axle'  # Дополнительные мусорные слова
                     ]):
-                        brands.add(text)
+                        # Дополнительная проверка - только если содержит буквы
+                        if any(c.isalpha() for c in text):
+                            brands.add(text)
         
-        result = list(brands)[:3]  # Ограничиваем до 3 брендов для чистоты
+        result = list(brands)[:5]  # Увеличиваем до 5 брендов для fallback
         log_debug(f"Armtek Fallback: найдено {len(result)} чистых брендов для {artikul}")
         return result
         
