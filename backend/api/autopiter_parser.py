@@ -4,6 +4,8 @@ import re
 from urllib.parse import quote
 import time
 import json
+import signal
+import threading
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -47,9 +49,10 @@ PAGE_LOAD_TIMEOUT = 15  # Увеличиваем для стабильности
 DRIVER_POOL_SIZE = 1  # Еще больше уменьшаем для стабильности
 DRIVER_CREATION_RETRIES = 3
 DRIVER_TIMEOUT_RETRIES = 2
-DRIVER_MAX_USES = 5  # Уменьшаем максимум использований
-DRIVER_CLEANUP_INTERVAL = 3  # Более частая очистка
-DRIVER_FORCE_CLEANUP_INTERVAL = 10  # Принудительная очистка каждые 10 использований
+DRIVER_MAX_USES = 3  # Еще больше уменьшаем максимум использований
+DRIVER_CLEANUP_INTERVAL = 2  # Еще более частая очистка
+DRIVER_FORCE_CLEANUP_INTERVAL = 5  # Принудительная очистка каждые 5 использований
+DRIVER_TIMEOUT_SECONDS = 15  # Таймаут для операций Selenium
 
 # Кеширование
 REQUEST_CACHE = {}
@@ -93,6 +96,41 @@ def force_cleanup_all_drivers():
         DRIVER_USE_COUNT.clear()
         
         log_debug("Все драйверы принудительно закрыты")
+
+def timeout_handler(signum, frame):
+    """Обработчик таймаута для принудительного завершения операций"""
+    log_debug("ТАЙМАУТ: принудительное завершение операции")
+    raise TimeoutError("Операция превысила максимальное время выполнения")
+
+def with_timeout(timeout_seconds, func, *args, **kwargs):
+    """Выполняет функцию с таймаутом"""
+    def wrapper():
+        try:
+            # Устанавливаем обработчик сигнала
+            old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(timeout_seconds)
+            
+            # Выполняем функцию
+            result = func(*args, **kwargs)
+            
+            # Отменяем таймаут
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+            
+            return result
+        except TimeoutError:
+            log_debug(f"Функция {func.__name__} превысила таймаут {timeout_seconds} секунд")
+            # Отменяем таймаут
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+            return None
+        except Exception as e:
+            # Отменяем таймаут
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+            raise e
+    
+    return wrapper()
 
 def get_driver_from_pool() -> Optional[webdriver.Chrome]:
     """Получает драйвер из пула или создает новый"""
@@ -839,6 +877,17 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 					driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
 					driver.implicitly_wait(3)
 					driver.set_script_timeout(10)
+					
+					# Принудительное завершение зависших операций
+					def load_page():
+						driver.get(url)
+						return True
+					
+					# Выполняем загрузку страницы с таймаутом
+					result = with_timeout(DRIVER_TIMEOUT_SECONDS, load_page)
+					if result is None:
+						log_debug(f"Таймаут загрузки страницы для {artikul}, попытка {page_attempt + 1}")
+						continue
 				except Exception:
 					pass
 				driver.get(url)
@@ -998,7 +1047,15 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		# Если брендов нет — пробуем из HTML
 		if not brands:
 			try:
-				page_source = driver.page_source
+				# Принудительное завершение зависших операций
+				def get_page_source():
+					return driver.page_source
+				
+				page_source = with_timeout(DRIVER_TIMEOUT_SECONDS, get_page_source)
+				if page_source is None:
+					log_debug(f"Таймаут получения HTML для {artikul}")
+					return parse_armtek_fallback(artikul, proxy)
+				
 				brands |= parse_armtek_page_text(page_source, artikul)
 				if brands:
 					log_debug(f"Armtek Selenium: найдено {len(brands)} брендов из HTML")
@@ -1021,6 +1078,12 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			if driver_id in DRIVER_USE_COUNT:
 				del DRIVER_USE_COUNT[driver_id]
 			driver = None
+			
+			# Принудительная очистка пула драйверов
+			force_cleanup_all_drivers()
+			
+			# Возвращаем fallback результат
+			return parse_armtek_fallback(artikul, proxy)
 		
 		return list(brands)
 	finally:
@@ -1040,6 +1103,10 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		if DRIVER_FORCE_CLEANUP_COUNTER >= DRIVER_FORCE_CLEANUP_INTERVAL:
 			_force_cleanup_driver_pool()
 			DRIVER_FORCE_CLEANUP_COUNTER = 0
+			
+		# Принудительная очистка пула драйверов при проблемах
+		if not brands:
+			force_cleanup_all_drivers()
 
 def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> Optional[webdriver.Chrome]:
     """Создает Chrome драйвер с улучшенной обработкой ошибок и retry логикой"""
