@@ -44,11 +44,12 @@ SELENIUM_TIMEOUT = 12  # Увеличиваем для стабильности
 PAGE_LOAD_TIMEOUT = 15  # Увеличиваем для стабильности
 
 # Настройки для пула драйверов
-DRIVER_POOL_SIZE = 2  # Уменьшаем для стабильности
+DRIVER_POOL_SIZE = 1  # Еще больше уменьшаем для стабильности
 DRIVER_CREATION_RETRIES = 3
 DRIVER_TIMEOUT_RETRIES = 2
-DRIVER_MAX_USES = 10  # Максимум использований драйвера
-DRIVER_CLEANUP_INTERVAL = 5  # Очистка каждые 5 использований
+DRIVER_MAX_USES = 5  # Уменьшаем максимум использований
+DRIVER_CLEANUP_INTERVAL = 3  # Более частая очистка
+DRIVER_FORCE_CLEANUP_INTERVAL = 10  # Принудительная очистка каждые 10 использований
 
 # Кеширование
 REQUEST_CACHE = {}
@@ -67,20 +68,49 @@ DRIVER_POOL_LOCK = threading.Lock()
 DRIVER_LAST_USED = {}
 DRIVER_USE_COUNT = {}
 DRIVER_CLEANUP_COUNTER = 0
+DRIVER_FORCE_CLEANUP_COUNTER = 0
 
 def log_debug(message):
     print(f"[DEBUG] {message}")
 
+def force_cleanup_all_drivers():
+    """Принудительная очистка всех драйверов в экстренных случаях"""
+    global DRIVER_POOL, DRIVER_POOL_LOCK, DRIVER_LAST_USED, DRIVER_USE_COUNT
+    
+    with DRIVER_POOL_LOCK:
+        log_debug("ЭКСТРЕННАЯ очистка всех драйверов")
+        
+        # Закрываем все драйверы в пуле
+        for driver in DRIVER_POOL:
+            try:
+                driver.quit()
+            except:
+                pass
+        
+        # Очищаем все структуры данных
+        DRIVER_POOL.clear()
+        DRIVER_LAST_USED.clear()
+        DRIVER_USE_COUNT.clear()
+        
+        log_debug("Все драйверы принудительно закрыты")
+
 def get_driver_from_pool() -> Optional[webdriver.Chrome]:
     """Получает драйвер из пула или создает новый"""
-    global DRIVER_POOL, DRIVER_POOL_LOCK, DRIVER_CLEANUP_COUNTER
+    global DRIVER_POOL, DRIVER_POOL_LOCK, DRIVER_CLEANUP_COUNTER, DRIVER_FORCE_CLEANUP_COUNTER
     
     with DRIVER_POOL_LOCK:
         # Периодическая очистка пула
         DRIVER_CLEANUP_COUNTER += 1
+        DRIVER_FORCE_CLEANUP_COUNTER += 1
+        
         if DRIVER_CLEANUP_COUNTER >= DRIVER_CLEANUP_INTERVAL:
             _cleanup_driver_pool()
             DRIVER_CLEANUP_COUNTER = 0
+        
+        # Принудительная полная очистка
+        if DRIVER_FORCE_CLEANUP_COUNTER >= DRIVER_FORCE_CLEANUP_INTERVAL:
+            _force_cleanup_driver_pool()
+            DRIVER_FORCE_CLEANUP_COUNTER = 0
         
         if DRIVER_POOL:
             driver = DRIVER_POOL.pop()
@@ -217,6 +247,27 @@ def _cleanup_driver_pool():
         
         if drivers_to_remove:
             log_debug(f"Очищено {len(drivers_to_remove)} драйверов из пула")
+
+def _force_cleanup_driver_pool():
+    """Принудительная полная очистка пула драйверов"""
+    global DRIVER_POOL, DRIVER_POOL_LOCK, DRIVER_LAST_USED, DRIVER_USE_COUNT
+    
+    with DRIVER_POOL_LOCK:
+        log_debug("Принудительная очистка пула драйверов")
+        
+        # Закрываем все драйверы в пуле
+        for driver in DRIVER_POOL:
+            try:
+                driver.quit()
+            except:
+                pass
+        
+        # Очищаем все структуры данных
+        DRIVER_POOL.clear()
+        DRIVER_LAST_USED.clear()
+        DRIVER_USE_COUNT.clear()
+        
+        log_debug("Пул драйверов полностью очищен")
 
 def load_proxies_from_file(file_path: str = "proxies.txt") -> List[str]:
     """Загружает список прокси из файла"""
@@ -787,6 +838,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 				try:
 					driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
 					driver.implicitly_wait(3)
+					driver.set_script_timeout(10)
 				except Exception:
 					pass
 				driver.get(url)
@@ -820,7 +872,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			log_debug("Armtek Selenium: страница не загрузилась или нет результатов, используем fallback")
 			return parse_armtek_fallback(artikul, proxy)
 		
-		# Оптимизированная прокрутка страницы
+		# Оптимизированная прокрутка страницы с таймаутом
 		try:
 			# Прокручиваем по частям для ускорения
 			driver.execute_script('window.scrollTo(0, document.body.scrollHeight/3);')
@@ -829,8 +881,14 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			time.sleep(0.1)
 			driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
 			time.sleep(0.1)
-		except Exception:
-			pass
+		except Exception as e:
+			log_debug(f"Ошибка прокрутки: {str(e)}")
+			# Если прокрутка не работает, возможно драйвер завис
+			try:
+				driver.execute_script('return document.readyState;')
+			except Exception:
+				log_debug("Драйвер завис, используем fallback")
+				return parse_armtek_fallback(artikul, proxy)
 		
 		# Ранний выход: проверяем блок "ничего не найдено"
 		try:
@@ -939,10 +997,30 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		
 		# Если брендов нет — пробуем из HTML
 		if not brands:
-			page_source = driver.page_source
-			brands |= parse_armtek_page_text(page_source, artikul)
-			if brands:
-				log_debug(f"Armtek Selenium: найдено {len(brands)} брендов из HTML")
+			try:
+				page_source = driver.page_source
+				brands |= parse_armtek_page_text(page_source, artikul)
+				if brands:
+					log_debug(f"Armtek Selenium: найдено {len(brands)} брендов из HTML")
+			except Exception as e:
+				log_debug(f"Ошибка получения HTML: {str(e)}")
+				# Если не можем получить HTML, драйвер завис
+				return parse_armtek_fallback(artikul, proxy)
+		
+		# Если все еще нет брендов, принудительно очищаем драйвер
+		if not brands:
+			log_debug("Armtek: бренды не найдены, принудительно очищаем драйвер")
+			try:
+				driver.quit()
+			except:
+				pass
+			# Удаляем драйвер из всех структур
+			driver_id = id(driver)
+			if driver_id in DRIVER_LAST_USED:
+				del DRIVER_LAST_USED[driver_id]
+			if driver_id in DRIVER_USE_COUNT:
+				del DRIVER_USE_COUNT[driver_id]
+			driver = None
 		
 		return list(brands)
 	finally:
@@ -951,11 +1029,17 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			return_driver_to_pool(driver)
 		
 		# Периодическая очистка пула для предотвращения накопления ресурсов
-		global DRIVER_CLEANUP_COUNTER
+		global DRIVER_CLEANUP_COUNTER, DRIVER_FORCE_CLEANUP_COUNTER
 		DRIVER_CLEANUP_COUNTER += 1
+		DRIVER_FORCE_CLEANUP_COUNTER += 1
+		
 		if DRIVER_CLEANUP_COUNTER >= DRIVER_CLEANUP_INTERVAL:
 			_cleanup_driver_pool()
 			DRIVER_CLEANUP_COUNTER = 0
+		
+		if DRIVER_FORCE_CLEANUP_COUNTER >= DRIVER_FORCE_CLEANUP_INTERVAL:
+			_force_cleanup_driver_pool()
+			DRIVER_FORCE_CLEANUP_COUNTER = 0
 
 def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> Optional[webdriver.Chrome]:
     """Создает Chrome драйвер с улучшенной обработкой ошибок и retry логикой"""
@@ -1033,6 +1117,7 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             # Устанавливаем таймауты
             driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
             driver.implicitly_wait(5)  # Увеличиваем для стабильности
+            driver.set_script_timeout(10)  # Таймаут для JavaScript
             
             return driver
             
