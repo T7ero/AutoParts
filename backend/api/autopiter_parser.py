@@ -839,7 +839,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 						# Исключаем элементы, находящиеся после секции "Возможные замены"
 						if not is_before_replacements(el):
 							continue
-						# Дополнительная фильтрация мусора
+						# Строгая фильтрация мусора - только чистые бренды
 						if not any(garbage in text.lower() for garbage in [
 							'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
 							'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
@@ -850,7 +850,8 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 							'магазины', 'москва', 'мотозапчасти', 'моторные', 'мы', 'нет', 'новости', 'ооо',
 							'оплата', 'оптовым', 'партнерам', 'планировщик', 'по', 'подбор', 'пожалуйста',
 							'поиск', 'покупателям', 'поставщикам', 'правовая', 'программа', 'работа',
-							'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины'
+							'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины',
+							'reссора', 'для', 'любой', 'возможн', 'ассортим', 'интернет', 'любой'  # Дополнительные мусорные слова
 						]):
 							brands.add(text)
 							log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
@@ -872,9 +873,23 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 						if not is_before_replacements(el):
 							continue
 						text = el.text.strip()
-						if text and len(text) > 1:
-							brands.add(text)
-							log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
+						if text and len(text) > 1 and len(text) < 30:  # Строже фильтрация длины
+							# Строгая фильтрация мусора
+							if not any(garbage in text.lower() for garbage in [
+								'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
+								'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
+								'автозапчасти', 'аккумуляторы', 'аксессуары', 'акции', 'бренды', 'ваш', 'возврат',
+								'войти', 'выбор', 'вывод', 'гараж', 'гарантийная', 'главная', 'госномеру',
+								'грузовые', 'дней', 'доставка', 'инструмент', 'интернет', 'искать', 'искомый',
+								'как', 'каталог', 'китайские', 'компании', 'контакты', 'корзина', 'легковые',
+								'магазины', 'москва', 'мотозапчасти', 'моторные', 'мы', 'нет', 'новости', 'ооо',
+								'оплата', 'оптовым', 'партнерам', 'планировщик', 'по', 'подбор', 'пожалуйста',
+								'поиск', 'покупателям', 'поставщикам', 'правовая', 'программа', 'работа',
+								'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины',
+								'reссора', 'для', 'любой', 'возможн', 'ассортим', 'интернет', 'любой'
+							]):
+								brands.add(text)
+								log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
 							# Ранний выход при нахождении достаточного количества брендов
 							if len(brands) >= max_brands_found:
 								log_debug(f"Armtek Selenium: найдено {len(brands)} брендов, прерываем поиск")
@@ -884,12 +899,9 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 				except Exception as e:
 					log_debug(f"Armtek Selenium: ошибка поиска по селектору {selector}: {str(e)}")
 		
-		# Если брендов нет — пробуем из HTML
-		if not brands:
-			page_source = driver.page_source
-			brands |= parse_armtek_page_text(page_source, artikul)
-			if brands:
-				log_debug(f"Armtek Selenium: найдено {len(brands)} брендов из HTML")
+		# Убираем HTML парсинг - он дает мусор вместо брендов
+		if brands:
+			log_debug(f"Armtek Selenium: найдено {len(brands)} брендов по селекторам")
 		
 		return list(brands)
 	finally:
@@ -1055,25 +1067,23 @@ def parse_armtek_fallback(artikul: str, proxy: Optional[str] = None) -> List[str
         response = requests.get(url, headers=headers, proxies=proxies, timeout=10)
         response.raise_for_status()
         
-        # Парсим HTML
+        # Fallback парсинг только по основным селекторам без HTML мусора
         soup = BeautifulSoup(response.text, 'html.parser')
         brands = set()
         
-        # Ищем бренды по селекторам
+        # Только основные селекторы для чистых брендов
         selectors = [
             '.font__caption1.brand--selectable',
             '.font__body2.brand--selecting', 
-            '.brand--selecting',
-            '.brand-name',
-            '.product-brand'
+            '.brand--selecting'
         ]
         
         for selector in selectors:
             elements = soup.select(selector)
-            for el in elements[:10]:  # Ограничиваем до 10 элементов
+            for el in elements[:5]:  # Ограничиваем до 5 элементов
                 text = el.get_text(strip=True)
-                if text and len(text) > 1 and len(text) < 50:
-                    # Фильтруем мусор
+                if text and len(text) > 1 and len(text) < 30:  # Строже фильтрация
+                    # Строгая фильтрация мусора
                     if not any(garbage in text.lower() for garbage in [
                         'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
                         'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
@@ -1084,12 +1094,13 @@ def parse_armtek_fallback(artikul: str, proxy: Optional[str] = None) -> List[str
                         'магазины', 'москва', 'мотозапчасти', 'моторные', 'мы', 'нет', 'новости', 'ооо',
                         'оплата', 'оптовым', 'партнерам', 'планировщик', 'по', 'подбор', 'пожалуйста',
                         'поиск', 'покупателям', 'поставщикам', 'правовая', 'программа', 'работа',
-                        'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины'
+                        'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины',
+                        'рессора', 'для', 'интернет', 'любой', 'возможн', 'ассортим'  # Дополнительные мусорные слова
                     ]):
                         brands.add(text)
         
-        result = list(brands)[:5]  # Ограничиваем до 5 брендов
-        log_debug(f"Armtek Fallback: найдено {len(result)} брендов для {artikul}")
+        result = list(brands)[:3]  # Ограничиваем до 3 брендов для чистоты
+        log_debug(f"Armtek Fallback: найдено {len(result)} чистых брендов для {artikul}")
         return result
         
     except Exception as e:
