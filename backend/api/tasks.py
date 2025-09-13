@@ -439,7 +439,7 @@ def process_parsing_task(self, task_id):
         def parse_all_parallel(numbers, brand, part_number, name):
             results = {'autopiter': [], 'emex': []}
             state = {"emex_disabled": False, "emex_failures": 0}
-            ARTICLE_TIMEOUT = 12  # общий таймаут на один артикул
+            ARTICLE_TIMEOUT = 8  # общий таймаут на один артикул
             emex_semaphore = threading.Semaphore(3)  # увеличиваем одновременные Emex-запросы
 
             def parse_one(site, parser_func, max_retries=1):

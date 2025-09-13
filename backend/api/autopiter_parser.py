@@ -44,9 +44,9 @@ SELENIUM_TIMEOUT = 5  # Минимальные ожидания
 PAGE_LOAD_TIMEOUT = 6  # Быстрая загрузка
 
 # Настройки для пула драйверов
-DRIVER_POOL_SIZE = 4
-DRIVER_CREATION_RETRIES = 3
-DRIVER_TIMEOUT_RETRIES = 2  # 1 без прокси + 1 с прокси
+DRIVER_POOL_SIZE = 2  # Уменьшаем для стабильности
+DRIVER_CREATION_RETRIES = 2  # Меньше попыток
+DRIVER_TIMEOUT_RETRIES = 1  # Только 1 попытка
 
 # Кеширование
 REQUEST_CACHE = {}
@@ -65,7 +65,7 @@ DRIVER_POOL_LOCK = threading.Lock()
 DRIVER_LAST_USED = {}
 DRIVER_USE_COUNT = {}
 DRIVER_MAX_USES = 30
-ARMTEK_PER_ARTICLE_TIMEOUT = 12  # жёсткий лимит на один артикул, сек
+ARMTEK_PER_ARTICLE_TIMEOUT = 8  # жёсткий лимит на один артикул, сек
 
 def log_debug(message):
     print(f"[DEBUG] {message}")
@@ -711,8 +711,8 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		# Получаем драйвер из пула или создаем новый
 		driver = get_driver_from_pool()
 		if driver is None:
-			log_debug("Armtek Selenium: не удалось получить драйвер из пула")
-			return []
+			log_debug("Armtek Selenium: не удалось получить драйвер из пула, используем fallback")
+			return parse_armtek_fallback(artikul, proxy)
 		
 		# Если прокси содержит авторизацию, игнорируем его для Selenium (Chrome не поддерживает в CLI)
 		effective_proxy = None if (proxy and '@' in proxy) else proxy
@@ -937,7 +937,7 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             chrome_options.add_argument('--disable-extensions')
             chrome_options.add_argument('--disable-plugins')
             chrome_options.add_argument('--disable-images')
-            chrome_options.add_argument('--disable-javascript')
+            # chrome_options.add_argument('--disable-javascript')  # Убираем для стабильности
             chrome_options.add_argument('--disable-web-security')
             chrome_options.add_argument('--allow-running-insecure-content')
             chrome_options.add_argument('--disable-background-timer-throttling')
@@ -969,14 +969,14 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             
             # Устанавливаем таймауты
             driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-            driver.implicitly_wait(3)  # Уменьшаем для ускорения
+            driver.implicitly_wait(2)  # Уменьшаем до 2 секунд  # Уменьшаем для ускорения
             
             return driver
             
         except Exception as e:
             log_debug(f"Попытка {attempt + 1} создания Chrome драйвера: {str(e)}")
             if attempt < DRIVER_CREATION_RETRIES - 1:
-                time.sleep(2 ** attempt)  # Экспоненциальная задержка
+                time.sleep(0.5)  # Быстрая задержка
             else:
                 log_debug(f"Не удалось создать Chrome драйвер после {DRIVER_CREATION_RETRIES} попыток")
                 return None
@@ -1029,6 +1029,72 @@ def _create_chrome_driver_minimal(temp_dir: str, proxy: Optional[str] = None):
     except Exception as e:
         log_debug(f"Ошибка создания минимального Chrome драйвера: {str(e)}")
         return None
+
+def parse_armtek_fallback(artikul: str, proxy: Optional[str] = None) -> List[str]:
+    """Fallback парсинг Armtek без Selenium - использует requests"""
+    try:
+        log_debug(f"Armtek Fallback: запуск для артикула {artikul}")
+        
+        url = f"https://armtek.ru/search?text={artikul}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        }
+        
+        proxies = None
+        if proxy:
+            if '@' in proxy:
+                proxies = {'http': f'http://{proxy}', 'https': f'http://{proxy}'}
+            else:
+                proxies = {'http': f'http://{proxy}', 'https': f'http://{proxy}'}
+        
+        response = requests.get(url, headers=headers, proxies=proxies, timeout=10)
+        response.raise_for_status()
+        
+        # Парсим HTML
+        soup = BeautifulSoup(response.text, 'html.parser')
+        brands = set()
+        
+        # Ищем бренды по селекторам
+        selectors = [
+            '.font__caption1.brand--selectable',
+            '.font__body2.brand--selecting', 
+            '.brand--selecting',
+            '.brand-name',
+            '.product-brand'
+        ]
+        
+        for selector in selectors:
+            elements = soup.select(selector)
+            for el in elements[:10]:  # Ограничиваем до 10 элементов
+                text = el.get_text(strip=True)
+                if text and len(text) > 1 and len(text) < 50:
+                    # Фильтруем мусор
+                    if not any(garbage in text.lower() for garbage in [
+                        'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
+                        'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
+                        'автозапчасти', 'аккумуляторы', 'аксессуары', 'акции', 'бренды', 'ваш', 'возврат',
+                        'войти', 'выбор', 'вывод', 'гараж', 'гарантийная', 'главная', 'госномеру',
+                        'грузовые', 'дней', 'доставка', 'инструмент', 'интернет', 'искать', 'искомый',
+                        'как', 'каталог', 'китайские', 'компании', 'контакты', 'корзина', 'легковые',
+                        'магазины', 'москва', 'мотозапчасти', 'моторные', 'мы', 'нет', 'новости', 'ооо',
+                        'оплата', 'оптовым', 'партнерам', 'планировщик', 'по', 'подбор', 'пожалуйста',
+                        'поиск', 'покупателям', 'поставщикам', 'правовая', 'программа', 'работа',
+                        'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины'
+                    ]):
+                        brands.add(text)
+        
+        result = list(brands)[:5]  # Ограничиваем до 5 брендов
+        log_debug(f"Armtek Fallback: найдено {len(result)} брендов для {artikul}")
+        return result
+        
+    except Exception as e:
+        log_debug(f"Armtek Fallback: ошибка для {artikul}: {str(e)}")
+        return []
 
 def parse_armtek_page_text(page_text: str, artikul: str) -> set:
     """Парсит бренды из текста страницы Armtek с улучшенной фильтрацией"""
