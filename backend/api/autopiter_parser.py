@@ -44,9 +44,11 @@ SELENIUM_TIMEOUT = 12  # Увеличиваем для стабильности
 PAGE_LOAD_TIMEOUT = 15  # Увеличиваем для стабильности
 
 # Настройки для пула драйверов
-DRIVER_POOL_SIZE = 3
+DRIVER_POOL_SIZE = 2  # Уменьшаем для стабильности
 DRIVER_CREATION_RETRIES = 3
 DRIVER_TIMEOUT_RETRIES = 2
+DRIVER_MAX_USES = 10  # Максимум использований драйвера
+DRIVER_CLEANUP_INTERVAL = 5  # Очистка каждые 5 использований
 
 # Кеширование
 REQUEST_CACHE = {}
@@ -63,18 +65,45 @@ BAD_PROXIES = set()
 DRIVER_POOL = []
 DRIVER_POOL_LOCK = threading.Lock()
 DRIVER_LAST_USED = {}
+DRIVER_USE_COUNT = {}
+DRIVER_CLEANUP_COUNTER = 0
 
 def log_debug(message):
     print(f"[DEBUG] {message}")
 
 def get_driver_from_pool() -> Optional[webdriver.Chrome]:
     """Получает драйвер из пула или создает новый"""
-    global DRIVER_POOL, DRIVER_POOL_LOCK
+    global DRIVER_POOL, DRIVER_POOL_LOCK, DRIVER_CLEANUP_COUNTER
     
     with DRIVER_POOL_LOCK:
+        # Периодическая очистка пула
+        DRIVER_CLEANUP_COUNTER += 1
+        if DRIVER_CLEANUP_COUNTER >= DRIVER_CLEANUP_INTERVAL:
+            _cleanup_driver_pool()
+            DRIVER_CLEANUP_COUNTER = 0
+        
         if DRIVER_POOL:
             driver = DRIVER_POOL.pop()
-            DRIVER_LAST_USED[id(driver)] = time.time()
+            driver_id = id(driver)
+            DRIVER_LAST_USED[driver_id] = time.time()
+            DRIVER_USE_COUNT[driver_id] = DRIVER_USE_COUNT.get(driver_id, 0) + 1
+            
+            # Проверяем, не превысил ли драйвер лимит использований
+            if DRIVER_USE_COUNT[driver_id] >= DRIVER_MAX_USES:
+                try:
+                    driver.quit()
+                except:
+                    pass
+                # Создаем новый драйвер
+                temp_dir = tempfile.mkdtemp(prefix=f"chrome_pool_{uuid.uuid4().hex[:8]}_")
+                new_driver = _create_chrome_driver_robust(temp_dir)
+                if new_driver:
+                    new_driver_id = id(new_driver)
+                    DRIVER_LAST_USED[new_driver_id] = time.time()
+                    DRIVER_USE_COUNT[new_driver_id] = 1
+                    return new_driver
+                return None
+            
             return driver
     
     # Создаем новый драйвер
@@ -83,7 +112,9 @@ def get_driver_from_pool() -> Optional[webdriver.Chrome]:
         try:
             driver = _create_chrome_driver_robust(temp_dir)
             if driver:
-                DRIVER_LAST_USED[id(driver)] = time.time()
+                driver_id = id(driver)
+                DRIVER_LAST_USED[driver_id] = time.time()
+                DRIVER_USE_COUNT[driver_id] = 1
                 return driver
             time.sleep(1)
         except Exception as e:
@@ -100,15 +131,27 @@ def return_driver_to_pool(driver: webdriver.Chrome):
         return
     
     try:
-        # Проверяем, не слишком ли старый драйвер
         driver_id = id(driver)
+        
+        # Проверяем, не слишком ли старый драйвер
         if driver_id in DRIVER_LAST_USED:
             age = time.time() - DRIVER_LAST_USED[driver_id]
             if age > 300:  # 5 минут
                 driver.quit()
                 if driver_id in DRIVER_LAST_USED:
                     del DRIVER_LAST_USED[driver_id]
+                if driver_id in DRIVER_USE_COUNT:
+                    del DRIVER_USE_COUNT[driver_id]
                 return
+        
+        # Проверяем количество использований
+        if driver_id in DRIVER_USE_COUNT and DRIVER_USE_COUNT[driver_id] >= DRIVER_MAX_USES:
+            driver.quit()
+            if driver_id in DRIVER_LAST_USED:
+                del DRIVER_LAST_USED[driver_id]
+            if driver_id in DRIVER_USE_COUNT:
+                del DRIVER_USE_COUNT[driver_id]
+            return
         
         with DRIVER_POOL_LOCK:
             if len(DRIVER_POOL) < DRIVER_POOL_SIZE:
@@ -117,6 +160,8 @@ def return_driver_to_pool(driver: webdriver.Chrome):
                 driver.quit()
                 if driver_id in DRIVER_LAST_USED:
                     del DRIVER_LAST_USED[driver_id]
+                if driver_id in DRIVER_USE_COUNT:
+                    del DRIVER_USE_COUNT[driver_id]
     except Exception as e:
         log_debug(f"Ошибка возврата драйвера в пул: {str(e)}")
         try:
@@ -126,7 +171,7 @@ def return_driver_to_pool(driver: webdriver.Chrome):
 
 def cleanup_driver_pool():
     """Очищает пул драйверов"""
-    global DRIVER_POOL, DRIVER_POOL_LOCK, DRIVER_LAST_USED
+    global DRIVER_POOL, DRIVER_POOL_LOCK, DRIVER_LAST_USED, DRIVER_USE_COUNT
     
     with DRIVER_POOL_LOCK:
         for driver in DRIVER_POOL:
@@ -136,6 +181,42 @@ def cleanup_driver_pool():
                 pass
         DRIVER_POOL.clear()
         DRIVER_LAST_USED.clear()
+        DRIVER_USE_COUNT.clear()
+
+def _cleanup_driver_pool():
+    """Внутренняя функция очистки пула драйверов"""
+    global DRIVER_POOL, DRIVER_POOL_LOCK, DRIVER_LAST_USED, DRIVER_USE_COUNT
+    
+    with DRIVER_POOL_LOCK:
+        current_time = time.time()
+        drivers_to_remove = []
+        
+        # Находим старые или переиспользованные драйверы
+        for i, driver in enumerate(DRIVER_POOL):
+            driver_id = id(driver)
+            if driver_id in DRIVER_LAST_USED:
+                age = current_time - DRIVER_LAST_USED[driver_id]
+                use_count = DRIVER_USE_COUNT.get(driver_id, 0)
+                
+                # Удаляем драйверы старше 3 минут или использованные более 5 раз
+                if age > 180 or use_count > 5:
+                    drivers_to_remove.append(i)
+        
+        # Удаляем найденные драйверы
+        for i in reversed(drivers_to_remove):
+            driver = DRIVER_POOL.pop(i)
+            driver_id = id(driver)
+            try:
+                driver.quit()
+            except:
+                pass
+            if driver_id in DRIVER_LAST_USED:
+                del DRIVER_LAST_USED[driver_id]
+            if driver_id in DRIVER_USE_COUNT:
+                del DRIVER_USE_COUNT[driver_id]
+        
+        if drivers_to_remove:
+            log_debug(f"Очищено {len(drivers_to_remove)} драйверов из пула")
 
 def load_proxies_from_file(file_path: str = "proxies.txt") -> List[str]:
     """Загружает список прокси из файла"""
@@ -868,6 +949,13 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		# Возвращаем драйвер в пул вместо закрытия
 		if driver:
 			return_driver_to_pool(driver)
+		
+		# Периодическая очистка пула для предотвращения накопления ресурсов
+		global DRIVER_CLEANUP_COUNTER
+		DRIVER_CLEANUP_COUNTER += 1
+		if DRIVER_CLEANUP_COUNTER >= DRIVER_CLEANUP_INTERVAL:
+			_cleanup_driver_pool()
+			DRIVER_CLEANUP_COUNTER = 0
 
 def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> Optional[webdriver.Chrome]:
     """Создает Chrome драйвер с улучшенной обработкой ошибок и retry логикой"""
