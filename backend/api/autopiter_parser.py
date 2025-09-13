@@ -39,9 +39,9 @@ HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 # Оптимизированные таймауты для ускорения работы
-TIMEOUT = 8  # Уменьшаем для ускорения
-SELENIUM_TIMEOUT = 7  # ещё быстрее явные ожидания
-PAGE_LOAD_TIMEOUT = 8  # таймаут загрузки страницы
+TIMEOUT = 6  # Ещё быстрее
+SELENIUM_TIMEOUT = 5  # Минимальные ожидания
+PAGE_LOAD_TIMEOUT = 6  # Быстрая загрузка
 
 # Настройки для пула драйверов
 DRIVER_POOL_SIZE = 4
@@ -65,7 +65,7 @@ DRIVER_POOL_LOCK = threading.Lock()
 DRIVER_LAST_USED = {}
 DRIVER_USE_COUNT = {}
 DRIVER_MAX_USES = 30
-ARMTEK_PER_ARTICLE_TIMEOUT = 15  # жёсткий лимит на один артикул, сек
+ARMTEK_PER_ARTICLE_TIMEOUT = 12  # жёсткий лимит на один артикул, сек
 
 def log_debug(message):
     print(f"[DEBUG] {message}")
@@ -760,17 +760,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			log_debug("Armtek Selenium: страница не загрузилась или нет результатов")
 			return []
 		
-		# Оптимизированная прокрутка страницы
-		try:
-			# Прокручиваем по частям для ускорения
-			driver.execute_script('window.scrollTo(0, document.body.scrollHeight/3);')
-			time.sleep(0.1)
-			driver.execute_script('window.scrollTo(0, document.body.scrollHeight*2/3);')
-			time.sleep(0.1)
-			driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
-			time.sleep(0.1)
-		except Exception:
-			pass
+		# Убираем прокрутку для ускорения - не нужна для поиска брендов
 		
 		# Ранний выход: проверяем блок "ничего не найдено"
 		try:
@@ -836,7 +826,8 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		]
 		
 		deadline = time.time() + ARMTEK_PER_ARTICLE_TIMEOUT
-		max_elements = 40
+		max_elements = 20  # Ограничиваем до 20 элементов для ускорения
+		max_brands_found = 5  # Ранний выход при нахождении 5 брендов
 		for selector in exact_selectors:
 			try:
 				elements = driver.find_elements(By.CSS_SELECTOR, selector)[:max_elements]
@@ -863,6 +854,10 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 						]):
 							brands.add(text)
 							log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
+							# Ранний выход при нахождении достаточного количества брендов
+							if len(brands) >= max_brands_found:
+								log_debug(f"Armtek Selenium: найдено {len(brands)} брендов, прерываем поиск")
+								break
 			except Exception as e:
 				log_debug(f"Armtek Selenium: ошибка поиска по селектору {selector}: {str(e)}")
 		
@@ -880,6 +875,12 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 						if text and len(text) > 1:
 							brands.add(text)
 							log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
+							# Ранний выход при нахождении достаточного количества брендов
+							if len(brands) >= max_brands_found:
+								log_debug(f"Armtek Selenium: найдено {len(brands)} брендов, прерываем поиск")
+								break
+					if len(brands) >= max_brands_found:
+						break
 				except Exception as e:
 					log_debug(f"Armtek Selenium: ошибка поиска по селектору {selector}: {str(e)}")
 		

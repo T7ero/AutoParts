@@ -439,7 +439,7 @@ def process_parsing_task(self, task_id):
         def parse_all_parallel(numbers, brand, part_number, name):
             results = {'autopiter': [], 'emex': []}
             state = {"emex_disabled": False, "emex_failures": 0}
-            ARTICLE_TIMEOUT = 15  # общий таймаут на один артикул
+            ARTICLE_TIMEOUT = 12  # общий таймаут на один артикул
             emex_semaphore = threading.Semaphore(3)  # увеличиваем одновременные Emex-запросы
 
             def parse_one(site, parser_func, max_retries=1):
@@ -462,8 +462,8 @@ def process_parsing_task(self, task_id):
                                 proxy = get_next_proxy()
                                 log(f"{site.capitalize()}: попытка {attempt+1} с прокси для {num}")
                             
-                            # Уменьшаем задержку для ускорения
-                            time.sleep(0.03 if site == 'autopiter' else 0.03)
+                            # Убираем задержку для максимального ускорения
+                            time.sleep(0.01)
                             brands = parser_func(num, proxy)
                             
                             # Сохраняем результат в кэш
@@ -475,7 +475,7 @@ def process_parsing_task(self, task_id):
                         except Exception as e:
                             log(f"Error parsing {site} for {num} (attempt {attempt + 1}): {str(e)}")
                             if attempt < max_retries - 1:
-                                time.sleep(0.2)  # Еще больше уменьшаем время ожидания
+                                time.sleep(0.1)  # Минимальное время ожидания
                             else:
                                 log(f"Failed to parse {site} for {num} after {max_retries} attempts")
                                 # Сохраняем пустой результат в кэш
