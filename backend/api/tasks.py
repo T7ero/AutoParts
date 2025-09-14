@@ -368,6 +368,15 @@ def process_parsing_task(self, task_id):
         # Загружаем прокси при старте задачи
         load_proxies_from_file()
         
+        def log(msg: str):
+            # Пишем в память, stdout и celery-лог
+            log_messages.append(msg)
+            try:
+                logger.info(msg)
+            except Exception:
+                pass
+            print(msg)
+
         # Проверяем размер файла и разбиваем на части если нужно
         df = pd.read_excel(task.file.path)
         # Очищаем DataFrame от пустых строк
@@ -392,15 +401,6 @@ def process_parsing_task(self, task_id):
         results_autopiter = []
         results_armtek = []
         results_emex = []
-
-        def log(msg: str):
-            # Пишем в память, stdout и celery-лог
-            log_messages.append(msg)
-            try:
-                logger.info(msg)
-            except Exception:
-                pass
-            print(msg)
 
         # Чтение выбранных источников (autopiter, emex, armtek) из полей задачи, если есть
         selected_sources = {"autopiter", "emex", "armtek"}
