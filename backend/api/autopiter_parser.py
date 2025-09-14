@@ -143,6 +143,36 @@ def force_kill_hanging_drivers():
         result = subprocess.run(['pkill', '-f', 'chromedriver'], capture_output=True, text=True)
         if result.returncode == 0:
             log_debug("Принудительно убиты зависшие процессы chromedriver")
+        
+        # Принудительно убиваем процессы с -9 сигналом
+        subprocess.run(['pkill', '-9', '-f', 'chrome'], capture_output=True, text=True)
+        subprocess.run(['pkill', '-9', '-f', 'chromedriver'], capture_output=True, text=True)
+        
+        # Дополнительно убиваем процессы по PID
+        try:
+            # Получаем список всех процессов Chrome
+            result = subprocess.run(['pgrep', '-f', 'chrome'], capture_output=True, text=True)
+            if result.returncode == 0:
+                pids = result.stdout.strip().split('\n')
+                for pid in pids:
+                    if pid.strip():
+                        try:
+                            subprocess.run(['kill', '-9', pid.strip()], capture_output=True, text=True)
+                        except:
+                            pass
+            
+            # Получаем список всех процессов chromedriver
+            result = subprocess.run(['pgrep', '-f', 'chromedriver'], capture_output=True, text=True)
+            if result.returncode == 0:
+                pids = result.stdout.strip().split('\n')
+                for pid in pids:
+                    if pid.strip():
+                        try:
+                            subprocess.run(['kill', '-9', pid.strip()], capture_output=True, text=True)
+                        except:
+                            pass
+        except Exception:
+            pass
             
     except Exception as e:
         log_debug(f"Ошибка принудительного убийства процессов: {str(e)}")
@@ -379,13 +409,27 @@ def cleanup_chrome_processes():
         if chrome_processes:
             log_debug(f"Найдено {len(chrome_processes)} процессов Chrome для очистки")
             
-            # Убиваем процессы
+            # Убиваем процессы с разными сигналами для максимальной эффективности
             for process_name in ['chrome', 'chromedriver', 'chromium']:
                 try:
+                    # Сначала пробуем мягкое завершение
+                    subprocess.run(['pkill', '-f', process_name], 
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+                    time.sleep(0.5)
+                    # Затем принудительное завершение
                     subprocess.run(['pkill', '-9', '-f', process_name], 
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
                 except:
                     pass
+            
+            # Дополнительно убиваем по PID для гарантии
+            for pid in chrome_processes:
+                if pid.strip():
+                    try:
+                        subprocess.run(['kill', '-9', pid.strip()], 
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+                    except:
+                        pass
         
         # Очищаем временные директории Chrome более эффективно
         temp_patterns = [
