@@ -699,7 +699,7 @@ def process_parsing_task(self, task_id):
                                                 time.sleep(0.03 + (0.07 * (hash(num) % 100) / 100.0))
                                                 # Используем функцию для поиска брендов
                                                 from .autopiter_parser import get_brands_by_artikul_armtek
-                                                result = get_brands_by_artikul_armtek(num, proxy)
+                                                result = get_brands_by_artikul_armtek(num, proxy, log)
                                             except Exception as e:
                                                 exception = e
                                         

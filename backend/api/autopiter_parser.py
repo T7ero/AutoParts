@@ -177,7 +177,7 @@ def force_kill_hanging_drivers():
     except Exception as e:
         log_debug(f"Ошибка принудительного убийства процессов: {str(e)}")
 
-def get_driver_from_pool() -> Optional[webdriver.Chrome]:
+def get_driver_from_pool() -> Tuple[Optional[webdriver.Chrome], Optional[str]]:
     """ВСЕГДА создает новый драйвер для максимальной стабильности"""
     global DRIVER_POOL, DRIVER_POOL_LOCK, DRIVER_CLEANUP_COUNTER, DRIVER_FORCE_CLEANUP_COUNTER
     
@@ -198,7 +198,7 @@ def get_driver_from_pool() -> Optional[webdriver.Chrome]:
                 DRIVER_LAST_USED[driver_id] = time.time()
                 DRIVER_USE_COUNT[driver_id] = 1
                 log_debug(f"Создан новый драйвер для максимальной стабильности (попытка {attempt + 1})")
-                return driver
+                return driver, temp_dir
             time.sleep(1)
         except Exception as e:
             log_debug(f"Ошибка создания драйвера (попытка {attempt + 1}): {str(e)}")
@@ -206,10 +206,16 @@ def get_driver_from_pool() -> Optional[webdriver.Chrome]:
             force_kill_hanging_drivers()
             time.sleep(2)
     
+    # Если не удалось создать драйвер, удаляем временную директорию
+    try:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    except Exception:
+        pass
+    
     log_debug("ОШИБКА: Не удалось создать новый драйвер после всех попыток")
-    return None
+    return None, None
 
-def return_driver_to_pool(driver: webdriver.Chrome):
+def return_driver_to_pool(driver: webdriver.Chrome, temp_dir: Optional[str] = None):
     """ВСЕГДА закрывает драйвер для максимальной стабильности"""
     global DRIVER_POOL, DRIVER_POOL_LOCK
     
@@ -232,6 +238,14 @@ def return_driver_to_pool(driver: webdriver.Chrome):
             del DRIVER_USE_COUNT[driver_id]
     except Exception as e:
         log_debug(f"Ошибка очистки трекинга драйвера: {str(e)}")
+    
+    # Удаляем временную директорию если она была передана
+    if temp_dir:
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            log_debug(f"Временная директория {temp_dir} удалена")
+        except Exception as e:
+            log_debug(f"Ошибка удаления временной директории {temp_dir}: {str(e)}")
     
     # Принудительно убиваем зависшие процессы после закрытия
     force_kill_hanging_drivers()
@@ -867,12 +881,13 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 	"""
 	brands: Set[str] = set()
 	driver = None
+	temp_dir = None
 	
 	try:
 		log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
 		
 		# Получаем драйвер из пула или создаем новый
-		driver = get_driver_from_pool()
+		driver, temp_dir = get_driver_from_pool()
 		if driver is None:
 			log_debug("Armtek Selenium: не удалось получить драйвер из пула, используем fallback")
 			return parse_armtek_fallback(artikul, proxy)
@@ -1109,7 +1124,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 	finally:
 		# Возвращаем драйвер в пул вместо закрытия
 		if driver:
-			return_driver_to_pool(driver)
+			return_driver_to_pool(driver, temp_dir)
 		
 		# Периодическая очистка пула для предотвращения накопления ресурсов
 		global DRIVER_CLEANUP_COUNTER, DRIVER_FORCE_CLEANUP_COUNTER
