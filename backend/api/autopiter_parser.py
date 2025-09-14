@@ -39,9 +39,9 @@ HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 # Оптимизированные таймауты для ускорения работы
-TIMEOUT = 8  # Уменьшаем для ускорения
-SELENIUM_TIMEOUT = 8  # Уменьшаем для ускорения
-PAGE_LOAD_TIMEOUT = 8  # Уменьшаем для ускорения
+TIMEOUT = 5  # Было 8
+SELENIUM_TIMEOUT = 5  # Было 8  
+PAGE_LOAD_TIMEOUT = 5  # Было 8
 
 # Настройки для пула драйверов
 DRIVER_POOL_SIZE = 3
