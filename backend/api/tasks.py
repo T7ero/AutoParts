@@ -401,8 +401,8 @@ def process_parsing_task(self, task_id):
         def parse_all_parallel(numbers, brand, part_number, name):
             results = {'autopiter': [], 'emex': []}
             state = {"emex_disabled": False, "emex_failures": 0}
-            ARTICLE_TIMEOUT = 15  # уменьшаем таймаут до 15 секунд
-            emex_semaphore = threading.Semaphore(1)  # ограничиваем до 1 одновременного Emex-запроса
+            ARTICLE_TIMEOUT = 20  # общий таймаут на один артикул
+            emex_semaphore = threading.Semaphore(2)  # ограничиваем одновременные Emex-запросы
 
             def parse_one(site, parser_func, max_retries=1):
                 def inner(num, proxy=None):
@@ -424,40 +424,9 @@ def process_parsing_task(self, task_id):
                                 proxy = get_next_proxy()
                                 log(f"{site.capitalize()}: попытка {attempt+1} с прокси для {num}")
                             
-                            # Принудительное завершение зависших операций с помощью threading
-                            result = None
-                            exception = None
-                            
-                            def parse_with_timeout():
-                                nonlocal result, exception
-                                try:
-                                    # Уменьшаем задержку для ускорения
-                                    time.sleep(0.05 if site == 'autopiter' else 0.05)
-                                    result = parser_func(num, proxy)
-                                except Exception as e:
-                                    exception = e
-                            
-                            # Запускаем парсинг в отдельном потоке с таймаутом
-                            parse_thread = threading.Thread(target=parse_with_timeout)
-                            parse_thread.daemon = True
-                            parse_thread.start()
-                            parse_thread.join(timeout=ARTICLE_TIMEOUT)
-                            
-                            if parse_thread.is_alive():
-                                log(f"{site.capitalize()}: таймаут для {num}, принудительно завершаем")
-                                # Принудительно убиваем зависшие процессы Chrome
-                                try:
-                                    cleanup_chrome_processes()
-                                except Exception:
-                                    pass
-                                # Сохраняем пустой результат в кэш
-                                set_cache(num, site, [], True)
-                                return []
-                            
-                            if exception:
-                                raise exception
-                            
-                            brands = result
+                            # Уменьшаем задержку для ускорения
+                            time.sleep(0.05 if site == 'autopiter' else 0.05)  # Уменьшаем для Emex
+                            brands = parser_func(num, proxy)
                             
                             # Сохраняем результат в кэш
                             is_empty = len(brands) == 0
@@ -477,7 +446,7 @@ def process_parsing_task(self, task_id):
                 return inner
             
             # Параллельная обработка артикулов с семафором для Emex
-            log(f"Начинаем парсинг {len(numbers)} артикулов")
+            log(f"Начинаем парсинг {len(numbers)} артикулов для строки {index + 1}")
 
             def worker(num):
                 local = {'autopiter': [], 'emex': []}
@@ -655,7 +624,6 @@ def process_parsing_task(self, task_id):
                             results = []
                             if not numbers:
                                 return results
-                            ARTICLE_TIMEOUT = 15  # таймаут для Armtek парсинга
                             # Дедуп номерoв по нормализованному виду (с учетом рус/лат букв) с сохранением порядка
                             seen_norm: set = set()
                             unique_numbers: list = []
@@ -666,7 +634,7 @@ def process_parsing_task(self, task_id):
                                 seen_norm.add(nn)
                                 unique_numbers.append(n)
 
-                            log(f"Armtek: начало обработки {len(unique_numbers)} артикулов")
+                            log(f"Armtek: начало обработки {len(unique_numbers)} артикулов для строки {index + 1}")
 
                             def parse_one(num):
                                 # Проверяем кэш перед парсингом
@@ -688,42 +656,11 @@ def process_parsing_task(self, task_id):
                                             proxy = get_next_proxy()
                                             log(f"Armtek: попытка {attempt+1} с прокси для {num}")
                                         
-                                        # Принудительное завершение зависших операций с помощью threading
-                                        result = None
-                                        exception = None
-                                        
-                                        def parse_with_timeout():
-                                            nonlocal result, exception
-                                            try:
-                                                # Минимальный джиттер для снижения антибот-порогов
-                                                time.sleep(0.03 + (0.07 * (hash(num) % 100) / 100.0))
-                                                # Используем функцию для поиска брендов
-                                                from .autopiter_parser import get_brands_by_artikul_armtek
-                                                result = get_brands_by_artikul_armtek(num, proxy, log)
-                                            except Exception as e:
-                                                exception = e
-                                        
-                                        # Запускаем парсинг в отдельном потоке с таймаутом
-                                        parse_thread = threading.Thread(target=parse_with_timeout)
-                                        parse_thread.daemon = True
-                                        parse_thread.start()
-                                        parse_thread.join(timeout=ARTICLE_TIMEOUT)
-                                        
-                                        if parse_thread.is_alive():
-                                            log(f"Armtek: таймаут для {num}, принудительно завершаем")
-                                            # Принудительно убиваем зависшие процессы Chrome
-                                            try:
-                                                cleanup_chrome_processes()
-                                            except Exception:
-                                                pass
-                                            # Сохраняем пустой результат в кэш
-                                            set_cache(num, 'armtek', [], True)
-                                            return []
-                                        
-                                        if exception:
-                                            raise exception
-                                        
-                                        brands = result
+                                        # Минимальный джиттер для снижения антибот-порогов
+                                        time.sleep(0.03 + (0.07 * (hash(num) % 100) / 100.0))
+                                        # Используем функцию для поиска брендов
+                                        from .autopiter_parser import get_brands_by_artikul_armtek
+                                        brands = get_brands_by_artikul_armtek(num, proxy)
                                         
                                         # Сохраняем результат в кэш
                                         is_empty = len(brands) == 0
@@ -776,7 +713,7 @@ def process_parsing_task(self, task_id):
                                     except Exception as e:
                                         log(f"Error processing armtek result for {num}: {str(e)}")
 
-                            log(f"Armtek: завершена обработка, найдено {len(results)} результатов")
+                            log(f"Armtek: завершена обработка для строки {index + 1}, найдено {len(results)} результатов")
                             return results
                         
                         # Armtek переносим на батч обработки (выполним после цикла по номерам)
@@ -816,20 +753,14 @@ def process_parsing_task(self, task_id):
                     # Принудительная очистка памяти
                     gc.collect()
                     
-                    # Более агрессивная очистка процессов Chrome каждые 5 строк
-                    if (index + 1) % 5 == 0:
+                    # Периодическая очистка процессов Chrome каждые 10 строк (снижаем частоту)
+                    if (index + 1) % 10 == 0:
                         try:
                             cleanup_chrome_processes()
                             cleanup_driver_pool()
-                            log("Performed aggressive Chrome and driver pool cleanup")
+                            log("Performed periodic Chrome and driver pool cleanup")
                         except Exception as e:
                             log(f"Error during Chrome cleanup: {str(e)}")
-                    
-                    # Принудительная очистка после каждого артикула для предотвращения накопления
-                    try:
-                        cleanup_chrome_processes()
-                    except Exception as e:
-                        log(f"Error during per-article Chrome cleanup: {str(e)}")
 
                 # Чекпоинт каждые batch_size строк — записываем на диск промежуточные результаты
                 if (index + 1) % batch_size == 0:
