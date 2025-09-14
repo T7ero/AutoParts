@@ -45,14 +45,14 @@ TIMEOUT = 15  # Увеличиваем для стабильности
 SELENIUM_TIMEOUT = 12  # Увеличиваем для стабильности
 PAGE_LOAD_TIMEOUT = 15  # Увеличиваем для стабильности
 
-# Настройки для пула драйверов
-DRIVER_POOL_SIZE = 1  # Еще больше уменьшаем для стабильности
+# Настройки для пула драйверов - ОТКЛЮЧАЕМ ПУЛ ДЛЯ СТАБИЛЬНОСТИ
+DRIVER_POOL_SIZE = 0  # Полностью отключаем пул драйверов
 DRIVER_CREATION_RETRIES = 3
 DRIVER_TIMEOUT_RETRIES = 2
-DRIVER_MAX_USES = 3  # Еще больше уменьшаем максимум использований
-DRIVER_CLEANUP_INTERVAL = 2  # Еще более частая очистка
-DRIVER_FORCE_CLEANUP_INTERVAL = 5  # Принудительная очистка каждые 5 использований
-DRIVER_TIMEOUT_SECONDS = 15  # Таймаут для операций Selenium
+DRIVER_MAX_USES = 1  # Каждый драйвер используется только один раз
+DRIVER_CLEANUP_INTERVAL = 1  # Очистка после каждого использования
+DRIVER_FORCE_CLEANUP_INTERVAL = 1  # Принудительная очистка после каждого использования
+DRIVER_TIMEOUT_SECONDS = 10  # Уменьшаем таймаут для операций Selenium
 
 # Кеширование
 REQUEST_CACHE = {}
@@ -103,79 +103,63 @@ def timeout_handler(signum, frame):
     raise TimeoutError("Операция превысила максимальное время выполнения")
 
 def with_timeout(timeout_seconds, func, *args, **kwargs):
-    """Выполняет функцию с таймаутом"""
-    def wrapper():
-        try:
-            # Устанавливаем обработчик сигнала
-            old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(timeout_seconds)
-            
-            # Выполняем функцию
-            result = func(*args, **kwargs)
-            
-            # Отменяем таймаут
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
-            
-            return result
-        except TimeoutError:
-            log_debug(f"Функция {func.__name__} превысила таймаут {timeout_seconds} секунд")
-            # Отменяем таймаут
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
-            return None
-        except Exception as e:
-            # Отменяем таймаут
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
-            raise e
+    """Выполняет функцию с таймаутом используя threading.Timer"""
+    import threading
     
-    return wrapper()
+    result = [None]  # Используем список для мутабельности
+    exception = [None]
+    
+    def target():
+        try:
+            result[0] = func(*args, **kwargs)
+        except Exception as e:
+            exception[0] = e
+    
+    thread = threading.Thread(target=target)
+    thread.daemon = True
+    thread.start()
+    thread.join(timeout_seconds)
+    
+    if thread.is_alive():
+        log_debug(f"Функция {func.__name__} превысила таймаут {timeout_seconds} секунд")
+        # Принудительно убиваем зависшие процессы
+        force_kill_hanging_drivers()
+        return None
+    
+    if exception[0]:
+        raise exception[0]
+    
+    return result[0]
+
+def force_kill_hanging_drivers():
+    """Принудительно убивает зависшие процессы Chrome"""
+    try:
+        # Ищем и убиваем все процессы Chrome
+        result = subprocess.run(['pkill', '-f', 'chrome'], capture_output=True, text=True)
+        if result.returncode == 0:
+            log_debug("Принудительно убиты зависшие процессы Chrome")
+        
+        # Дополнительно убиваем процессы chromedriver
+        result = subprocess.run(['pkill', '-f', 'chromedriver'], capture_output=True, text=True)
+        if result.returncode == 0:
+            log_debug("Принудительно убиты зависшие процессы chromedriver")
+            
+    except Exception as e:
+        log_debug(f"Ошибка принудительного убийства процессов: {str(e)}")
 
 def get_driver_from_pool() -> Optional[webdriver.Chrome]:
-    """Получает драйвер из пула или создает новый"""
+    """ВСЕГДА создает новый драйвер для максимальной стабильности"""
     global DRIVER_POOL, DRIVER_POOL_LOCK, DRIVER_CLEANUP_COUNTER, DRIVER_FORCE_CLEANUP_COUNTER
     
-    with DRIVER_POOL_LOCK:
-        # Периодическая очистка пула
-        DRIVER_CLEANUP_COUNTER += 1
-        DRIVER_FORCE_CLEANUP_COUNTER += 1
-        
-        if DRIVER_CLEANUP_COUNTER >= DRIVER_CLEANUP_INTERVAL:
-            _cleanup_driver_pool()
-            DRIVER_CLEANUP_COUNTER = 0
-        
-        # Принудительная полная очистка
-        if DRIVER_FORCE_CLEANUP_COUNTER >= DRIVER_FORCE_CLEANUP_INTERVAL:
-            _force_cleanup_driver_pool()
-            DRIVER_FORCE_CLEANUP_COUNTER = 0
-        
-        if DRIVER_POOL:
-            driver = DRIVER_POOL.pop()
-            driver_id = id(driver)
-            DRIVER_LAST_USED[driver_id] = time.time()
-            DRIVER_USE_COUNT[driver_id] = DRIVER_USE_COUNT.get(driver_id, 0) + 1
-            
-            # Проверяем, не превысил ли драйвер лимит использований
-            if DRIVER_USE_COUNT[driver_id] >= DRIVER_MAX_USES:
-                try:
-                    driver.quit()
-                except:
-                    pass
-                # Создаем новый драйвер
-                temp_dir = tempfile.mkdtemp(prefix=f"chrome_pool_{uuid.uuid4().hex[:8]}_")
-                new_driver = _create_chrome_driver_robust(temp_dir)
-                if new_driver:
-                    new_driver_id = id(new_driver)
-                    DRIVER_LAST_USED[new_driver_id] = time.time()
-                    DRIVER_USE_COUNT[new_driver_id] = 1
-                    return new_driver
-                return None
-            
-            return driver
+    # Принудительно убиваем все зависшие процессы перед созданием нового драйвера
+    force_kill_hanging_drivers()
     
-    # Создаем новый драйвер
-    temp_dir = tempfile.mkdtemp(prefix=f"chrome_pool_{uuid.uuid4().hex[:8]}_")
+    # Принудительно очищаем весь пул драйверов
+    force_cleanup_all_drivers()
+    
+    # Всегда создаем новый драйвер для максимальной стабильности
+    temp_dir = tempfile.mkdtemp(prefix=f"chrome_new_{uuid.uuid4().hex[:8]}_")
+    
     for attempt in range(DRIVER_CREATION_RETRIES):
         try:
             driver = _create_chrome_driver_robust(temp_dir)
@@ -183,59 +167,44 @@ def get_driver_from_pool() -> Optional[webdriver.Chrome]:
                 driver_id = id(driver)
                 DRIVER_LAST_USED[driver_id] = time.time()
                 DRIVER_USE_COUNT[driver_id] = 1
+                log_debug(f"Создан новый драйвер для максимальной стабильности (попытка {attempt + 1})")
                 return driver
             time.sleep(1)
         except Exception as e:
-            log_debug(f"Попытка {attempt + 1} создания драйвера: {str(e)}")
+            log_debug(f"Ошибка создания драйвера (попытка {attempt + 1}): {str(e)}")
+            # Убиваем зависшие процессы между попытками
+            force_kill_hanging_drivers()
             time.sleep(2)
     
+    log_debug("ОШИБКА: Не удалось создать новый драйвер после всех попыток")
     return None
 
 def return_driver_to_pool(driver: webdriver.Chrome):
-    """Возвращает драйвер в пул или закрывает его"""
+    """ВСЕГДА закрывает драйвер для максимальной стабильности"""
     global DRIVER_POOL, DRIVER_POOL_LOCK
     
     if driver is None:
         return
     
+    # Всегда закрываем драйвер для максимальной стабильности
+    try:
+        driver.quit()
+        log_debug("Драйвер закрыт для максимальной стабильности")
+    except Exception as e:
+        log_debug(f"Ошибка закрытия драйвера: {str(e)}")
+    
+    # Удаляем из трекинга
     try:
         driver_id = id(driver)
-        
-        # Проверяем, не слишком ли старый драйвер
         if driver_id in DRIVER_LAST_USED:
-            age = time.time() - DRIVER_LAST_USED[driver_id]
-            if age > 300:  # 5 минут
-                driver.quit()
-                if driver_id in DRIVER_LAST_USED:
-                    del DRIVER_LAST_USED[driver_id]
-                if driver_id in DRIVER_USE_COUNT:
-                    del DRIVER_USE_COUNT[driver_id]
-                return
-        
-        # Проверяем количество использований
-        if driver_id in DRIVER_USE_COUNT and DRIVER_USE_COUNT[driver_id] >= DRIVER_MAX_USES:
-            driver.quit()
-            if driver_id in DRIVER_LAST_USED:
-                del DRIVER_LAST_USED[driver_id]
-            if driver_id in DRIVER_USE_COUNT:
-                del DRIVER_USE_COUNT[driver_id]
-            return
-        
-        with DRIVER_POOL_LOCK:
-            if len(DRIVER_POOL) < DRIVER_POOL_SIZE:
-                DRIVER_POOL.append(driver)
-            else:
-                driver.quit()
-                if driver_id in DRIVER_LAST_USED:
-                    del DRIVER_LAST_USED[driver_id]
-                if driver_id in DRIVER_USE_COUNT:
-                    del DRIVER_USE_COUNT[driver_id]
+            del DRIVER_LAST_USED[driver_id]
+        if driver_id in DRIVER_USE_COUNT:
+            del DRIVER_USE_COUNT[driver_id]
     except Exception as e:
-        log_debug(f"Ошибка возврата драйвера в пул: {str(e)}")
-        try:
-            driver.quit()
-        except:
-            pass
+        log_debug(f"Ошибка очистки трекинга драйвера: {str(e)}")
+    
+    # Принудительно убиваем зависшие процессы после закрытия
+    force_kill_hanging_drivers()
 
 def cleanup_driver_pool():
     """Очищает пул драйверов"""
@@ -887,6 +856,10 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 					result = with_timeout(DRIVER_TIMEOUT_SECONDS, load_page)
 					if result is None:
 						log_debug(f"Таймаут загрузки страницы для {artikul}, попытка {page_attempt + 1}")
+						# Принудительно убиваем зависшие процессы
+						force_kill_hanging_drivers()
+						# Принудительно очищаем пул драйверов
+						force_cleanup_all_drivers()
 						continue
 				except Exception:
 					pass
@@ -1082,6 +1055,9 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			# Принудительная очистка пула драйверов
 			force_cleanup_all_drivers()
 			
+			# Принудительно убиваем зависшие процессы
+			force_kill_hanging_drivers()
+			
 			# Возвращаем fallback результат
 			return parse_armtek_fallback(artikul, proxy)
 		
@@ -1107,6 +1083,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		# Принудительная очистка пула драйверов при проблемах
 		if not brands:
 			force_cleanup_all_drivers()
+			force_kill_hanging_drivers()
 
 def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> Optional[webdriver.Chrome]:
     """Создает Chrome драйвер с улучшенной обработкой ошибок и retry логикой"""
