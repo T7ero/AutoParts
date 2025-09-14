@@ -677,6 +677,57 @@ def parse_armtek_api(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
     
     return []
 
+def parse_armtek_api_fallback(artikul: str, proxies: Optional[List[str]] = None) -> List[str]:
+	"""API fallback для Armtek - извлекает бренды через HTTP запросы к странице"""
+	brands = set()
+	
+	try:
+		# Используем прямое обращение к странице поиска
+		search_url = f"https://armtek.ru/search?text={artikul}"
+		
+		# Пробуем с разными прокси
+		proxy_list = proxies or [None]
+		
+		for proxy in proxy_list:
+			try:
+				response = make_request(search_url, proxy, timeout=15)
+				if response and response.status_code == 200:
+					content = response.text
+					
+					# Ищем бренды в HTML через регулярные выражения
+					import re
+					
+					# Паттерны для поиска брендов в HTML
+					brand_patterns = [
+						r'data-brand="([^"]+)"',
+						r'"brand":\s*"([^"]+)"',
+						r'class="brand[^"]*">\s*([^<]+)',
+						r'<span[^>]*brand[^>]*>([^<]+)</span>',
+						r'<div[^>]*brand[^>]*>([^<]+)</div>'
+					]
+					
+					for pattern in brand_patterns:
+						matches = re.findall(pattern, content, re.IGNORECASE)
+						for match in matches:
+							brand = match.strip()
+							if brand and len(brand) > 1 and len(brand) < 50:
+								# Фильтруем артикулы и технические строки
+								if not re.match(r'^[A-Z0-9\-]+$', brand) and not brand.lower() in ['артикул', 'бренд', 'цена']:
+									brands.add(brand)
+					
+					if brands:
+						log_debug(f"Armtek API fallback: найдено {len(brands)} брендов через HTTP парсинг")
+						break
+						
+			except Exception as e:
+				log_debug(f"Ошибка HTTP запроса к Armtek с прокси {proxy}: {str(e)}")
+				continue
+				
+	except Exception as e:
+		log_debug(f"Общая ошибка API fallback для Armtek: {str(e)}")
+	
+	return list(brands)
+
 def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None) -> List[str]:
 	"""Selenium-парсинг Armtek: ждем появления элементов и собираем бренды.
 	Если на странице отображено сообщение "По вашему запросу ничего не найдено",
@@ -691,8 +742,11 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		# Получаем драйвер из пула или создаем новый
 		driver = get_driver_from_pool()
 		if driver is None:
-			log_debug("Armtek Selenium: не удалось получить драйвер из пула")
-			return []
+			log_debug("Armtek Selenium: создаем новый драйвер")
+			driver = _create_chrome_driver_robust(None, proxy)
+			if driver is None:
+				log_debug("Armtek Selenium: не удалось создать драйвер")
+				return []
 		
 		# Если прокси содержит авторизацию, игнорируем его для Selenium (Chrome не поддерживает в CLI)
 		effective_proxy = None if (proxy and '@' in proxy) else proxy
@@ -708,20 +762,35 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 				error_msg = str(e)
 				log_debug(f"Попытка {page_attempt + 1} загрузки страницы: {error_msg}")
 				
-				# Если произошла критическая ошибка (tab crashed), завершаем попытки
-				if "tab crashed" in error_msg.lower() or "chrome not reachable" in error_msg.lower():
-					log_debug("Критическая ошибка Chrome, очищаем процессы и прекращаем попытки")
+				# Если произошла критическая ошибка (tab crashed), пересоздаем драйвер
+				if "tab crashed" in error_msg.lower() or "chrome not reachable" in error_msg.lower() or "connection refused" in error_msg.lower():
+					log_debug("Критическая ошибка Chrome, пересоздаем драйвер")
 					try:
+						# Закрываем сломанный драйвер
+						if driver:
+							try:
+								driver.quit()
+							except:
+								pass
+						
 						# Очищаем процессы Chrome
 						import subprocess
 						subprocess.run(['pkill', '-f', 'chrome'], capture_output=True)
 						subprocess.run(['pkill', '-f', 'chromedriver'], capture_output=True)
-					except Exception:
-						pass
-					return []
+						
+						# Создаем новый драйвер
+						driver = _create_chrome_driver_robust(proxy)
+						log_debug("Создан новый драйвер после критической ошибки")
+						
+						# Пробуем загрузить страницу с новым драйвером
+						driver.get(url)
+						break
+					except Exception as recovery_error:
+						log_debug(f"Не удалось восстановить драйвер: {str(recovery_error)}")
+						return []
 				
 				if page_attempt < DRIVER_TIMEOUT_RETRIES - 1:
-					time.sleep(2)
+					time.sleep(1)
 				else:
 					log_debug("Не удалось загрузить страницу")
 					return []
@@ -885,7 +954,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 	if not brands:
 		log_debug(f"Armtek Selenium не сработал для {artikul}, пробуем API fallback")
 		try:
-			api_brands = parse_armtek_api(artikul, proxies)
+			api_brands = parse_armtek_api_fallback(artikul, proxies)
 			if api_brands:
 				log_debug(f"Armtek API fallback: найдено {len(api_brands)} брендов для {artikul}")
 				return api_brands
@@ -945,7 +1014,6 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             chrome_options.add_argument('--disable-extensions')
             chrome_options.add_argument('--disable-plugins')
             chrome_options.add_argument('--disable-images')
-            chrome_options.add_argument('--disable-javascript')
             chrome_options.add_argument('--disable-web-security')
             chrome_options.add_argument('--allow-running-insecure-content')
             chrome_options.add_argument('--disable-background-timer-throttling')
@@ -953,6 +1021,16 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             chrome_options.add_argument('--disable-renderer-backgrounding')
             chrome_options.add_argument('--disable-features=TranslateUI')
             chrome_options.add_argument('--disable-ipc-flooding-protection')
+            chrome_options.add_argument('--no-first-run')
+            chrome_options.add_argument('--no-default-browser-check')
+            chrome_options.add_argument('--disable-logging')
+            chrome_options.add_argument('--disable-gpu-logging')
+            chrome_options.add_argument('--silent')
+            chrome_options.add_argument('--disable-crash-reporter')
+            chrome_options.add_argument('--disable-in-process-stack-traces')
+            chrome_options.add_argument('--log-level=3')
+            chrome_options.add_argument('--disable-dev-tools')
+            chrome_options.add_argument('--disable-software-rasterizer')
             
             # Пытаемся найти ChromeDriver в разных местах
             service = None
