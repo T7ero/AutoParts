@@ -39,9 +39,9 @@ HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 # Оптимизированные таймауты для ускорения работы
-TIMEOUT = 5  # Было 8
-SELENIUM_TIMEOUT = 5  # Было 8  
-PAGE_LOAD_TIMEOUT = 5  # Было 8
+TIMEOUT = 3  # Уменьшаем для ускорения
+SELENIUM_TIMEOUT = 3  # Уменьшаем для ускорения
+PAGE_LOAD_TIMEOUT = 3  # Уменьшаем для ускорения
 
 # Настройки для пула драйверов
 DRIVER_POOL_SIZE = 3
@@ -304,7 +304,7 @@ def is_site_available(url: str, proxies: Optional[Dict] = None) -> bool:
     except:
         return False
 
-def make_request(url: str, proxy: Optional[str] = None, max_retries: int = 3, timeout: int = 30) -> Optional[requests.Response]:
+def make_request(url: str, proxy: Optional[str] = None, max_retries: int = 2, timeout: int = 10) -> Optional[requests.Response]:
     """Выполняет  HTTP запрос с поддержкой прокси и повторными попытками"""
 
     # Настройка сессии
@@ -935,7 +935,7 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             
             # Устанавливаем таймауты
             driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-            driver.implicitly_wait(3)  # Уменьшаем для ускорения
+            driver.implicitly_wait(1)  # Еще больше уменьшаем для ускорения
             
             return driver
             
@@ -1304,7 +1304,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
         
         # Счетчик попыток для предотвращения бесконечных циклов
         total_attempts = 0
-        max_total_attempts = 8  # Увеличиваем количество попыток для Emex
+        max_total_attempts = 3  # Уменьшаем количество попыток для ускорения
         
         for num in candidate_nums:
             num_enc = quote(num)
@@ -1337,7 +1337,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                             response = session.get(
                                 api_url,
                                 headers=current_headers,
-                                timeout=10,  # Еще больше уменьшаем таймаут
+                                timeout=5,  # Еще больше уменьшаем таймаут
                                 proxies=proxies
                             )
                             
@@ -1434,7 +1434,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                             continue
                         
                         # Уменьшенная пауза между попытками
-                        time.sleep(0.2)  # Увеличиваем паузу для стабильности
+                        time.sleep(0.1)  # Уменьшаем паузу для ускорения
                 
                 except Exception as e:
                     log_debug(f"Emex API: ошибка для {artikul}: {str(e)}")

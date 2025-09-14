@@ -231,14 +231,14 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 
-# Оптимизация для ограниченных ресурсов
-CELERY_WORKER_CONCURRENCY = 1  # Один воркер для экономии памяти
-CELERY_WORKER_MAX_TASKS_PER_CHILD = 1  # Перезапуск воркера после каждой задачи для предотвращения накопления памяти
+# Оптимизация для больших файлов
+CELERY_WORKER_CONCURRENCY = 2  # Два воркера для параллельной обработки
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 3  # Перезапуск воркера после 3 задач
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1  # Берем только одну задачу за раз
-CELERY_TASK_ACKS_LATE = False  # Подтверждаем задачу сразу для предотвращения повторного выполнения
+CELERY_TASK_ACKS_LATE = True  # Подтверждаем задачу после выполнения для надежности
 CELERY_WORKER_DISABLE_RATE_LIMITS = True  # Отключаем ограничения скорости
-CELERY_TASK_TIME_LIMIT = 259200  # Максимальное время выполнения задачи (72 часа) - увеличен для больших файлов
-CELERY_TASK_SOFT_TIME_LIMIT = 252000  # Мягкий лимит (70 часов) - увеличен для больших файлов
+CELERY_TASK_TIME_LIMIT = 360000  # Максимальное время выполнения задачи (100 часов) - увеличен для очень больших файлов
+CELERY_TASK_SOFT_TIME_LIMIT = 350000  # Мягкий лимит (97 часов) - увеличен для очень больших файлов
 CELERY_WORKER_SEND_TASK_EVENTS = False  # Отключаем события для экономии ресурсов
 CELERY_TASK_IGNORE_RESULT = False  # Сохраняем результаты для предотвращения повторного выполнения
 CELERY_TASK_REJECT_ON_WORKER_LOST = True  # Отклоняем задачи при потере воркера

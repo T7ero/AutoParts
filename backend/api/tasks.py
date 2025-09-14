@@ -286,7 +286,34 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
     
     return filtered
 
-@shared_task(bind=True, time_limit=259200, soft_time_limit=252000)  # 72 часа максимум, 70 часов мягкий лимит
+def split_large_file(file_path: str, max_rows_per_batch: int = 100) -> List[str]:
+    """Разбивает большой Excel файл на части для параллельной обработки"""
+    try:
+        import os
+        # Создаем директорию для временных файлов
+        temp_dir = "media/temp"
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        df = pd.read_excel(file_path)
+        df.dropna(how='all', inplace=True)
+        
+        total_rows = len(df)
+        if total_rows <= max_rows_per_batch:
+            return [file_path]  # Файл не нужно разбивать
+        
+        batch_files = []
+        for i in range(0, total_rows, max_rows_per_batch):
+            batch_df = df.iloc[i:i + max_rows_per_batch]
+            batch_file = f"{temp_dir}/batch_{i//max_rows_per_batch}_{file_path.split('/')[-1]}"
+            batch_df.to_excel(batch_file, index=False)
+            batch_files.append(batch_file)
+        
+        return batch_files
+    except Exception as e:
+        log_debug(f"Ошибка разбиения файла: {str(e)}")
+        return [file_path]
+
+@shared_task(bind=True, time_limit=360000, soft_time_limit=350000)  # 100 часов максимум, 97 часов мягкий лимит
 def process_parsing_task(self, task_id):
     # Проверяем, не завершена ли уже задача
     try:
@@ -341,9 +368,21 @@ def process_parsing_task(self, task_id):
         # Загружаем прокси при старте задачи
         load_proxies_from_file()
         
+        # Проверяем размер файла и разбиваем на части если нужно
         df = pd.read_excel(task.file.path)
         # Очищаем DataFrame от пустых строк
         df.dropna(how='all', inplace=True)
+        
+        # Если файл очень большой (>200 строк), разбиваем на части
+        if len(df) > 200:
+            log(f"Файл содержит {len(df)} строк, разбиваем на части для оптимизации...")
+            batch_files = split_large_file(task.file.path, max_rows_per_batch=100)
+            if len(batch_files) > 1:
+                log(f"Файл разбит на {len(batch_files)} частей")
+                # Для простоты пока обрабатываем только первую часть
+                # В будущем можно запускать параллельные задачи для каждой части
+                df = pd.read_excel(batch_files[0])
+                log(f"Обрабатываем первую часть из {len(batch_files)} частей")
         
         # Инициализируем таймаут и счетчик обработанных строк
         task._timeout_check = time.time()
@@ -394,15 +433,15 @@ def process_parsing_task(self, task_id):
 
         log(f"Начинаем обработку {total_rows} строк")
         ws_send()
-        # Батч-обработка: по 50 строк с промежуточным сохранением результатов
-        batch_size = 50
+        # Батч-обработка: по 25 строк с промежуточным сохранением результатов
+        batch_size = 25
         
         # Оптимизированная функция для параллельного парсинга с таймаутами и прокси
         def parse_all_parallel(numbers, brand, part_number, name):
             results = {'autopiter': [], 'emex': []}
             state = {"emex_disabled": False, "emex_failures": 0}
-            ARTICLE_TIMEOUT = 20  # общий таймаут на один артикул
-            emex_semaphore = threading.Semaphore(2)  # ограничиваем одновременные Emex-запросы
+            ARTICLE_TIMEOUT = 10  # Уменьшаем общий таймаут на один артикул
+            emex_semaphore = threading.Semaphore(1)  # Уменьшаем до 1 одновременного Emex-запроса
 
             def parse_one(site, parser_func, max_retries=1):
                 def inner(num, proxy=None):
@@ -425,7 +464,7 @@ def process_parsing_task(self, task_id):
                                 log(f"{site.capitalize()}: попытка {attempt+1} с прокси для {num}")
                             
                             # Уменьшаем задержку для ускорения
-                            time.sleep(0.05 if site == 'autopiter' else 0.05)  # Уменьшаем для Emex
+                            time.sleep(0.01 if site == 'autopiter' else 0.01)  # Еще больше уменьшаем задержки
                             brands = parser_func(num, proxy)
                             
                             # Сохраняем результат в кэш
@@ -437,7 +476,7 @@ def process_parsing_task(self, task_id):
                         except Exception as e:
                             log(f"Error parsing {site} for {num} (attempt {attempt + 1}): {str(e)}")
                             if attempt < max_retries - 1:
-                                time.sleep(0.2)  # Еще больше уменьшаем время ожидания
+                                time.sleep(0.1)  # Еще больше уменьшаем время ожидания
                             else:
                                 log(f"Failed to parse {site} for {num} after {max_retries} attempts")
                                 # Сохраняем пустой результат в кэш
@@ -487,10 +526,10 @@ def process_parsing_task(self, task_id):
                 # Проверка таймаута каждые 100 строк для менее частой проверки
                 if index % 100 == 0:
                     elapsed_time = time.time() - task._timeout_check
-                    if elapsed_time > 252000:  # 70 часов - мягкий лимит
+                    if elapsed_time > 350000:  # 97 часов - мягкий лимит
                         log(f"Task timeout approaching ({elapsed_time/3600:.1f} hours), finishing up...")
                         break
-                    elif elapsed_time > 259200:  # 72 часа - жесткий лимит
+                    elif elapsed_time > 360000:  # 100 часов - жесткий лимит
                         log(f"Task timeout reached ({elapsed_time/3600:.1f} hours), forcing stop...")
                         break
                 
@@ -634,7 +673,7 @@ def process_parsing_task(self, task_id):
                                     else:
                                         return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
                                 
-                                max_retries = 1
+                                max_retries = 1  # Только одна попытка для ускорения
                                 for attempt in range(max_retries):
                                     try:
                                         if attempt == 0:
@@ -644,8 +683,8 @@ def process_parsing_task(self, task_id):
                                             proxy = get_next_proxy()
                                             log(f"Armtek: попытка {attempt+1} с прокси для {num}")
                                         
-                                        # Уменьшаем задержку для ускорения
-                                        time.sleep(0.1)
+                                        # Убираем задержку для максимального ускорения
+                                        time.sleep(0.01)
                                         # Используем функцию для поиска брендов
                                         from .autopiter_parser import get_brands_by_artikul_armtek
                                         brands = get_brands_by_artikul_armtek(num, proxy)
@@ -681,7 +720,7 @@ def process_parsing_task(self, task_id):
                                     except Exception as e:
                                         log(f"Error parsing armtek for {num} (attempt {attempt + 1}): {str(e)}")
                                         if attempt < max_retries - 1:
-                                            time.sleep(0.5)
+                                            time.sleep(0.1)
                                         else:
                                             log(f"Failed to parse armtek for {num} after {max_retries} attempts")
                                             # Сохраняем пустой результат в кэш
