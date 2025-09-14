@@ -39,9 +39,9 @@ HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 # Оптимизированные таймауты для ускорения работы
-TIMEOUT = 8  # сетевые таймауты
-SELENIUM_TIMEOUT = 10  # явные ожидания Selenium
-PAGE_LOAD_TIMEOUT = 10  # таймаут загрузки страницы
+TIMEOUT = 8  # Уменьшаем для ускорения
+SELENIUM_TIMEOUT = 8  # Уменьшаем для ускорения
+PAGE_LOAD_TIMEOUT = 8  # Уменьшаем для ускорения
 
 # Настройки для пула драйверов
 DRIVER_POOL_SIZE = 3
@@ -699,33 +699,15 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		
 		url = f"https://armtek.ru/search?text={artikul}"
 		
-		# Retry логика для загрузки страницы с обработкой падения вкладки
+		# Retry логика для загрузки страницы
 		for page_attempt in range(DRIVER_TIMEOUT_RETRIES):
 			try:
-				try:
-					driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-					driver.implicitly_wait(3)
-				except Exception:
-					pass
 				driver.get(url)
 				break
 			except Exception as e:
-				msg = str(e)
-				log_debug(f"Попытка {page_attempt + 1} загрузки страницы: {msg}")
+				log_debug(f"Попытка {page_attempt + 1} загрузки страницы: {str(e)}")
 				if page_attempt < DRIVER_TIMEOUT_RETRIES - 1:
-					# небольшой джиттер, чтобы снизить антибот
-					time.sleep(0.05 + random.random() * 0.1)
-					if 'tab crashed' in msg.lower():
-						# Пересоздаем драйвер из пула
-						try:
-							return_driver_to_pool(driver)
-						except Exception:
-							pass
-						driver = get_driver_from_pool()
-						if driver is None:
-							log_debug("Armtek Selenium: не удалось восстановить драйвер из пула")
-							return []
-					continue
+					time.sleep(2)
 				else:
 					log_debug("Не удалось загрузить страницу")
 					return []
@@ -734,6 +716,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		wait = WebDriverWait(driver, SELENIUM_TIMEOUT)
 		selectors_to_wait = [
 			(By.CSS_SELECTOR, '.results-list__items'),
+			(By.CSS_SELECTOR, '.font__body2.brand--selecting'),
 			(By.CSS_SELECTOR, '.font__caption1.brand--selectable'),
 		]
 		
@@ -783,7 +766,9 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			'.font__caption1.brand--selectable',
 			'.pin-brand-name span.font__caption1.brand--selectable',
 			'.product-card__content .pin-brand-name .brand--selectable',
-			# Без небезопасных фолбэков '.brand--selecting'
+			# Старые селекторы как fallback
+			'.font__body2.brand--selecting',
+			'.brand--selecting',
 			'.brand-name',
 			'.product-brand',
 			'.manufacturer-name',
@@ -874,13 +859,8 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		
 		return list(brands)
 	finally:
-		# Возвращаем драйвер в пул вместо закрытия, предварительно разгружаем вкладку
+		# Возвращаем драйвер в пул вместо закрытия
 		if driver:
-			try:
-				driver.delete_all_cookies()
-				driver.get('about:blank')
-			except Exception:
-				pass
 			return_driver_to_pool(driver)
 
 def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> Optional[webdriver.Chrome]:
@@ -923,7 +903,7 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             chrome_options.add_argument('--disable-extensions')
             chrome_options.add_argument('--disable-plugins')
             chrome_options.add_argument('--disable-images')
-            # Оставляем JS включенным: отключение провоцирует renderer timeouts на Armtek
+            chrome_options.add_argument('--disable-javascript')
             chrome_options.add_argument('--disable-web-security')
             chrome_options.add_argument('--allow-running-insecure-content')
             chrome_options.add_argument('--disable-background-timer-throttling')

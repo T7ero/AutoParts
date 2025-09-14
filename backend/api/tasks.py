@@ -395,7 +395,7 @@ def process_parsing_task(self, task_id):
         log(f"Начинаем обработку {total_rows} строк")
         ws_send()
         # Батч-обработка: по 50 строк с промежуточным сохранением результатов
-        batch_size = 10
+        batch_size = 50
         
         # Оптимизированная функция для параллельного парсинга с таймаутами и прокси
         def parse_all_parallel(numbers, brand, part_number, name):
@@ -622,20 +622,8 @@ def process_parsing_task(self, task_id):
                         # Armtek (Selenium) - оптимизированная версия (если выбран)
                         def parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b):
                             results = []
-                            if not numbers:
-                                return results
-                            # Дедуп номерoв по нормализованному виду (с учетом рус/лат букв) с сохранением порядка
-                            seen_norm: set = set()
-                            unique_numbers: list = []
-                            for n in numbers:
-                                nn = normalize_article_for_compare(n)
-                                if not nn or nn in seen_norm:
-                                    continue
-                                seen_norm.add(nn)
-                                unique_numbers.append(n)
-
-                            log(f"Armtek: начало обработки {len(unique_numbers)} артикулов для строки {index + 1}")
-
+                            log(f"Armtek: начало обработки {len(numbers)} артикулов для строки {index + 1}")
+                            
                             def parse_one(num):
                                 # Проверяем кэш перед парсингом
                                 cached_result = get_from_cache(num, 'armtek')
@@ -656,8 +644,8 @@ def process_parsing_task(self, task_id):
                                             proxy = get_next_proxy()
                                             log(f"Armtek: попытка {attempt+1} с прокси для {num}")
                                         
-                                        # Минимальный джиттер для снижения антибот-порогов
-                                        time.sleep(0.03 + (0.07 * (hash(num) % 100) / 100.0))
+                                        # Уменьшаем задержку для ускорения
+                                        time.sleep(0.1)
                                         # Используем функцию для поиска брендов
                                         from .autopiter_parser import get_brands_by_artikul_armtek
                                         brands = get_brands_by_artikul_armtek(num, proxy)
@@ -699,45 +687,37 @@ def process_parsing_task(self, task_id):
                                             # Сохраняем пустой результат в кэш
                                             set_cache(num, 'armtek', [], True)
                                             return []
-
-                            # Контролируемый параллелизм: 4 потока для скорости при стабильности Selenium
-                            import concurrent.futures
-                            max_workers = 4
-                            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                                future_to_num = {executor.submit(parse_one, num): num for num in unique_numbers}
-                                for future in concurrent.futures.as_completed(future_to_num):
-                                    num = future_to_num[future]
-                                    try:
-                                        for res in future.result() or []:
-                                            results.append(res)
-                                    except Exception as e:
-                                        log(f"Error processing armtek result for {num}: {str(e)}")
-
+                            
+                            # Последовательная обработка для предотвращения исчерпания потоков
+                            for num in numbers:
+                                try:
+                                    for res in parse_one(num):
+                                        results.append(res)
+                                except Exception as e:
+                                    log(f"Error processing armtek result for {num}: {str(e)}")
+                            
                             log(f"Armtek: завершена обработка для строки {index + 1}, найдено {len(results)} результатов")
                             return results
                         
-                        # Armtek переносим на батч обработки (выполним после цикла по номерам)
+                        if 'armtek' in selected_sources:
+                            armtek_results = parse_armtek_parallel([current_number], brand_from_e, part_number_from_f, name_from_b)
+                            for (b1, pn1, n1, brand, original_num, src) in armtek_results:
+                                results_armtek.append({
+                                    'Бренд № 1': clean_excel_string(brand_from_e),
+                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
+                                    'Наименование': clean_excel_string(name_from_b),
+                                    'Бренд № 2': clean_excel_string(brand),  # Найденный бренд
+                                    'Артикул по Бренду № 2': clean_excel_string(original_num),  # Исходный артикул
+                                    'Источник': src
+                                })
+                            # промежуточный лог
+                            task.log = '\n'.join(log_messages[-100:])
+                            task.save(); ws_send()
                     
                     except Exception as e:
                         log(f"Ошибка при обработке артикула {current_number} в строке {index + 1}: {str(e)}")
                         continue
                 
-                # После обработки всех номеров строки запускаем Armtek батчом (если выбран)
-                if 'armtek' in selected_sources and numbers_to_parse:
-                    armtek_results = parse_armtek_parallel(numbers_to_parse, brand_from_e, part_number_from_f, name_from_b)
-                    for (b1, pn1, n1, brand, original_num, src) in armtek_results:
-                        results_armtek.append({
-                            'Бренд № 1': clean_excel_string(brand_from_e),
-                            'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
-                            'Наименование': clean_excel_string(name_from_b),
-                            'Бренд № 2': clean_excel_string(brand),
-                            'Артикул по Бренду № 2': clean_excel_string(original_num),
-                            'Источник': src
-                        })
-                    # промежуточный лог
-                    task.log = '\n'.join(log_messages[-100:])
-                    task.save(); ws_send()
-
                 # Увеличиваем счетчик обработанных строк
                 task._processed_rows += 1
                 
@@ -753,8 +733,8 @@ def process_parsing_task(self, task_id):
                     # Принудительная очистка памяти
                     gc.collect()
                     
-                    # Периодическая очистка процессов Chrome каждые 10 строк (снижаем частоту)
-                    if (index + 1) % 10 == 0:
+                    # Периодическая очистка процессов Chrome каждые 5 строк для предотвращения накопления процессов
+                    if (index + 1) % 5 == 0:
                         try:
                             cleanup_chrome_processes()
                             cleanup_driver_pool()
