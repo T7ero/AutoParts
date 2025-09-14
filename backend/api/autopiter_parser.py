@@ -699,13 +699,27 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		
 		url = f"https://armtek.ru/search?text={artikul}"
 		
-		# Retry логика для загрузки страницы
+		# Retry логика для загрузки страницы с улучшенной обработкой ошибок
 		for page_attempt in range(DRIVER_TIMEOUT_RETRIES):
 			try:
 				driver.get(url)
 				break
 			except Exception as e:
-				log_debug(f"Попытка {page_attempt + 1} загрузки страницы: {str(e)}")
+				error_msg = str(e)
+				log_debug(f"Попытка {page_attempt + 1} загрузки страницы: {error_msg}")
+				
+				# Если произошла критическая ошибка (tab crashed), завершаем попытки
+				if "tab crashed" in error_msg.lower() or "chrome not reachable" in error_msg.lower():
+					log_debug("Критическая ошибка Chrome, очищаем процессы и прекращаем попытки")
+					try:
+						# Очищаем процессы Chrome
+						import subprocess
+						subprocess.run(['pkill', '-f', 'chrome'], capture_output=True)
+						subprocess.run(['pkill', '-f', 'chromedriver'], capture_output=True)
+					except Exception:
+						pass
+					return []
+				
 				if page_attempt < DRIVER_TIMEOUT_RETRIES - 1:
 					time.sleep(2)
 				else:
@@ -762,10 +776,14 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 
 		# Сбор брендов по селекторам - сначала точные селекторы для карточек товаров
 		brand_selectors = [
+			# Новый точный селектор из DevTools пользователя
+			'body > app-root > div > mp-main > search-result > div > div > project-ui-search-result-with-filters > div > div.results.has-filter-on-desktop > project-ui-search-result > div > div > div.results-list__items.ng-star-inserted > div > div > app-article-card-tile > a > div.product-card__content > div.pin-brand-name.pin-brand-name--3 > div > span.font__caption1.brand--selectable',
 			# Точные селекторы для карточек товаров Armtek
 			'.font__caption1.brand--selectable',
 			'.pin-brand-name span.font__caption1.brand--selectable',
 			'.product-card__content .pin-brand-name .brand--selectable',
+			'.pin-brand-name .brand--selectable',
+			'.font__caption1.pin',  # Селектор для артикула (исключаем его)
 			# Старые селекторы как fallback
 			'.font__body2.brand--selecting',
 			'.brand--selecting',
@@ -862,6 +880,19 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		# Возвращаем драйвер в пул вместо закрытия
 		if driver:
 			return_driver_to_pool(driver)
+	
+	# Fallback: если Selenium не сработал, пробуем API
+	if not brands:
+		log_debug(f"Armtek Selenium не сработал для {artikul}, пробуем API fallback")
+		try:
+			api_brands = parse_armtek_api(artikul, proxies)
+			if api_brands:
+				log_debug(f"Armtek API fallback: найдено {len(api_brands)} брендов для {artikul}")
+				return api_brands
+		except Exception as e:
+			log_debug(f"Armtek API fallback тоже не сработал: {str(e)}")
+	
+	return sorted(brands)
 
 def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> Optional[webdriver.Chrome]:
     """Создает Chrome драйвер с улучшенной обработкой ошибок и retry логикой"""
@@ -876,6 +907,17 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             chrome_options.add_argument('--disable-blink-features=AutomationControlled')
             chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
             chrome_options.add_experimental_option('useAutomationExtension', False)
+            
+            # Дополнительные настройки для стабильности
+            chrome_options.add_argument('--disable-extensions')
+            chrome_options.add_argument('--disable-plugins')
+            chrome_options.add_argument('--disable-images')
+            chrome_options.add_argument('--disable-javascript')  # Отключаем JS для ускорения
+            chrome_options.add_argument('--disable-css')  # Отключаем CSS для ускорения
+            chrome_options.add_argument('--disable-web-security')
+            chrome_options.add_argument('--disable-features=VizDisplayCompositor')
+            chrome_options.add_argument('--memory-pressure-off')
+            chrome_options.add_argument('--max_old_space_size=4096')
             
             # Добавляем user-data-dir для стабильности сессий
             chrome_options.add_argument(f'--user-data-dir={temp_dir}')
