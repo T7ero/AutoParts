@@ -40,8 +40,8 @@ HEADERS = {
 }
 # Оптимизированные таймауты для ускорения работы
 TIMEOUT = 5  # Увеличиваем для стабильности
-SELENIUM_TIMEOUT = 8  # Увеличиваем для стабильности
-PAGE_LOAD_TIMEOUT = 10  # Увеличиваем для стабильности
+SELENIUM_TIMEOUT = 12  # Чуть больше времени на отрисовку Angular
+PAGE_LOAD_TIMEOUT = 12  # Увеличиваем для стабильности
 
 # Настройки для пула драйверов
 DRIVER_POOL_SIZE = 3
@@ -853,6 +853,8 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			(By.CSS_SELECTOR, '.results'),
 			# Точный путь из DevTools пользователя (будет срабатывать, если DOM совпадает)
 			(By.CSS_SELECTOR, 'body > app-root > div > mp-main > search-result > div > div > project-ui-search-result-with-filters > div > div.results.has-filter-on-desktop > project-ui-search-result > div > div > div.results-list__items.ng-star-inserted'),
+			# Внутри контейнера результатов — искомый бренд
+			(By.CSS_SELECTOR, 'div.results-list__items span.font__body2.brand--selecting'),
 		]
 		
 		page_loaded = False
@@ -971,6 +973,10 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			'.product-card .brand-name',
 			'.catalog-item .brand-name',
 			'.item-card .brand-name',
+			# Бренд внутри контейнера результатов (основной текущий кейс)
+			'div.results-list__items span.font__body2.brand--selecting',
+			# Варианты точного пути, присланные пользователем
+			'body > app-root > div > mp-main > search-result > div > div > project-ui-search-result-with-filters > div > div.results.has-filter-on-desktop > project-ui-search-result > div > div > div.results-list__items.ng-star-inserted > div > div.item.border-bottom.ng-star-inserted > project-ui-article-card > project-ui-article-card-with-suggestions > div > div.content > div > div > div.item.item-mobile > span.font__body2.brand--selecting',
 		]
 		
 		log_debug(f"Armtek Selenium: начинаем поиск брендов по {len(exact_selectors)} точным селекторам")
@@ -1039,16 +1045,28 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 				except Exception as e:
 					log_debug(f"Armtek Selenium: ошибка поиска по селектору {selector}: {str(e)}")
 		
-		# Если брендов нет — пробуем из HTML
+		# Если брендов нет — пробуем из HTML и XPath
 		if not brands:
-			log_debug("Armtek Selenium: селекторы не дали результатов, пробуем парсинг HTML")
-			page_source = driver.page_source
-			html_brands = parse_armtek_page_text(page_source, artikul)
-			if html_brands:
-				brands.update(html_brands)
-				log_debug(f"Armtek Selenium: найдено {len(html_brands)} брендов из HTML")
-			else:
-				log_debug("Armtek Selenium: HTML парсинг тоже не дал результатов")
+			log_debug("Armtek Selenium: селекторы не дали результатов, пробуем парсинг HTML/XPath")
+			# 1) XPath вариант извлечения брендов
+			try:
+				xpath_elems = driver.find_elements(By.XPATH, "//div[contains(@class,'results-list__items')]//span[contains(@class,'brand--selecting') or contains(@class,'brand-name')]")
+				for el in xpath_elems:
+					text = (el.text or '').strip()
+					if text and 1 < len(text) < 50:
+						brands.add(text)
+			except Exception:
+				pass
+
+			# 2) HTML эвристика
+			if not brands:
+				page_source = driver.page_source
+				html_brands = parse_armtek_page_text(page_source, artikul)
+				if html_brands:
+					brands.update(html_brands)
+					log_debug(f"Armtek Selenium: найдено {len(html_brands)} брендов из HTML")
+				else:
+					log_debug("Armtek Selenium: HTML парсинг тоже не дал результатов")
 		
 		return list(brands)
 	finally:
