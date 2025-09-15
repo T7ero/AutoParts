@@ -851,12 +851,15 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			(By.CSS_SELECTOR, '.catalog-item'),
 			(By.CSS_SELECTOR, '.search-results'),
 			(By.CSS_SELECTOR, '.results'),
+			# Точный путь из DevTools пользователя (будет срабатывать, если DOM совпадает)
+			(By.CSS_SELECTOR, 'body > app-root > div > mp-main > search-result > div > div > project-ui-search-result-with-filters > div > div.results.has-filter-on-desktop > project-ui-search-result > div > div > div.results-list__items.ng-star-inserted'),
 		]
 		
 		page_loaded = False
 		for by, sel in selectors_to_wait:
 			try:
-				wait.until(EC.presence_of_element_located((by, sel)))
+				# Ждем видимости, а не только наличия в DOM
+				wait.until(EC.visibility_of_any_elements_located((by, sel)))
 				log_debug(f"Armtek Selenium: найден элемент {sel}")
 				page_loaded = True
 				break
@@ -888,7 +891,10 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		
 		# Ранний выход: проверяем блок "ничего не найдено"
 		try:
+			# Несколько надежных путей для текста "ничего не найдено"
 			nf = driver.find_elements(By.CSS_SELECTOR, 'div.not-found__title p.font__headline5, p.font__headline5')
+			if not nf:
+				nf = driver.find_elements(By.XPATH, "//p[contains(@class,'font__headline5') and contains(translate(., 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ', 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя'), 'ничего не найдено')]")
 			if any('ничего не найдено' in (el.text or '').lower() for el in nf):
 				msg = f"Armtek: по запросу {artikul} ничего не найдено"
 				log_debug(msg)
@@ -911,6 +917,8 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			'.product-card .brand-name',
 			'.catalog-item .brand-name',
 			'.item-card .brand-name',
+			# Точный селектор, предоставленный пользователем
+			'body > app-root > div > mp-main > search-result > div > div > project-ui-search-result-with-filters > div > div.results.has-filter-on-desktop > project-ui-search-result > div > div > div.results-list__items.ng-star-inserted > div > div:nth-child(2) > project-ui-article-card > project-ui-article-card-with-suggestions > div > div.content > div.row.ng-star-inserted > div > div.item.item-mobile > span.font__body2.brand--selecting',
 			# Селекторы для брендов в карточках товаров
 			'.font__body2.brand--selecting',
 			'.brand--selecting',
@@ -1098,8 +1106,7 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             chrome_options.add_argument('--disable-extensions')
             chrome_options.add_argument('--disable-plugins')
             chrome_options.add_argument('--disable-images')
-            chrome_options.add_argument('--disable-javascript')  # Отключаем JS для ускорения
-            chrome_options.add_argument('--disable-css')  # Отключаем CSS для ускорения
+            # Не отключаем JS/CSS для Armtek: часть структуры и видимости управляется Angular
             chrome_options.add_argument('--disable-web-security')
             chrome_options.add_argument('--disable-features=VizDisplayCompositor')
             chrome_options.add_argument('--memory-pressure-off')
@@ -1776,7 +1783,6 @@ def _create_chrome_driver_minimal():
     options.add_argument('--disable-extensions')
     options.add_argument('--disable-plugins')
     options.add_argument('--disable-images')
-    options.add_argument('--disable-javascript')
     options.add_argument('--disable-web-security')
     options.add_argument('--disable-features=VizDisplayCompositor')
     options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
