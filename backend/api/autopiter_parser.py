@@ -581,17 +581,19 @@ def split_combined_brands(brands: List[str]) -> List[str]:
     return sorted(list(result))
 
 def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None, logger=None) -> List[str]:
-	"""Получает бренды с Armtek по артикулу. Для скорости сразу используем Selenium.
-	logger: опциональный callable для записи сообщений в лог задачи.
-	"""
+	"""Получает бренды с Armtek по артикулу. Приоритет — HTTP без Selenium."""
 	try:
 		log_debug(f"Armtek: начало обработки артикула {artikul}")
-		# 1) Selenium без прокси (чаще всего быстрее и стабильнее)
-		brands = parse_armtek_selenium(artikul, None)
-		if brands:
-			return filter_armtek_brands(split_combined_brands(brands))
 
-		# 2) Selenium c прокси (если доступен)
+		# 1) HTTP без прокси
+		try:
+			brands_http = parse_armtek_http(artikul, proxy=None)
+			if brands_http:
+				return filter_armtek_brands(split_combined_brands(list(brands_http)))
+		except Exception as _e:
+			log_debug(f"Armtek HTTP без прокси: ошибка {str(_e)}")
+
+		# 2) HTTP с прокси
 		if not proxy:
 			proxy_dict = get_next_proxy()
 			if proxy_dict:
@@ -601,14 +603,17 @@ def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None, logg
 				proxy = proxy_url
 				log_debug(f"Armtek: автоматически получен прокси: {proxy}")
 		if proxy:
-			brands = parse_armtek_selenium(artikul, proxy)
-			if brands:
-				return filter_armtek_brands(split_combined_brands(brands))
+			try:
+				brands_http = parse_armtek_http(artikul, proxy)
+				if brands_http:
+					return filter_armtek_brands(split_combined_brands(list(brands_http)))
+			except Exception as _e:
+				log_debug(f"Armtek HTTP с прокси: ошибка {str(_e)}")
 
-		# 3) В крайнем случае можно попробовать альтернативные HTTP-точки (выключено для скорости)
-		# brands = parse_armtek_alternative(artikul, proxy)
-		# if brands:
-		# 	return filter_armtek_brands(split_combined_brands(brands))
+		# 3) Альтернативные HTTP-эндоинты
+		brands_alt = parse_armtek_alternative(artikul, proxy)
+		if brands_alt:
+			return filter_armtek_brands(split_combined_brands(brands_alt))
 
 		msg = f"Armtek: бренды не найдены для {artikul}"
 		log_debug(msg)
