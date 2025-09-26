@@ -18,7 +18,7 @@ import tempfile
 import uuid
 import random
 import threading
-from typing import List, Dict, Optional, Tuple, Set
+from typing import List, Dict, Optional, Tuple, Set, Union
 from selenium.common.exceptions import TimeoutException
 import gc
 
@@ -304,42 +304,50 @@ def is_site_available(url: str, proxies: Optional[Dict] = None) -> bool:
     except:
         return False
 
-def make_request(url: str, proxy: Optional[str] = None, max_retries: int = 2, timeout: int = 10) -> Optional[requests.Response]:
-    """Выполняет  HTTP запрос с поддержкой прокси и повторными попытками"""
+def make_request(
+    url: str,
+    proxy: Optional[Union[str, Dict[str, str]]] = None,
+    max_retries: int = 2,
+    timeout: int = 10,
+    cache_key: Optional[str] = None,
+) -> Optional[requests.Response]:
+    """Выполняет HTTP-запрос с поддержкой прокси и повторными попытками.
+    Параметр cache_key зарезервирован для возможного кеширования (пока не используется).
+    """
 
     # Настройка сессии
     session = requests.Session()
     
     # Настройка прокси
     if proxy:
-        # Проверяем формат прокси
-        if '@' in proxy:
-            # Формат: login:password@ip:port
-            auth_part, proxy_part = proxy.split('@', 1)
-            if ':' in auth_part:
-                username, password = auth_part.split(':', 1)
-                # Правильный формат для requests с аутентификацией
-                proxy_dict = {
-                    'http': f'http://{username}:{password}@{proxy_part}',
-                    'https': f'http://{username}:{password}@{proxy_part}'
-                }
-                log_debug(f"Используется прокси с аутентификацией: {username}:***@{proxy_part}")
+        if isinstance(proxy, dict):
+            session.proxies.update(proxy)
+            log_debug("Используется словарь прокси")
+        else:
+            # Проверяем формат прокси-строки
+            if '@' in proxy:
+                # Формат: login:password@ip:port
+                auth_part, proxy_part = proxy.split('@', 1)
+                if ':' in auth_part:
+                    username, password = auth_part.split(':', 1)
+                    proxy_dict = {
+                        'http': f'http://{username}:{password}@{proxy_part}',
+                        'https': f'http://{username}:{password}@{proxy_part}'
+                    }
+                    log_debug(f"Используется прокси с аутентификацией: {username}:***@{proxy_part}")
+                else:
+                    proxy_dict = {
+                        'http': f'http://{proxy}',
+                        'https': f'http://{proxy}'
+                    }
+                    log_debug(f"Используется прокси без аутентификации: {proxy}")
             else:
-                # Если нет пароля, используем как есть
                 proxy_dict = {
                     'http': f'http://{proxy}',
                     'https': f'http://{proxy}'
                 }
-                log_debug(f"Используется прокси без аутентификации: {proxy}")
-        else:
-            # Формат: ip:port
-            proxy_dict = {
-                'http': f'http://{proxy}',
-                'https': f'http://{proxy}'
-            }
-            log_debug(f"Используется прокси: {proxy}")
-        
-        session.proxies.update(proxy_dict)
+                log_debug(f"Используется прокси: {proxy}")
+            session.proxies.update(proxy_dict)
     
     # Настройка заголовков
     headers = {
@@ -1310,12 +1318,12 @@ def parse_armtek_page_text(page_text: str, artikul: str) -> set:
     
     return brands
 
-def parse_armtek_http(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
+def parse_armtek_http(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] = None) -> List[str]:
     """Парсинг Armtek через HTTP запрос с улучшенной обработкой"""
     url = f"https://armtek.ru/search?text={quote(artikul)}"
     log_debug(f"Armtek HTTP: запрос к {url}")
     
-    response = make_request(url, proxies, cache_key=f"armtek_http_{artikul}")
+    response = make_request(url, proxy, cache_key=f"armtek_http_{artikul}")
     if not response:
         return []
     
