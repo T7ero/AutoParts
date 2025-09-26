@@ -1344,8 +1344,13 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
 		'главная', 'войти', 'корзина', 'каталог', 'поиск', 'новости', 'акции',
 		'контакты', 'о компании', 'правовая информация', 'программа лояльности',
 		# Паразитные фрагменты из SSR/шифрования
-		'nxmupi', 'wti'
+		'nxmupi', 'wti',
+		# Типовые слова из карточек/описаний, не являющиеся брендами
+		'рессора', 'для', 'возможные', 'замены', 'бренды', 'магазин', 'сегодня', 'цена',
+		'наличии', 'оригинал', 'аналог', 'каталожный', 'номер', 'изделие', 'товар', 'деталь'
 	}
+
+	stop_words = {'и', 'в', 'во', 'на', 'для', 'от', 'по', 'из'}
 	
 	for b in brands:
 		brand = b.strip()
@@ -1368,8 +1373,24 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
 		letters_only = re.sub(r'[^A-Za-zА-Яа-яЁё]', '', brand)
 		if 2 <= len(letters_only) <= 6 and re.search(r'[A-Z][a-z][A-Z]', brand):
 			continue
-			
-		filtered.append(brand)
+
+		# Нормализуем: убираем скобки и всё после них
+		norm = re.sub(r'\(.*?\)', '', brand).strip()
+		# Заменяем длинные последовательности пробелов
+		norm = re.sub(r'\s+', ' ', norm)
+		# Отбрасываем, если присутствуют цифры внутри
+		if re.search(r'\d', norm):
+			continue
+		# Разрешаем не более двух слов и только буквенные слова
+		parts = [p for p in norm.split(' ') if p]
+		if len(parts) == 0 or len(parts) > 2:
+			continue
+		if any(p.lower() in stop_words for p in parts):
+			continue
+		if any(not re.match(r'^[A-Za-zА-Яа-яЁё\-]{2,}$', p) for p in parts):
+			continue
+
+		filtered.append(norm)
 		
 	return sorted(set(filtered))
 
