@@ -580,19 +580,16 @@ def split_combined_brands(brands: List[str]) -> List[str]:
     return sorted(list(result))
 
 def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None, logger=None) -> List[str]:
-	"""Получает бренды с Armtek по артикулу. Приоритет — HTTP без Selenium."""
+	"""Получает бренды с Armtek по артикулу, используя только Selenium (быстро и стабильно)."""
 	try:
 		log_debug(f"Armtek: начало обработки артикула {artikul}")
 
-		# 1) HTTP без прокси
-		try:
-			brands_http = parse_armtek_http(artikul, proxy=None)
-			if brands_http:
-				return filter_armtek_brands(split_combined_brands(list(brands_http)))
-		except Exception as _e:
-			log_debug(f"Armtek HTTP без прокси: ошибка {str(_e)}")
+		# 1) Selenium без прокси — самый быстрый путь
+		brands_sel = parse_armtek_selenium(artikul, None)
+		if brands_sel:
+			return filter_armtek_brands(split_combined_brands(brands_sel))
 
-		# 2) HTTP с прокси
+		# 2) Selenium с прокси — если без прокси пусто
 		if not proxy:
 			proxy_dict = get_next_proxy()
 			if proxy_dict:
@@ -602,17 +599,9 @@ def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None, logg
 				proxy = proxy_url
 				log_debug(f"Armtek: автоматически получен прокси: {proxy}")
 		if proxy:
-			try:
-				brands_http = parse_armtek_http(artikul, proxy)
-				if brands_http:
-					return filter_armtek_brands(split_combined_brands(list(brands_http)))
-			except Exception as _e:
-				log_debug(f"Armtek HTTP с прокси: ошибка {str(_e)}")
-
-		# 3) Альтернативные HTTP-эндоинты
-		brands_alt = parse_armtek_alternative(artikul, proxy)
-		if brands_alt:
-			return filter_armtek_brands(split_combined_brands(brands_alt))
+			brands_sel = parse_armtek_selenium(artikul, proxy)
+			if brands_sel:
+				return filter_armtek_brands(split_combined_brands(brands_sel))
 
 		msg = f"Armtek: бренды не найдены для {artikul}"
 		log_debug(msg)
