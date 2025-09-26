@@ -1352,19 +1352,11 @@ def parse_armtek_http(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] 
         '.pin-brand-name span.font__caption1.brand--selectable',
         '.font__caption1.brand--selectable',
         'div.pin-brand-name .brand--selectable',
-        'div.results-list__items span.font__body2.brand--selecting',
-        # Общие селекторы на случай изменений
-        '.product-card .brand-name',
+        # Структурные источники бренда
         '.product-card__brand',
         '[itemprop="brand"]',
         '.catalog-item__brand',
-        '.brand-name',
-        '.product-brand',
-        'span[data-brand]',
-        '.item-brand',
-        '.brand__name',
-        '.manufacturer-name',
-        '.vendor-title'
+        '[data-brand]'
     ]
     
     for selector in brand_selectors:
@@ -1376,30 +1368,21 @@ def parse_armtek_http(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] 
         except Exception:
             continue
     
-    # Поиск по тексту
+    # Узкие регулярки по ожидаемым классам/атрибутам
     if not brands:
-        # Прямой поиск брендов по классам внутри HTML, даже если DOM частично SSR
         try:
             regex_patterns = [
-                r'class="font__caption1\s+brand--selectable"[^>]*>([^<]+)</span>',
-                r'class="pin-brand-name[^"]*">\s*<[^>]*class="font__caption1\s+brand--selectable"[^>]*>([^<]+)</span>',
-                r'class="brand--selecting"[^>]*>([^<]+)</span>'
+                r'class=\"font__caption1\s+brand--selectable\"[^>]*>([^<]+)</span>',
+                r'pin-brand-name[^<]+class=\"font__caption1\s+brand--selectable\"[^>]*>([^<]+)</span>',
+                r'data-brand=\"([^\"]+)\"'
             ]
             for rp in regex_patterns:
-                for m in re.findall(rp, html_text, re.IGNORECASE):
+                for m in re.findall(rp, html_text):
                     val = (m or '').strip()
                     if val and 1 < len(val) < 50 and not val.isdigit():
                         brands.add(val)
         except Exception:
             pass
-
-    if not brands:
-        brand_pattern = re.compile(r'(бренд|производитель|brand|manufacturer)', re.IGNORECASE)
-        for tag in soup.find_all(['span', 'div', 'a', 'h3']):
-            text = tag.get_text(strip=True)
-            if text and 1 < len(text) < 50:
-                if not brand_pattern.search(text) and not any(char.isdigit() for char in text):
-                    brands.add(text)
     
     return sorted(brands) if brands else []
 
@@ -1415,7 +1398,9 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
 		'brand', 'new', 'test', 'tag', 'date', 'end', 'error', 'function', 'manager',
 		# Только самые очевидные мусорные слова из интерфейса
 		'главная', 'войти', 'корзина', 'каталог', 'поиск', 'новости', 'акции',
-		'контакты', 'о компании', 'правовая информация', 'программа лояльности'
+		'контакты', 'о компании', 'правовая информация', 'программа лояльности',
+		# Паразитные фрагменты из SSR/шифрования
+		'nxmupi', 'wti'
 	}
 	
 	for b in brands:
@@ -1433,6 +1418,11 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
 			
 		# Убираем только очевидные артикулы (начинающиеся с цифр)
 		if brand[0].isdigit() and len(brand) > 3:
+			continue
+
+		# Убираем строки с непонятной смесью регистров типа NxMUPi, WtI
+		letters_only = re.sub(r'[^A-Za-zА-Яа-яЁё]', '', brand)
+		if 2 <= len(letters_only) <= 6 and re.search(r'[A-Z][a-z][A-Z]', brand):
 			continue
 			
 		filtered.append(brand)
