@@ -349,17 +349,8 @@ def make_request(
                 log_debug(f"Используется прокси: {proxy}")
             session.proxies.update(proxy_dict)
     
-    # Настройка заголовков
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
-        'Accept-Encoding': 'gzip, deflate',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-    }
-    
-    session.headers.update(headers)
+    # Настройка заголовков — используем «современные» заголовки из HEADERS
+    session.headers.update(HEADERS)
     
     # Выполнение запроса с повторными попытками
     for attempt in range(1, max_retries + 1):
@@ -1328,6 +1319,12 @@ def parse_armtek_http(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] 
         return []
     
     html_text = response.text
+    # Диагностика: проверим наличие ключевых классов в HTML
+    try:
+        if 'brand--selectable' not in html_text and 'brand--selecting' not in html_text:
+            log_debug("Armtek HTTP: в HTML нет brand--selectable/brand--selecting — возможно, страница SSR без нужных блоков или требуется JS")
+    except Exception:
+        pass
     soup = BeautifulSoup(html_text, 'html.parser')
     brands = set()
     
