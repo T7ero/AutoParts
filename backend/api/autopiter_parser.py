@@ -1351,6 +1351,11 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
 	}
 
 	stop_words = {'и', 'в', 'во', 'на', 'для', 'от', 'по', 'из'}
+	# Небольшой вайтлист, чтобы не отфильтровать валидные бренды с нестандартным регистром
+	whitelist = {
+		'HINO', 'ISUZU', 'TOYOTA', 'NISSAN', 'UD TRUCKS', 'FUSO', 'MITSUBISHI',
+		'BELTON', 'ZEVS', 'GSParts', 'GSPARTS', 'GSP', 'SKV', 'PRC', 'ЧМЗ'
+	}
 	
 	for b in brands:
 		brand = b.strip()
@@ -1381,6 +1386,9 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
 		# Отбрасываем, если присутствуют цифры внутри
 		if re.search(r'\d', norm):
 			continue
+		# Отбрасываем явные описания
+		if norm.lower().startswith('рессора'):
+			continue
 		# Разрешаем не более двух слов и только буквенные слова
 		parts = [p for p in norm.split(' ') if p]
 		if len(parts) == 0 or len(parts) > 2:
@@ -1389,6 +1397,15 @@ def filter_armtek_brands(brands: List[str]) -> List[str]:
 			continue
 		if any(not re.match(r'^[A-Za-zА-Яа-яЁё\-]{2,}$', p) for p in parts):
 			continue
+
+		# Метрика верхнего регистра — бренды обычно в апперкейсе
+		letters = re.findall(r'[A-Za-zА-Яа-яЁё]', norm)
+		if letters:
+			upper_ratio = sum(1 for ch in letters if ch.isupper()) / len(letters)
+			# допускаем если сильно верхний регистр, либо одно слово TitleCase, либо вайтлист
+			is_title_single = len(parts) == 1 and parts[0][0].isupper() and parts[0][1:].islower()
+			if norm.upper() not in whitelist and not (upper_ratio >= 0.6 or is_title_single):
+				continue
 
 		filtered.append(norm)
 		
