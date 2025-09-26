@@ -1327,7 +1327,8 @@ def parse_armtek_http(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] 
     if not response:
         return []
     
-    soup = BeautifulSoup(response.text, 'html.parser')
+    html_text = response.text
+    soup = BeautifulSoup(html_text, 'html.parser')
     brands = set()
     
     # Поиск брендов в структурированных данных
@@ -1350,6 +1351,12 @@ def parse_armtek_http(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] 
     
     # Поиск по CSS селекторам
     brand_selectors = [
+        # Точные и актуальные селекторы из интерфейса Armtek
+        '.pin-brand-name span.font__caption1.brand--selectable',
+        '.font__caption1.brand--selectable',
+        'div.pin-brand-name .brand--selectable',
+        'div.results-list__items span.font__body2.brand--selecting',
+        # Общие селекторы на случай изменений
         '.product-card .brand-name',
         '.product-card__brand',
         '[itemprop="brand"]',
@@ -1364,17 +1371,36 @@ def parse_armtek_http(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] 
     ]
     
     for selector in brand_selectors:
-        for tag in soup.select(selector):
-            brand = tag.get_text(strip=True)
-            if brand and len(brand) > 2 and not brand.isdigit():
-                brands.add(brand)
+        try:
+            for tag in soup.select(selector):
+                brand = tag.get_text(strip=True)
+                if brand and 1 < len(brand) < 50 and not brand.isdigit():
+                    brands.add(brand)
+        except Exception:
+            continue
     
     # Поиск по тексту
+    if not brands:
+        # Прямой поиск брендов по классам внутри HTML, даже если DOM частично SSR
+        try:
+            regex_patterns = [
+                r'class="font__caption1\s+brand--selectable"[^>]*>([^<]+)</span>',
+                r'class="pin-brand-name[^"]*">\s*<[^>]*class="font__caption1\s+brand--selectable"[^>]*>([^<]+)</span>',
+                r'class="brand--selecting"[^>]*>([^<]+)</span>'
+            ]
+            for rp in regex_patterns:
+                for m in re.findall(rp, html_text, re.IGNORECASE):
+                    val = (m or '').strip()
+                    if val and 1 < len(val) < 50 and not val.isdigit():
+                        brands.add(val)
+        except Exception:
+            pass
+
     if not brands:
         brand_pattern = re.compile(r'(бренд|производитель|brand|manufacturer)', re.IGNORECASE)
         for tag in soup.find_all(['span', 'div', 'a', 'h3']):
             text = tag.get_text(strip=True)
-            if text and len(text) > 2 and len(text) < 50:
+            if text and 1 < len(text) < 50:
                 if not brand_pattern.search(text) and not any(char.isdigit() for char in text):
                     brands.add(text)
     
