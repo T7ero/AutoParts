@@ -225,8 +225,9 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
 
         if price_value is not None:
             result['marketplace_price'] = price_value
-        result['is_found'] = bool(price_value is not None or man_ok)
+            result['is_found'] = True
         else:
+            result['is_found'] = bool(man_ok)
             result['error_message'] = 'Цена не найдена на странице товара'
         
     except Exception as e:
