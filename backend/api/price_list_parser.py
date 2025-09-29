@@ -166,63 +166,80 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
     try:
         # 1) Открываем карточку по прямой ссылке
         product_url = f"https://autopiter.ru/goods/{quote(article)}"
-        resp = make_request(product_url, timeout=TIMEOUT)
-        if not resp or resp.status_code != 200:
-            result['error_message'] = 'Не удалось открыть страницу товара АвтоПитер'
-            return result
-
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        # 2) Ищем таблицу "Запрошенный номер" по заголовкам столбцов
         supplier_codes = SUPPLIER_CODES['autopiter']
         our_price = None
+        # Пробуем через Selenium, так как таблица может быть частично динамической
+        driver = None
         try:
-            candidate_tables = soup.find_all('table')
-            def header_cells(table):
-                thead = table.find('thead')
-                if not thead:
-                    return []
-                headers = [th.get_text(' ', strip=True).lower() for th in thead.find_all('th')]
-                return headers
-            target_table = None
-            for t in candidate_tables:
-                headers = header_cells(t)
-                if not headers:
+            options = Options()
+            options.add_argument('--headless=new')
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--disable-gpu')
+            driver = webdriver.Chrome(options=options)
+            driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+            driver.implicitly_wait(3)
+            driver.get(product_url)
+            WebDriverWait(driver, SELENIUM_TIMEOUT).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'table'))
+            )
+            tables = driver.find_elements(By.CSS_SELECTOR, 'table')
+            target = None
+            for tbl in tables:
+                try:
+                    ths = tbl.find_elements(By.CSS_SELECTOR, 'thead th')
+                    headers = [th.text.strip().lower() for th in ths]
+                    if headers and any('поставщик' in h for h in headers) and any('цена' in h for h in headers):
+                        target = tbl
+                        break
+                except Exception:
                     continue
-                if any('поставщик' in h for h in headers) and any('цена' in h for h in headers):
-                    target_table = t
-                    break
-            if target_table:
-                # Определяем индексы колонок
-                headers = header_cells(target_table)
+            if target:
+                ths = target.find_elements(By.CSS_SELECTOR, 'thead th')
+                headers = [th.text.strip().lower() for th in ths]
                 idx_supplier = next((i for i,h in enumerate(headers) if 'поставщик' in h), None)
                 idx_price = next((i for i,h in enumerate(headers) if 'цена' in h), None)
-                if idx_supplier is not None and idx_price is not None:
-                    tbody = target_table.find('tbody') or target_table
-                    for tr in tbody.find_all('tr'):
-                        tds = tr.find_all(['td','th'])
-                        if len(tds) <= max(idx_supplier, idx_price):
-                            continue
-                        supplier_text = tds[idx_supplier].get_text(' ', strip=True)
-                        supplier_digits = re.sub(r'\D+', '', supplier_text)
-                        if not supplier_digits or supplier_digits not in supplier_codes:
-                            continue
-                        price_text = tds[idx_price].get_text(' ', strip=True)
+                rows = target.find_elements(By.CSS_SELECTOR, 'tbody tr') or target.find_elements(By.CSS_SELECTOR, 'tr')
+                for r in rows:
+                    tds = r.find_elements(By.CSS_SELECTOR, 'td,th')
+                    if not tds or idx_supplier is None or idx_price is None or len(tds) <= max(idx_supplier, idx_price):
+                        continue
+                    sup_text = tds[idx_supplier].text.strip()
+                    sup_digits = re.sub(r'\D+', '', sup_text)
+                    if sup_digits in supplier_codes:
+                        price_text = tds[idx_price].text.strip()
                         m = re.search(r'(\d[\d\s]{2,})', price_text)
                         if m:
                             our_price = float(m.group(1).replace(' ', ''))
                             break
         except Exception:
             pass
+        finally:
+            try:
+                if driver:
+                    driver.quit()
+            except Exception:
+                pass
 
         # 3) Минимальная цена конкурента из блока выбранного предложения
         competitor_min = None
         try:
-            best = soup.select_one('.SelectedOffer__price___Xzg0ZD')
-            if best:
-                txt = best.get_text(' ', strip=True)
-                m = re.search(r'(\d[\d\s]{2,})', txt)
-                if m:
-                    competitor_min = float(m.group(1).replace(' ', ''))
+            # Если Selenium был активен и все еще есть driver
+            if driver:
+                try:
+                    best_el = driver.find_element(By.CSS_SELECTOR, '.SelectedOffer__price___Xzg0ZD')
+                    txt = best_el.text.strip()
+                except Exception:
+                    txt = ''
+            else:
+                # Fallback по HTTP странице
+                resp2 = make_request(product_url, timeout=TIMEOUT)
+                txt = ''
+                if resp2 and resp2.status_code == 200:
+                    txt = BeautifulSoup(resp2.text, 'html.parser').get_text(' ', strip=True)
+            m = re.search(r'(\d[\d\s]{2,})', txt)
+            if m:
+                competitor_min = float(m.group(1).replace(' ', ''))
         except Exception:
             pass
 
