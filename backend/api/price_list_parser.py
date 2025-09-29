@@ -22,7 +22,7 @@ from typing import List, Dict, Optional, Tuple, Set
 from selenium.common.exceptions import TimeoutException
 import gc
 from decimal import Decimal
-from .autopiter_parser import get_next_proxy, make_request
+from .autopiter_parser import get_next_proxy, make_request, get_brands_by_artikul, get_brands_by_artikul_emex, get_brands_by_artikul_armtek
 
 # Настройки для парсинга прайс-листа
 TIMEOUT = 10
@@ -55,6 +55,13 @@ HEADERS = {
 
 def log_debug(message):
     print(f"[DEBUG] {message}")
+
+def _norm_brand(val: str) -> str:
+    try:
+        s = (val or '').strip().upper()
+        return re.sub(r"[^0-9A-ZА-ЯЁ]+", "", s)
+    except Exception:
+        return ''
 
 def parse_price_list_file(file_path: str) -> List[Dict]:
     """Парсит Excel файл прайс-листа и возвращает список позиций.
@@ -157,6 +164,18 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
     }
     
     try:
+        # Проверяем наличие брендов через основной парсер
+        man_ok = False
+        try:
+            brands = get_brands_by_artikul(article) or []
+            man_norm = _norm_brand(manufacturer)
+            for b in brands:
+                if _norm_brand(b) == man_norm:
+                    man_ok = True
+                    break
+        except Exception:
+            pass
+
         # Формируем поисковый запрос
         search_query = f"{manufacturer} {article}"
         if supplier_code and supplier_code in SUPPLIER_CODES['autopiter']:
@@ -206,7 +225,7 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
 
         if price_value is not None:
             result['marketplace_price'] = price_value
-            result['is_found'] = True
+        result['is_found'] = bool(price_value is not None or man_ok)
         else:
             result['error_message'] = 'Цена не найдена на странице товара'
         
@@ -226,6 +245,18 @@ def check_emex_item(supplier_code: str, manufacturer: str, article: str, competi
     }
     
     try:
+        # Проверяем наличие брендов через основной парсер
+        man_ok = False
+        try:
+            brands = get_brands_by_artikul_emex(article) or []
+            man_norm = _norm_brand(manufacturer)
+            for b in brands:
+                if _norm_brand(b) == man_norm:
+                    man_ok = True
+                    break
+        except Exception:
+            pass
+
         # Формируем поисковый запрос
         search_query = f"{manufacturer} {article}"
         if supplier_code and supplier_code in SUPPLIER_CODES['emex']:
@@ -240,9 +271,15 @@ def check_emex_item(supplier_code: str, manufacturer: str, article: str, competi
             return result
         
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Парсим результаты поиска (аналогично АвтоПитер)
-        # ... код парсинга Емекс ...
+        # Упрощенно ищем цену в выдаче
+        txt = soup.get_text(' ', strip=True)
+        m = re.search(r'от\s*(\d[\d\s]*)\s*₽', txt) or re.search(r'\b(\d[\d\s]{2,})\b\s*₽', txt)
+        if m:
+            try:
+                result['marketplace_price'] = float(m.group(1).replace(' ', ''))
+            except Exception:
+                pass
+        result['is_found'] = bool(result['marketplace_price'] is not None or man_ok)
         
     except Exception as e:
         result['error_message'] = f"Ошибка парсинга Емекс: {str(e)}"
@@ -260,34 +297,31 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
     }
     
     try:
-        # Для Армтек используем только артикул и производителя
+        # Проверка брендов через основной Selenium-парсер
+        man_ok = False
+        try:
+            brands = get_brands_by_artikul_armtek(article) or []
+            man_norm = _norm_brand(manufacturer)
+            for b in brands:
+                if _norm_brand(b) == man_norm:
+                    man_ok = True
+                    break
+        except Exception:
+            pass
+        
+        # Пытаемся достать цену из HTML поисковой страницы
         search_query = f"{manufacturer} {article}"
         url = f"https://armtek.ru/search?text={quote(search_query)}"
-        
-        # Используем Selenium для Армтек
-        driver = None
-        try:
-            options = Options()
-            options.add_argument('--headless=new')
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--disable-gpu')
-            options.add_argument('--disable-images')
-            options.add_argument('--disable-javascript')
-            
-            driver = webdriver.Chrome(options=options)
-            driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-            driver.implicitly_wait(5)
-            
-            driver.get(url)
-            time.sleep(3)
-            
-            # Парсим результаты
-            # ... код парсинга Армтек с Selenium ...
-            
-        finally:
-            if driver:
-                driver.quit()
+        resp = make_request(url, timeout=TIMEOUT)
+        if resp and resp.status_code == 200:
+            txt = BeautifulSoup(resp.text, 'html.parser').get_text(' ', strip=True)
+            m = re.search(r'от\s*(\d[\d\s]*)\s*₽', txt) or re.search(r'\b(\d[\d\s]{2,})\b\s*₽', txt)
+            if m:
+                try:
+                    result['marketplace_price'] = float(m.group(1).replace(' ', ''))
+                except Exception:
+                    pass
+        result['is_found'] = bool(result['marketplace_price'] is not None or man_ok)
         
     except Exception as e:
         result['error_message'] = f"Ошибка парсинга Армтек: {str(e)}"
