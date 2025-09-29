@@ -383,24 +383,38 @@ def process_parsing_task(self, task_id):
         df.dropna(how='all', inplace=True)
         
         # Если файл очень большой (>200 строк), разбиваем на части
+        batch_files = [task.file.path]
         if len(df) > 200:
             log(f"Файл содержит {len(df)} строк, разбиваем на части для оптимизации...")
             batch_files = split_large_file(task.file.path, max_rows_per_batch=100)
-            if len(batch_files) > 1:
-                log(f"Файл разбит на {len(batch_files)} частей")
-                # Для простоты пока обрабатываем только первую часть
-                # В будущем можно запускать параллельные задачи для каждой части
-                df = pd.read_excel(batch_files[0])
-                log(f"Обрабатываем первую часть из {len(batch_files)} частей")
+            log(f"Файл разбит на {len(batch_files)} частей")
+        
+        # Будем последовательно обрабатывать все части, суммируя результаты
+        total_rows = 0
+        results_autopiter = []
+        results_armtek = []
+        results_emex = []
+        frames = []
+        for batch_index, batch_path in enumerate(batch_files):
+            try:
+                df = pd.read_excel(batch_path)
+                df.dropna(how='all', inplace=True)
+                total_rows += len(df)
+                frames.append(df)
+                log(f"Обрабатываем часть {batch_index + 1} из {len(batch_files)}: {len(df)} строк")
+            except Exception as e:
+                log(f"Ошибка чтения части {batch_index + 1}: {str(e)}")
+                continue
+        
+        # Собираем все части в единый DataFrame
+        if frames:
+            df = pd.concat(frames, ignore_index=True)
+        else:
+            df = pd.DataFrame()
         
         # Инициализируем таймаут и счетчик обработанных строк
         task._timeout_check = time.time()
         task._processed_rows = 0  # Добавляем счетчик обработанных строк
-        
-        total_rows = len(df)
-        results_autopiter = []
-        results_armtek = []
-        results_emex = []
 
         # Чтение выбранных источников (autopiter, emex, armtek) из полей задачи, если есть
         selected_sources = {"autopiter", "emex", "armtek"}
