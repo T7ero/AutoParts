@@ -11,7 +11,8 @@ from .autopiter_parser import (
     get_next_proxy,
     get_proxy_string,
     load_proxies_from_file,
-    log_debug
+    log_debug,
+    filter_armtek_brands
 )
 import re
 import concurrent.futures
@@ -708,8 +709,10 @@ def process_parsing_task(self, task_id):
                                         set_cache(num, 'armtek', brands, is_empty)
                                         
                                         if brands:
-                                            # Фильтруем бренды для Armtek так же, как для других источников
-                                            filtered_brands = filter_garbage_brands(brands)
+                                            # Для Armtek сперва используем специализированный фильтр,
+                                            # затем общий фильтр мусора для унификации формата
+                                            filtered_brands = filter_armtek_brands(brands)
+                                            filtered_brands = filter_garbage_brands(filtered_brands)
                                             if filtered_brands:
                                                 log(f"armtek: {num} → найдено {len(filtered_brands)} брендов (после фильтрации)")
                                                 return [(brand_from_e, part_number_from_f, name_from_b, brand, num, 'armtek') for brand in filtered_brands]
