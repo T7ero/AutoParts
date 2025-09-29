@@ -172,29 +172,42 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
             return result
 
         soup = BeautifulSoup(resp.text, 'html.parser')
-        # 2) Находим первую строку "Запрошенный номер" с нашим поставщиком и берём цену
+        # 2) Ищем таблицу "Запрошенный номер" по заголовкам столбцов
         supplier_codes = SUPPLIER_CODES['autopiter']
         our_price = None
         try:
-            table = soup.select_one('div.NonRetailAppraisePricesTab__sectionHeader___ZjJjOD ~ div table')
-            # Резерв: ищем по общему контейнеру таблицы
-            if not table:
-                table = soup.select_one('table')
-            if table:
-                rows = table.select('tbody tr')
-                for tr in rows:
-                    # Поставщик
-                    sup_span = tr.select_one('.NonRetailAppraiseTR__priceId___Xzg1ZT span, .NonRetailAppraiseTR__secondary___Xzg1ZT')
-                    if not sup_span:
-                        continue
-                    sup_code = sup_span.get_text(strip=True)
-                    if sup_code not in supplier_codes:
-                        continue
-                    # Цена для строки поставщика
-                    price_cell = tr.select_one('.NonRetailAppraiseTR__priceCell___Xzg1ZT, td:nth-child(7)')
-                    if price_cell:
-                        txt = price_cell.get_text(' ', strip=True)
-                        m = re.search(r'(\d[\d\s]{2,})', txt)
+            candidate_tables = soup.find_all('table')
+            def header_cells(table):
+                thead = table.find('thead')
+                if not thead:
+                    return []
+                headers = [th.get_text(' ', strip=True).lower() for th in thead.find_all('th')]
+                return headers
+            target_table = None
+            for t in candidate_tables:
+                headers = header_cells(t)
+                if not headers:
+                    continue
+                if any('поставщик' in h for h in headers) and any('цена' in h for h in headers):
+                    target_table = t
+                    break
+            if target_table:
+                # Определяем индексы колонок
+                headers = header_cells(target_table)
+                idx_supplier = next((i for i,h in enumerate(headers) if 'поставщик' in h), None)
+                idx_price = next((i for i,h in enumerate(headers) if 'цена' in h), None)
+                if idx_supplier is not None and idx_price is not None:
+                    tbody = target_table.find('tbody') or target_table
+                    for tr in tbody.find_all('tr'):
+                        tds = tr.find_all(['td','th'])
+                        if len(tds) <= max(idx_supplier, idx_price):
+                            continue
+                        supplier_text = tds[idx_supplier].get_text(' ', strip=True)
+                        supplier_digits = re.sub(r'\D+', '', supplier_text)
+                        if not supplier_digits or supplier_digits not in supplier_codes:
+                            continue
+                        price_text = tds[idx_price].get_text(' ', strip=True)
+                        m = re.search(r'(\d[\d\s]{2,})', price_text)
                         if m:
                             our_price = float(m.group(1).replace(' ', ''))
                             break
