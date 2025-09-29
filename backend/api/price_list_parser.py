@@ -164,71 +164,62 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
     }
     
     try:
-        # Проверяем наличие брендов через основной парсер
-        man_ok = False
-        try:
-            brands = get_brands_by_artikul(article) or []
-            man_norm = _norm_brand(manufacturer)
-            for b in brands:
-                if _norm_brand(b) == man_norm:
-                    man_ok = True
-                    break
-        except Exception:
-            pass
-
-        # Формируем поисковый запрос
-        search_query = f"{manufacturer} {article}"
-        if supplier_code and supplier_code in SUPPLIER_CODES['autopiter']:
-            search_query = f"{supplier_code} {search_query}"
-        
-        url = f"https://autopiter.ru/search?q={quote(search_query)}"
-        
-        # ВАЖНО: на АвтоПитере корректная карточка формируется по прямой ссылке /goods/<артикул>
-        # поэтому сразу идем на страницу товара
+        # 1) Открываем карточку по прямой ссылке
         product_url = f"https://autopiter.ru/goods/{quote(article)}"
-        product_resp = make_request(product_url, timeout=TIMEOUT)
-        if not product_resp or product_resp.status_code != 200:
+        resp = make_request(product_url, timeout=TIMEOUT)
+        if not resp or resp.status_code != 200:
             result['error_message'] = 'Не удалось открыть страницу товара АвтоПитер'
             return result
 
-        product_soup = BeautifulSoup(product_resp.text, 'html.parser')
-        # Пытаемся достать цену по нескольким устойчивым селекторам
-        candidate_selectors = [
-            'div[class*="IndividualTableRow__deliveryPriceBlock"] a',
-            'div[class*="deliveryPriceBlock"] a',
-            'div[class*="pricesColumn"] a',
-            '#main-content a'
-        ]
-        price_value = None
-        for sel in candidate_selectors:
-            try:
-                for a in product_soup.select(sel):
-                    txt = a.get_text(' ', strip=True)
-                    m = re.search(r'от\s*(\d[\d\s]*)\s*₽', txt)
-                    if not m:
-                        m = re.search(r'\b(\d[\d\s]{2,})\b\s*₽', txt)
-                    if m:
-                        price_value = float(m.group(1).replace(' ', ''))
-                        break
-                if price_value is not None:
-                    break
-            except Exception:
-                continue
-        # Фолбэк по всему тексту страницы
-        if price_value is None:
-            page_text = product_soup.get_text(' ', strip=True)
-            m = re.search(r'от\s*(\d[\d\s]*)\s*₽', page_text)
-            if not m:
-                m = re.search(r'\b(\d[\d\s]{2,})\b\s*₽', page_text)
-            if m:
-                price_value = float(m.group(1).replace(' ', ''))
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        # 2) Находим первую строку "Запрошенный номер" с нашим поставщиком и берём цену
+        supplier_codes = SUPPLIER_CODES['autopiter']
+        our_price = None
+        try:
+            table = soup.select_one('div.NonRetailAppraisePricesTab__sectionHeader___ZjJjOD ~ div table')
+            # Резерв: ищем по общему контейнеру таблицы
+            if not table:
+                table = soup.select_one('table')
+            if table:
+                rows = table.select('tbody tr')
+                for tr in rows:
+                    # Поставщик
+                    sup_span = tr.select_one('.NonRetailAppraiseTR__priceId___Xzg1ZT span, .NonRetailAppraiseTR__secondary___Xzg1ZT')
+                    if not sup_span:
+                        continue
+                    sup_code = sup_span.get_text(strip=True)
+                    if sup_code not in supplier_codes:
+                        continue
+                    # Цена для строки поставщика
+                    price_cell = tr.select_one('.NonRetailAppraiseTR__priceCell___Xzg1ZT, td:nth-child(7)')
+                    if price_cell:
+                        txt = price_cell.get_text(' ', strip=True)
+                        m = re.search(r'(\d[\d\s]{2,})', txt)
+                        if m:
+                            our_price = float(m.group(1).replace(' ', ''))
+                            break
+        except Exception:
+            pass
 
-        if price_value is not None:
-            result['marketplace_price'] = price_value
+        # 3) Минимальная цена конкурента из блока выбранного предложения
+        competitor_min = None
+        try:
+            best = soup.select_one('.SelectedOffer__price___Xzg0ZD')
+            if best:
+                txt = best.get_text(' ', strip=True)
+                m = re.search(r'(\d[\d\s]{2,})', txt)
+                if m:
+                    competitor_min = float(m.group(1).replace(' ', ''))
+        except Exception:
+            pass
+
+        if our_price is not None:
+            result['marketplace_price'] = our_price
             result['is_found'] = True
         else:
-            result['is_found'] = bool(man_ok)
-            result['error_message'] = 'Цена не найдена на странице товара'
+            result['is_found'] = False
+        if competitor_min is not None:
+            result['min_competitor_price'] = competitor_min
         
     except Exception as e:
         result['error_message'] = f"Ошибка парсинга АвтоПитер: {str(e)}"
