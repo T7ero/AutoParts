@@ -710,23 +710,11 @@ def process_parsing_task(self, task_id):
                                         if brands:
                                             # Фильтруем бренды для Armtek так же, как для других источников
                                             filtered_brands = filter_garbage_brands(brands)
-                                            
-                                            # Дополнительная фильтрация для Armtek: убираем составные артикулы
-                                            # которые могут содержать несуществующие части
-                                            clean_results = []
-                                            for brand in filtered_brands:
-                                                # Проверяем, не является ли это составным артикулом
-                                                if ' ' in brand and len(brand.split()) > 1:
-                                                    # Это составной артикул, пропускаем его
-                                                    log(f"Armtek: пропускаем составной артикул '{brand}' для {num}")
-                                                    continue
-                                                clean_results.append(brand)
-                                            
-                                            if clean_results:
-                                                log(f"armtek: {num} → найдено {len(clean_results)} брендов (после фильтрации)")
-                                                return [(brand_from_e, part_number_from_f, name_from_b, brand, num, 'armtek') for brand in clean_results]
+                                            if filtered_brands:
+                                                log(f"armtek: {num} → найдено {len(filtered_brands)} брендов (после фильтрации)")
+                                                return [(brand_from_e, part_number_from_f, name_from_b, brand, num, 'armtek') for brand in filtered_brands]
                                             else:
-                                                log(f"armtek: {num} → все бренды отфильтрованы как составные артикулы")
+                                                log(f"armtek: {num} → бренды отфильтрованы как мусор")
                                                 return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
                                         else:
                                             log(f"armtek: {num} → бренды не найдены")
