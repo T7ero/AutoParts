@@ -196,6 +196,29 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                     print(f"[DEBUG] HTML содержит 'supplierCell': {'supplierCell' in card_resp.text}")
                     print(f"[DEBUG] HTML содержит 'priceCell': {'priceCell' in card_resp.text}")
                     print(f"[DEBUG] HTML содержит 'SelectedOffer': {'SelectedOffer' in card_resp.text}")
+                    print(f"[DEBUG] Размер HTML: {len(card_resp.text)} символов")
+                    
+                    # Сохраняем HTML для анализа
+                    with open('/tmp/autopiter_debug.html', 'w', encoding='utf-8') as f:
+                        f.write(card_resp.text)
+                    print(f"[DEBUG] HTML сохранен в /tmp/autopiter_debug.html")
+                    
+                    # Проверяем, есть ли вообще таблицы
+                    tables = card_soup.find_all('table')
+                    print(f"[DEBUG] Найдено таблиц: {len(tables)}")
+                    
+                    # Проверяем, есть ли элементы с классами, содержащими 'price' или 'supplier'
+                    price_elements = card_soup.find_all(attrs={'class': re.compile(r'.*price.*', re.I)})
+                    supplier_elements = card_soup.find_all(attrs={'class': re.compile(r'.*supplier.*', re.I)})
+                    print(f"[DEBUG] Элементы с 'price' в классе: {len(price_elements)}")
+                    print(f"[DEBUG] Элементы с 'supplier' в классе: {len(supplier_elements)}")
+                    
+                    # Показываем первые несколько классов
+                    all_classes = set()
+                    for elem in card_soup.find_all(attrs={'class': True}):
+                        if elem.get('class'):
+                            all_classes.update(elem.get('class'))
+                    print(f"[DEBUG] Примеры классов на странице: {list(all_classes)[:10]}")
                     
                     # Ищем минимальную цену конкурента
                     min_price_el = card_soup.select_one('.SelectedOffer__price___Xzg0ZD')
@@ -262,9 +285,9 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                                     break
     except Exception as e:
         result['error_message'] = f'HTTP parsing failed: {str(e)}'
-        
-        # Если HTTP не сработал, пробуем Selenium с прокси
-        if our_price is None:
+    
+    # Если HTTP не нашел нужные элементы или не сработал, пробуем Selenium с прокси
+    if our_price is None:
             driver = None
             try:
                 options = Options()
@@ -369,16 +392,15 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                 except Exception:
                     pass
 
-        if our_price is not None:
-            result['marketplace_price'] = our_price
-            result['is_found'] = True
-        else:
-            result['is_found'] = False
-        if competitor_min is not None:
-            result['min_competitor_price'] = competitor_min
+    # Устанавливаем результаты
+    if our_price is not None:
+        result['marketplace_price'] = our_price
+        result['is_found'] = True
+    else:
+        result['is_found'] = False
+    if competitor_min is not None:
+        result['min_competitor_price'] = competitor_min
         
-    except Exception as e:
-        result['error_message'] = f"Ошибка парсинга АвтоПитер: {str(e)}"
     
     return result
 
