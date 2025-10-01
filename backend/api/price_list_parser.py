@@ -191,6 +191,12 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                 if card_resp and card_resp.status_code == 200:
                     card_soup = BeautifulSoup(card_resp.text, 'html.parser')
                     
+                    # Отладочная информация
+                    print(f"[DEBUG] Карточка загружена: {card_url}")
+                    print(f"[DEBUG] HTML содержит 'supplierCell': {'supplierCell' in card_resp.text}")
+                    print(f"[DEBUG] HTML содержит 'priceCell': {'priceCell' in card_resp.text}")
+                    print(f"[DEBUG] HTML содержит 'SelectedOffer': {'SelectedOffer' in card_resp.text}")
+                    
                     # Ищем минимальную цену конкурента
                     min_price_el = card_soup.select_one('.SelectedOffer__price___Xzg0ZD')
                     if min_price_el:
@@ -198,13 +204,20 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                         min_match = re.search(r'(\d[\d\s]{2,})', min_price_text)
                         if min_match:
                             competitor_min = float(min_match.group(1).replace(' ', ''))
+                            print(f"[DEBUG] Найдена минимальная цена: {competitor_min}")
+                    else:
+                        print("[DEBUG] Минимальная цена не найдена")
                     
                     # Ищем наши цены в таблице
                     supplier_cells = card_soup.find_all('td', class_=re.compile(r'.*supplierCell.*'))
+                    print(f"[DEBUG] Найдено ячеек supplierCell: {len(supplier_cells)}")
+                    
                     for cell in supplier_cells:
                         cell_text = cell.get_text(strip=True)
                         sup_digits = re.sub(r'\D+', '', cell_text)
+                        print(f"[DEBUG] Проверяем поставщика: '{cell_text}' -> '{sup_digits}'")
                         if sup_digits in supplier_codes:
+                            print(f"[DEBUG] Найден наш поставщик: {sup_digits}")
                             # Ищем цену в той же строке
                             row = cell.find_parent('tr')
                             if row:
@@ -218,15 +231,20 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                             price_match = re.search(r'(\d[\d\s]{2,})', price_text)
                                             if price_match:
                                                 our_price = float(price_match.group(1).replace(' ', ''))
+                                                print(f"[DEBUG] Найдена наша цена: {our_price}")
                                                 break
                     
                     # Если не нашли через supplierCell, пробуем через вторичные классы
                     if our_price is None:
                         secondary_cells = card_soup.find_all('td', class_=re.compile(r'.*secondary.*'))
+                        print(f"[DEBUG] Найдено ячеек secondary: {len(secondary_cells)}")
+                        
                         for cell in secondary_cells:
                             cell_text = cell.get_text(strip=True)
                             sup_digits = re.sub(r'\D+', '', cell_text)
+                            print(f"[DEBUG] Проверяем secondary поставщика: '{cell_text}' -> '{sup_digits}'")
                             if sup_digits in supplier_codes:
+                                print(f"[DEBUG] Найден наш поставщик в secondary: {sup_digits}")
                                 # Ищем цену в той же строке
                                 row = cell.find_parent('tr')
                                 if row:
@@ -240,6 +258,7 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                                 price_match = re.search(r'(\d[\d\s]{2,})', price_text)
                                                 if price_match:
                                                     our_price = float(price_match.group(1).replace(' ', ''))
+                                                    print(f"[DEBUG] Найдена наша цена через secondary: {our_price}")
                                                     break
     except Exception as e:
         result['error_message'] = f'HTTP parsing failed: {str(e)}'
