@@ -180,38 +180,33 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
             driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
             driver.implicitly_wait(3)
             driver.get(product_url)
+            # Ждем, пока на странице появятся строки с кодами поставщиков
             WebDriverWait(driver, SELENIUM_TIMEOUT).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'table'))
+                EC.presence_of_element_located((By.CSS_SELECTOR, '.NonRetailAppraiseTR__secondary___Xzg1ZT'))
             )
-            tables = driver.find_elements(By.CSS_SELECTOR, 'table')
-            target = None
-            for tbl in tables:
+            supplier_cells = driver.find_elements(By.CSS_SELECTOR, '.NonRetailAppraiseTR__secondary___Xzg1ZT')
+            for cell in supplier_cells:
                 try:
-                    ths = tbl.find_elements(By.CSS_SELECTOR, 'thead th')
-                    headers = [th.text.strip().lower() for th in ths]
-                    if headers and any('поставщик' in h for h in headers) and any('цена' in h for h in headers):
-                        target = tbl
+                    sup_digits = re.sub(r'\D+', '', cell.text)
+                    if not sup_digits or sup_digits not in supplier_codes:
+                        continue
+                    # Поднимаемся к строке предложения и берем цену
+                    row = cell
+                    for _ in range(4):
+                        row = row.find_element(By.XPATH, './..')
+                    price_el = None
+                    try:
+                        price_el = row.find_element(By.CSS_SELECTOR, '.NonRetailAppraiseTR__priceWrapper___Xzg1ZT span')
+                    except Exception:
+                        # запасной вариант — поиск вниз по дереву
+                        price_el = row.find_element(By.XPATH, ".//div[contains(@class,'NonRetailAppraiseTR__priceWrapper')]/span")
+                    price_text = price_el.text.strip() if price_el else ''
+                    m = re.search(r'(\d[\d\s]{2,})', price_text)
+                    if m:
+                        our_price = float(m.group(1).replace(' ', ''))
                         break
                 except Exception:
                     continue
-            if target:
-                ths = target.find_elements(By.CSS_SELECTOR, 'thead th')
-                headers = [th.text.strip().lower() for th in ths]
-                idx_supplier = next((i for i,h in enumerate(headers) if 'поставщик' in h), None)
-                idx_price = next((i for i,h in enumerate(headers) if 'цена' in h), None)
-                rows = target.find_elements(By.CSS_SELECTOR, 'tbody tr') or target.find_elements(By.CSS_SELECTOR, 'tr')
-                for r in rows:
-                    tds = r.find_elements(By.CSS_SELECTOR, 'td,th')
-                    if not tds or idx_supplier is None or idx_price is None or len(tds) <= max(idx_supplier, idx_price):
-                        continue
-                    sup_text = tds[idx_supplier].text.strip()
-                    sup_digits = re.sub(r'\D+', '', sup_text)
-                    if sup_digits in supplier_codes:
-                        price_text = tds[idx_price].text.strip()
-                        m = re.search(r'(\d[\d\s]{2,})', price_text)
-                        if m:
-                            our_price = float(m.group(1).replace(' ', ''))
-                            break
         except Exception:
             pass
         finally:
