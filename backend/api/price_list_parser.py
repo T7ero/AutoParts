@@ -164,89 +164,148 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
     }
     
     try:
-        # 1) Открываем карточку по прямой ссылке
         product_url = f"https://autopiter.ru/goods/{quote(article)}"
         supplier_codes = SUPPLIER_CODES['autopiter']
         our_price = None
-        # Пробуем через Selenium, так как таблица может быть частично динамической
-        driver = None
-        try:
-            options = Options()
-            options.add_argument('--headless=new')
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--disable-gpu')
-            driver = webdriver.Chrome(options=options)
-            driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-            driver.implicitly_wait(3)
-            driver.get(product_url)
-            # Переходим в первую карточку товара из списка (если мы на общей странице артикула)
-            try:
-                link_el = WebDriverWait(driver, 6).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, 'a[href*="/goods/"][href*="/id"]'))
-                )
-                href = link_el.get_attribute('href')
-                if href:
-                    driver.get(href)
-            except Exception:
-                pass
-            # Ждем, пока на странице карточки появятся строки с кодами поставщиков
-            WebDriverWait(driver, SELENIUM_TIMEOUT).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, '.NonRetailAppraiseTR__secondary___Xzg1ZT'))
-            )
-            supplier_cells = driver.find_elements(By.CSS_SELECTOR, '.NonRetailAppraiseTR__secondary___Xzg1ZT')
-            for cell in supplier_cells:
-                try:
-                    sup_digits = re.sub(r'\D+', '', cell.text)
-                    if not sup_digits or sup_digits not in supplier_codes:
-                        continue
-                    # Поднимаемся к строке предложения и берем цену
-                    row = cell
-                    for _ in range(4):
-                        row = row.find_element(By.XPATH, './..')
-                    price_el = None
-                    try:
-                        price_el = row.find_element(By.CSS_SELECTOR, '.NonRetailAppraiseTR__priceWrapper___Xzg1ZT span')
-                    except Exception:
-                        # запасной вариант — поиск вниз по дереву
-                        price_el = row.find_element(By.XPATH, ".//div[contains(@class,'NonRetailAppraiseTR__priceWrapper')]/span")
-                    price_text = price_el.text.strip() if price_el else ''
-                    m = re.search(r'(\d[\d\s]{2,})', price_text)
-                    if m:
-                        our_price = float(m.group(1).replace(' ', ''))
-                        break
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        finally:
-            try:
-                if driver:
-                    driver.quit()
-            except Exception:
-                pass
-
-        # 3) Минимальная цена конкурента из блока выбранного предложения
         competitor_min = None
-        try:
-            # Если Selenium был активен и все еще есть driver
-            if driver:
+        
+        # Сначала пробуем HTTP-парсинг с прокси
+        # Получаем прокси для запросов
+        proxy_dict = get_next_proxy()
+        proxy_str = None
+        if proxy_dict:
+            proxy_url = proxy_dict.get('http', '')
+            if proxy_url.startswith('http://'):
+                proxy_str = proxy_url[7:]  # Убираем 'http://'
+        
+        resp = make_request(product_url, proxy=proxy_str, timeout=TIMEOUT)
+        if resp and resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            
+            # Ищем ссылку на карточку товара
+            card_link = soup.find('a', href=re.compile(r'/goods/.*/id\d+'))
+            if card_link:
+                card_url = 'https://autopiter.ru' + card_link['href']
+                # Парсим карточку товара с тем же прокси
+                card_resp = make_request(card_url, proxy=proxy_str, timeout=TIMEOUT)
+                if card_resp and card_resp.status_code == 200:
+                    card_soup = BeautifulSoup(card_resp.text, 'html.parser')
+                    
+                    # Ищем минимальную цену конкурента
+                    min_price_el = card_soup.select_one('.SelectedOffer__price___Xzg0ZD')
+                    if min_price_el:
+                        min_price_text = min_price_el.get_text(strip=True)
+                        min_match = re.search(r'(\d[\d\s]{2,})', min_price_text)
+                        if min_match:
+                            competitor_min = float(min_match.group(1).replace(' ', ''))
+                    
+                    # Ищем наши цены в таблице
+                    supplier_cells = card_soup.find_all('td', class_=re.compile(r'.*supplierCell.*'))
+                    for cell in supplier_cells:
+                        cell_text = cell.get_text(strip=True)
+                        sup_digits = re.sub(r'\D+', '', cell_text)
+                        if sup_digits in supplier_codes:
+                            # Ищем цену в той же строке
+                            row = cell.find_parent('tr')
+                            if row:
+                                price_cell = row.find('td', class_=re.compile(r'.*priceCell.*'))
+                                if price_cell:
+                                    price_wrapper = price_cell.find('div', class_=re.compile(r'.*priceWrapper.*'))
+                                    if price_wrapper:
+                                        price_span = price_wrapper.find('span')
+                                        if price_span:
+                                            price_text = price_span.get_text(strip=True)
+                                            price_match = re.search(r'(\d[\d\s]{2,})', price_text)
+                                            if price_match:
+                                                our_price = float(price_match.group(1).replace(' ', ''))
+                                                break
+    except Exception as e:
+        result['error_message'] = f'HTTP parsing failed: {str(e)}'
+        
+        # Если HTTP не сработал, пробуем Selenium с прокси
+        if our_price is None:
+            driver = None
+            try:
+                options = Options()
+                options.add_argument('--headless=new')
+                options.add_argument('--no-sandbox')
+                options.add_argument('--disable-dev-shm-usage')
+                options.add_argument('--disable-gpu')
+                options.add_argument('--disable-web-security')
+                options.add_argument('--disable-features=VizDisplayCompositor')
+                options.add_argument('--remote-debugging-port=9222')
+                
+                # Добавляем прокси для Selenium, если доступен
+                proxy_dict = get_next_proxy()
+                if proxy_dict:
+                    proxy_url = proxy_dict.get('http', '')
+                    if proxy_url.startswith('http://'):
+                        proxy_host = proxy_url[7:]  # Убираем 'http://'
+                        options.add_argument(f'--proxy-server=http://{proxy_host}')
+                
+                driver = webdriver.Chrome(options=options)
+                driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+                driver.implicitly_wait(3)
+                driver.get(product_url)
+                
+                # Переходим в первую карточку товара из списка
                 try:
-                    best_el = driver.find_element(By.CSS_SELECTOR, '.SelectedOffer__price___Xzg0ZD')
-                    txt = best_el.text.strip()
+                    link_el = WebDriverWait(driver, 6).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, 'a[href*="/goods/"][href*="/id"]'))
+                    )
+                    href = link_el.get_attribute('href')
+                    if href:
+                        driver.get(href)
                 except Exception:
-                    txt = ''
-            else:
-                # Fallback по HTTP странице
-                resp2 = make_request(product_url, timeout=TIMEOUT)
-                txt = ''
-                if resp2 and resp2.status_code == 200:
-                    txt = BeautifulSoup(resp2.text, 'html.parser').get_text(' ', strip=True)
-            m = re.search(r'(\d[\d\s]{2,})', txt)
-            if m:
-                competitor_min = float(m.group(1).replace(' ', ''))
-        except Exception:
-            pass
+                    pass
+                
+                # Ждем появления таблицы с поставщиками
+                try:
+                    WebDriverWait(driver, SELENIUM_TIMEOUT).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, 'td[class*="supplierCell"]'))
+                    )
+                    
+                    # Ищем минимальную цену конкурента
+                    if competitor_min is None:
+                        try:
+                            min_price_el = driver.find_element(By.CSS_SELECTOR, '.SelectedOffer__price___Xzg0ZD')
+                            min_price_text = min_price_el.text.strip()
+                            min_match = re.search(r'(\d[\d\s]{2,})', min_price_text)
+                            if min_match:
+                                competitor_min = float(min_match.group(1).replace(' ', ''))
+                        except Exception:
+                            pass
+                    
+                    # Ищем наши цены
+                    supplier_cells = driver.find_elements(By.CSS_SELECTOR, 'td[class*="supplierCell"]')
+                    for cell in supplier_cells:
+                        try:
+                            cell_text = cell.text.strip()
+                            sup_digits = re.sub(r'\D+', '', cell_text)
+                            if sup_digits in supplier_codes:
+                                # Ищем цену в той же строке
+                                row = cell.find_element(By.XPATH, './..')
+                                price_cell = row.find_element(By.CSS_SELECTOR, 'td[class*="priceCell"]')
+                                price_wrapper = price_cell.find_element(By.CSS_SELECTOR, 'div[class*="priceWrapper"]')
+                                price_span = price_wrapper.find_element(By.CSS_SELECTOR, 'span')
+                                price_text = price_span.text.strip()
+                                price_match = re.search(r'(\d[\d\s]{2,})', price_text)
+                                if price_match:
+                                    our_price = float(price_match.group(1).replace(' ', ''))
+                                    break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+            except Exception as e:
+                if not result['error_message']:
+                    result['error_message'] = f'Selenium failed: {str(e)}'
+            finally:
+                try:
+                    if driver:
+                        driver.quit()
+                except Exception:
+                    pass
 
         if our_price is not None:
             result['marketplace_price'] = our_price
