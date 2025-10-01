@@ -180,7 +180,17 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
             driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
             driver.implicitly_wait(3)
             driver.get(product_url)
-            # Ждем, пока на странице появятся строки с кодами поставщиков
+            # Переходим в первую карточку товара из списка (если мы на общей странице артикула)
+            try:
+                link_el = WebDriverWait(driver, 6).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, 'a[href*="/goods/"][href*="/id"]'))
+                )
+                href = link_el.get_attribute('href')
+                if href:
+                    driver.get(href)
+            except Exception:
+                pass
+            # Ждем, пока на странице карточки появятся строки с кодами поставщиков
             WebDriverWait(driver, SELENIUM_TIMEOUT).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, '.NonRetailAppraiseTR__secondary___Xzg1ZT'))
             )
