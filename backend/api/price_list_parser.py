@@ -323,39 +323,41 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                 except Exception:
                     pass
                 
-                # Ждем появления таблицы с поставщиками
+                # Ждем появления блока "Запрошенный номер" и первой таблицы под ним
                 try:
-                    WebDriverWait(driver, SELENIUM_TIMEOUT).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, 'td[class*="supplierCell"], td[class*="secondary"]'))
+                    table = WebDriverWait(driver, SELENIUM_TIMEOUT).until(
+                        EC.presence_of_element_located((By.XPATH, "//div[contains(., 'Запрошенный номер')]/following::table[1]"))
                     )
-                    
-                    # Ищем минимальную цену конкурента
-                    if competitor_min is None:
+                except Exception:
+                    table = None
+
+                # Ищем минимальную цену конкурента
+                if competitor_min is None:
+                    try:
+                        min_price_el = driver.find_element(By.CSS_SELECTOR, '.SelectedOffer__price___Xzg0ZD')
+                        min_price_text = min_price_el.text.strip()
+                        min_match = re.search(r'(\d[\d\s]{2,})', min_price_text)
+                        if min_match:
+                            competitor_min = float(min_match.group(1).replace(' ', ''))
+                    except Exception:
+                        pass
+
+                # Ищем нашу строку по коду поставщика, а затем берем цену в этой же строке
+                if table:
+                    try:
+                        rows = table.find_elements(By.CSS_SELECTOR, 'tbody tr') or table.find_elements(By.CSS_SELECTOR, 'tr')
+                    except Exception:
+                        rows = []
+                    for r in rows:
                         try:
-                            min_price_el = driver.find_element(By.CSS_SELECTOR, '.SelectedOffer__price___Xzg0ZD')
-                            min_price_text = min_price_el.text.strip()
-                            min_match = re.search(r'(\d[\d\s]{2,})', min_price_text)
-                            if min_match:
-                                competitor_min = float(min_match.group(1).replace(' ', ''))
-                        except Exception:
-                            pass
-                    
-                    # Ищем наши цены через supplierCell
-                    supplier_cells = driver.find_elements(By.CSS_SELECTOR, 'td[class*="supplierCell"]')
-                    for cell in supplier_cells:
-                        try:
-                            cell_text = cell.text.strip()
-                            sup_digits = re.sub(r'\D+', '', cell_text)
-                            if sup_digits in supplier_codes:
-                                # Ищем цену в той же строке
-                                row = cell.find_element(By.XPATH, './..')
-                                price_cell = row.find_element(By.CSS_SELECTOR, 'td[class*="priceCell"]')
-                                price_wrapper = price_cell.find_element(By.CSS_SELECTOR, 'div[class*="priceWrapper"]')
-                                price_span = price_wrapper.find_element(By.CSS_SELECTOR, 'span')
-                                price_text = price_span.text.strip()
-                                price_match = re.search(r'(\d[\d\s]{2,})', price_text)
-                                if price_match:
-                                    our_price = float(price_match.group(1).replace(' ', ''))
+                            tds = r.find_elements(By.CSS_SELECTOR, 'td')
+                            if not tds:
+                                continue
+                            supplier_td = None
+                            for td in tds:
+                                digits = re.sub(r'\D+', '', td.text)
+                                if digits in supplier_codes:
+                                    supplier_td = td
                                     break
                         except Exception:
                             continue
@@ -380,8 +382,6 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                         break
                             except Exception:
                                 continue
-                except Exception:
-                    pass
             except Exception as e:
                 if not result['error_message']:
                     result['error_message'] = f'Selenium failed: {str(e)}'
