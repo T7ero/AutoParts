@@ -219,6 +219,28 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                             if price_match:
                                                 our_price = float(price_match.group(1).replace(' ', ''))
                                                 break
+                    
+                    # Если не нашли через supplierCell, пробуем через вторичные классы
+                    if our_price is None:
+                        secondary_cells = card_soup.find_all('td', class_=re.compile(r'.*secondary.*'))
+                        for cell in secondary_cells:
+                            cell_text = cell.get_text(strip=True)
+                            sup_digits = re.sub(r'\D+', '', cell_text)
+                            if sup_digits in supplier_codes:
+                                # Ищем цену в той же строке
+                                row = cell.find_parent('tr')
+                                if row:
+                                    price_cell = row.find('td', class_=re.compile(r'.*priceCell.*'))
+                                    if price_cell:
+                                        price_wrapper = price_cell.find('div', class_=re.compile(r'.*priceWrapper.*'))
+                                        if price_wrapper:
+                                            price_span = price_wrapper.find('span')
+                                            if price_span:
+                                                price_text = price_span.get_text(strip=True)
+                                                price_match = re.search(r'(\d[\d\s]{2,})', price_text)
+                                                if price_match:
+                                                    our_price = float(price_match.group(1).replace(' ', ''))
+                                                    break
     except Exception as e:
         result['error_message'] = f'HTTP parsing failed: {str(e)}'
         
@@ -262,7 +284,7 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                 # Ждем появления таблицы с поставщиками
                 try:
                     WebDriverWait(driver, SELENIUM_TIMEOUT).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, 'td[class*="supplierCell"]'))
+                        EC.presence_of_element_located((By.CSS_SELECTOR, 'td[class*="supplierCell"], td[class*="secondary"]'))
                     )
                     
                     # Ищем минимальную цену конкурента
@@ -276,7 +298,7 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                         except Exception:
                             pass
                     
-                    # Ищем наши цены
+                    # Ищем наши цены через supplierCell
                     supplier_cells = driver.find_elements(By.CSS_SELECTOR, 'td[class*="supplierCell"]')
                     for cell in supplier_cells:
                         try:
@@ -295,6 +317,27 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                     break
                         except Exception:
                             continue
+                    
+                    # Если не нашли через supplierCell, пробуем через secondary
+                    if our_price is None:
+                        secondary_cells = driver.find_elements(By.CSS_SELECTOR, 'td[class*="secondary"]')
+                        for cell in secondary_cells:
+                            try:
+                                cell_text = cell.text.strip()
+                                sup_digits = re.sub(r'\D+', '', cell_text)
+                                if sup_digits in supplier_codes:
+                                    # Ищем цену в той же строке
+                                    row = cell.find_element(By.XPATH, './..')
+                                    price_cell = row.find_element(By.CSS_SELECTOR, 'td[class*="priceCell"]')
+                                    price_wrapper = price_cell.find_element(By.CSS_SELECTOR, 'div[class*="priceWrapper"]')
+                                    price_span = price_wrapper.find_element(By.CSS_SELECTOR, 'span')
+                                    price_text = price_span.text.strip()
+                                    price_match = re.search(r'(\d[\d\s]{2,})', price_text)
+                                    if price_match:
+                                        our_price = float(price_match.group(1).replace(' ', ''))
+                                        break
+                            except Exception:
+                                continue
                 except Exception:
                     pass
             except Exception as e:
