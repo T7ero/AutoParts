@@ -21,6 +21,9 @@ import threading
 from typing import List, Dict, Optional, Tuple, Set, Union
 from selenium.common.exceptions import TimeoutException
 import gc
+import signal
+import psutil
+from collections import deque
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -38,15 +41,16 @@ HEADERS = {
     "Sec-Fetch-User": "?1",
     "Upgrade-Insecure-Requests": "1",
 }
+
 # Оптимизированные таймауты для ускорения работы
-TIMEOUT = 5  # Увеличиваем для стабильности
-SELENIUM_TIMEOUT = 12  # Чуть больше времени на отрисовку Angular
-PAGE_LOAD_TIMEOUT = 12  # Увеличиваем для стабильности
+TIMEOUT = 5
+SELENIUM_TIMEOUT = 12
+PAGE_LOAD_TIMEOUT = 12
 
 # Настройки для пула драйверов
-DRIVER_POOL_SIZE = 3
-DRIVER_CREATION_RETRIES = 3
-DRIVER_TIMEOUT_RETRIES = 3  # Увеличиваем количество попыток
+DRIVER_POOL_SIZE = 2  # Уменьшено для экономии ресурсов
+DRIVER_CREATION_RETRIES = 2  # Уменьшено количество попыток
+DRIVER_TIMEOUT_RETRIES = 2
 
 # Кеширование
 REQUEST_CACHE = {}
@@ -56,86 +60,204 @@ FAILED_REQUESTS_CACHE = {}
 # Глобальная переменная для хранения прокси
 PROXY_LIST = []
 PROXY_INDEX = 0
-# Набор проблемных прокси, которые следует временно исключать
 BAD_PROXIES = set()
 
-# Пул драйверов для Armtek
-DRIVER_POOL = []
-DRIVER_POOL_LOCK = threading.Lock()
-DRIVER_LAST_USED = {}
+# Семафор для ограничения одновременного создания драйверов
+DRIVER_CREATION_SEMAPHORE = threading.Semaphore(1)  # Только 1 драйвер создается одновременно
+
+class DriverPool:
+    def __init__(self, max_size=2):
+        self.max_size = max_size
+        self.available = deque()
+        self.in_use = set()
+        self.lock = threading.Lock()
+        self.creation_lock = threading.Lock()
+        self.driver_temp_dirs = {}  # Для отслеживания временных директорий
+        
+    def get_driver(self) -> Optional[webdriver.Chrome]:
+        """Получает драйвер из пула"""
+        with self.lock:
+            # Пытаемся взять доступный драйвер
+            while self.available:
+                driver, temp_dir = self.available.popleft()
+                if self._is_driver_usable(driver):
+                    self.in_use.add(id(driver))
+                    log_debug(f"Взят драйвер из пула, доступно: {len(self.available)}, используется: {len(self.in_use)}")
+                    return driver
+                else:
+                    try:
+                        driver.quit()
+                        # Очищаем временную директорию
+                        if temp_dir and os.path.exists(temp_dir):
+                            shutil.rmtree(temp_dir, ignore_errors=True)
+                    except:
+                        pass
+            
+            # Если нет доступных, создаем новый (с ограничением)
+            if len(self.in_use) < self.max_size:
+                with self.creation_lock:
+                    log_debug("Создание нового драйвера...")
+                    result = self._create_new_driver()
+                    if result:
+                        driver, temp_dir = result
+                        self.in_use.add(id(driver))
+                        self.driver_temp_dirs[id(driver)] = temp_dir
+                        log_debug(f"Создан новый драйвер, используется: {len(self.in_use)}")
+                        return driver
+            
+            log_debug("Не удалось получить драйвер - пул переполнен")
+            return None
+    
+    def return_driver(self, driver: Optional[webdriver.Chrome]):
+        """Возвращает драйвер в пул"""
+        if driver is None:
+            return
+            
+        with self.lock:
+            driver_id = id(driver)
+            if driver_id in self.in_use:
+                self.in_use.remove(driver_id)
+                
+                if self._is_driver_usable(driver) and len(self.available) < self.max_size:
+                    temp_dir = self.driver_temp_dirs.get(driver_id)
+                    self.available.append((driver, temp_dir))
+                    log_debug(f"Драйвер возвращен в пул, доступно: {len(self.available)}, используется: {len(self.in_use)}")
+                else:
+                    try:
+                        driver.quit()
+                        # Очищаем временную директорию
+                        temp_dir = self.driver_temp_dirs.pop(driver_id, None)
+                        if temp_dir and os.path.exists(temp_dir):
+                            shutil.rmtree(temp_dir, ignore_errors=True)
+                    except Exception as e:
+                        log_debug(f"Ошибка при закрытии драйвера: {str(e)}")
+    
+    def _is_driver_usable(self, driver: webdriver.Chrome) -> bool:
+        """Проверяет, можно ли использовать драйвер"""
+        try:
+            # Простая проверка, что драйвер еще работает
+            driver.current_url
+            return True
+        except Exception:
+            return False
+    
+    def _create_new_driver(self) -> Optional[Tuple[webdriver.Chrome, str]]:
+        """Создает новый драйвер"""
+        with DRIVER_CREATION_SEMAPHORE:
+            temp_dir = tempfile.mkdtemp(prefix=f"chrome_pool_{uuid.uuid4().hex[:8]}_")
+            for attempt in range(DRIVER_CREATION_RETRIES):
+                try:
+                    driver = _create_chrome_driver_robust(temp_dir)
+                    if driver:
+                        return driver, temp_dir
+                    time.sleep(1)
+                except Exception as e:
+                    log_debug(f"Попытка {attempt + 1} создания драйвера: {str(e)}")
+                    if attempt < DRIVER_CREATION_RETRIES - 1:
+                        time.sleep(2 ** attempt)
+            
+            # Если не удалось создать драйвер, очищаем временную директорию
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            return None
+    
+    def cleanup(self):
+        """Полная очистка пула"""
+        with self.lock:
+            log_debug("Очистка пула драйверов...")
+            while self.available:
+                try:
+                    driver, temp_dir = self.available.popleft()
+                    driver.quit()
+                    if temp_dir and os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                except:
+                    pass
+            
+            # Закрываем используемые драйверы
+            for driver_id in list(self.in_use):
+                try:
+                    # Не можем закрыть используемые драйверы, просто удаляем из отслеживания
+                    temp_dir = self.driver_temp_dirs.pop(driver_id, None)
+                    if temp_dir and os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                except:
+                    pass
+            
+            self.in_use.clear()
+            self.driver_temp_dirs.clear()
+
+# Инициализация пула драйверов
+DRIVER_POOL = DriverPool(max_size=DRIVER_POOL_SIZE)
 
 def log_debug(message):
     print(f"[DEBUG] {message}")
 
 def get_driver_from_pool() -> Optional[webdriver.Chrome]:
-    """Получает драйвер из пула или создает новый"""
-    global DRIVER_POOL, DRIVER_POOL_LOCK
-    
-    with DRIVER_POOL_LOCK:
-        if DRIVER_POOL:
-            driver = DRIVER_POOL.pop()
-            DRIVER_LAST_USED[id(driver)] = time.time()
-            return driver
-    
-    # Создаем новый драйвер
-    temp_dir = tempfile.mkdtemp(prefix=f"chrome_pool_{uuid.uuid4().hex[:8]}_")
-    for attempt in range(DRIVER_CREATION_RETRIES):
-        try:
-            driver = _create_chrome_driver_robust(temp_dir)
-            if driver:
-                DRIVER_LAST_USED[id(driver)] = time.time()
-                return driver
-            time.sleep(1)
-        except Exception as e:
-            log_debug(f"Попытка {attempt + 1} создания драйвера: {str(e)}")
-            time.sleep(2)
-    
-    return None
+    """Получает драйвер из пула"""
+    return DRIVER_POOL.get_driver()
 
 def return_driver_to_pool(driver: webdriver.Chrome):
-    """Возвращает драйвер в пул или закрывает его"""
-    global DRIVER_POOL, DRIVER_POOL_LOCK
-    
-    if driver is None:
-        return
-    
-    try:
-        # Проверяем, не слишком ли старый драйвер
-        driver_id = id(driver)
-        if driver_id in DRIVER_LAST_USED:
-            age = time.time() - DRIVER_LAST_USED[driver_id]
-            if age > 300:  # 5 минут
-                driver.quit()
-                if driver_id in DRIVER_LAST_USED:
-                    del DRIVER_LAST_USED[driver_id]
-                return
-        
-        with DRIVER_POOL_LOCK:
-            if len(DRIVER_POOL) < DRIVER_POOL_SIZE:
-                DRIVER_POOL.append(driver)
-            else:
-                driver.quit()
-                if driver_id in DRIVER_LAST_USED:
-                    del DRIVER_LAST_USED[driver_id]
-    except Exception as e:
-        log_debug(f"Ошибка возврата драйвера в пул: {str(e)}")
-        try:
-            driver.quit()
-        except:
-            pass
+    """Возвращает драйвер в пул"""
+    DRIVER_POOL.return_driver(driver)
 
 def cleanup_driver_pool():
     """Очищает пул драйверов"""
-    global DRIVER_POOL, DRIVER_POOL_LOCK, DRIVER_LAST_USED
-    
-    with DRIVER_POOL_LOCK:
-        for driver in DRIVER_POOL:
+    DRIVER_POOL.cleanup()
+
+def force_cleanup_chrome_processes():
+    """Принудительная очистка процессов Chrome"""
+    try:
+        log_debug("Принудительная очистка процессов Chrome...")
+        
+        # Используем psutil для более надежного поиска процессов
+        chrome_processes = []
+        for proc in psutil.process_iter(['pid', 'name']):
             try:
-                driver.quit()
+                proc_name = proc.info['name'].lower() if proc.info['name'] else ''
+                if any(name in proc_name for name in ['chrome', 'chromedriver', 'chromium']):
+                    chrome_processes.append(proc)
+                    log_debug(f"Найден процесс: {proc.info['name']} (PID: {proc.info['pid']})")
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        
+        # Убиваем процессы
+        for proc in chrome_processes:
+            try:
+                proc.kill()
+                log_debug(f"Убит процесс: {proc.info['name']} (PID: {proc.info['pid']})")
+            except Exception as e:
+                log_debug(f"Не удалось убить процесс {proc.info['pid']}: {str(e)}")
+        
+        # Дополнительная очистка через subprocess
+        for process_name in ['chrome', 'chromedriver', 'chromium']:
+            try:
+                subprocess.run(['pkill', '-9', '-f', process_name], 
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
             except:
                 pass
-        DRIVER_POOL.clear()
-        DRIVER_LAST_USED.clear()
+        
+        # Очищаем временные директории
+        temp_patterns = [
+            '.com.google.Chrome*',
+            '.org.chromium.Chromium*',
+            'chrome_*',
+            'chromium_*',
+            'tmp*'
+        ]
+        
+        for pattern in temp_patterns:
+            try:
+                subprocess.run(['find', '/tmp', '-name', pattern, '-type', 'd', '-exec', 'rm', '-rf', '{}', '+'], 
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+            except:
+                pass
+        
+        time.sleep(1)
+        log_debug("Принудительная очистка завершена")
+        
+    except Exception as e:
+        log_debug(f"Ошибка принудительной очистки: {str(e)}")
 
 def load_proxies_from_file(file_path: str = "proxies.txt") -> List[str]:
     """Загружает список прокси из файла"""
@@ -152,7 +274,7 @@ def load_proxies_from_file(file_path: str = "proxies.txt") -> List[str]:
     return PROXY_LIST
 
 def get_next_proxy() -> Optional[Dict[str, str]]:
-    """Возвращает следующий прокси из списка с улучшенной обработкой и исключением проблемных"""
+    """Возвращает следующий прокси из списка"""
     global PROXY_INDEX, PROXY_LIST, BAD_PROXIES
 
     if not PROXY_LIST:
@@ -201,7 +323,7 @@ def get_next_proxy() -> Optional[Dict[str, str]]:
     return None
 
 def mark_proxy_bad(proxy_repr: str) -> None:
-    """Помечает прокси как проблемный, чтобы временно его не использовать"""
+    """Помечает прокси как проблемный"""
     try:
         if proxy_repr.startswith('http://'):
             proxy_repr = proxy_repr[7:]
@@ -214,85 +336,15 @@ def get_proxy_string() -> Optional[str]:
     """Возвращает строку прокси для использования в парсерах"""
     proxy_dict = get_next_proxy()
     if proxy_dict:
-        # Извлекаем строку прокси из словаря
         proxy_url = proxy_dict.get('http', '')
         if proxy_url.startswith('http://'):
-            return proxy_url[7:]  # Убираем 'http://'
+            return proxy_url[7:]
     return None
 
 def cleanup_chrome_processes():
-    """Принудительно очищает процессы Chrome и временные директории"""
+    """Очищает процессы Chrome и временные директории"""
     try:
-        # Проверяем, есть ли процессы Chrome перед очисткой
-        chrome_processes = []
-        
-        # Убиваем все процессы Chrome более эффективно
-        for process_name in ['chrome', 'chromedriver', 'chromium']:
-            try:
-                # Проверяем, есть ли процессы
-                result = subprocess.run(['pgrep', '-f', process_name], 
-                                      capture_output=True, text=True, timeout=2)
-                if result.returncode == 0:
-                    chrome_processes.extend(result.stdout.strip().split('\n'))
-            except:
-                pass
-        
-        if chrome_processes:
-            log_debug(f"Найдено {len(chrome_processes)} процессов Chrome для очистки")
-            
-            # Убиваем процессы
-            for process_name in ['chrome', 'chromedriver', 'chromium']:
-                try:
-                    subprocess.run(['pkill', '-9', '-f', process_name], 
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
-                except:
-                    pass
-        
-        # Очищаем временные директории Chrome более эффективно
-        temp_patterns = [
-            '.com.google.Chrome*',
-            '.org.chromium.Chromium*',
-            'chrome_*',
-            'chromium_*'
-        ]
-        
-        # Очищаем /tmp
-        for pattern in temp_patterns:
-            try:
-                subprocess.run(['find', '/tmp', '-name', pattern, '-type', 'd', '-exec', 'rm', '-rf', '{}', '+'], 
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
-            except:
-                pass
-        
-        # Дополнительная очистка через glob
-        import glob
-        for pattern in ['/tmp/chrome_*', '/tmp/chromium_*', '/tmp/.com.google.Chrome*', '/tmp/.org.chromium.Chromium*']:
-            try:
-                for path in glob.glob(pattern):
-                    try:
-                        subprocess.run(['rm', '-rf', path], 
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
-                    except:
-                        pass
-            except:
-                pass
-        
-        # Очищаем временные директории в текущем рабочем каталоге
-        try:
-            current_dir = os.getcwd()
-            for pattern in ['chrome_*', 'chromium_*']:
-                for path in glob.glob(os.path.join(current_dir, pattern)):
-                    try:
-                        if os.path.isdir(path):
-                            subprocess.run(['rm', '-rf', path], 
-                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
-                    except:
-                        pass
-        except:
-            pass
-        
-        time.sleep(0.5)  # Уменьшаем время ожидания после очистки для ускорения
-        
+        force_cleanup_chrome_processes()
     except Exception as e:
         log_debug(f"Ошибка очистки Chrome процессов: {str(e)}")
 
@@ -311,9 +363,7 @@ def make_request(
     timeout: int = 10,
     cache_key: Optional[str] = None,
 ) -> Optional[requests.Response]:
-    """Выполняет HTTP-запрос с поддержкой прокси и повторными попытками.
-    Параметр cache_key зарезервирован для возможного кеширования (пока не используется).
-    """
+    """Выполняет HTTP-запрос с поддержкой прокси и повторными попытками"""
 
     # Настройка сессии
     session = requests.Session()
@@ -324,9 +374,7 @@ def make_request(
             session.proxies.update(proxy)
             log_debug("Используется словарь прокси")
         else:
-            # Проверяем формат прокси-строки
             if '@' in proxy:
-                # Формат: login:password@ip:port
                 auth_part, proxy_part = proxy.split('@', 1)
                 if ':' in auth_part:
                     username, password = auth_part.split(':', 1)
@@ -349,7 +397,7 @@ def make_request(
                 log_debug(f"Используется прокси: {proxy}")
             session.proxies.update(proxy_dict)
     
-    # Настройка заголовков — используем «современные» заголовки из HEADERS
+    # Настройка заголовков
     session.headers.update(HEADERS)
     
     # Выполнение запроса с повторными попытками
@@ -359,18 +407,17 @@ def make_request(
             
             response = session.get(url, timeout=timeout, allow_redirects=True)
             
-            # Проверяем статус ответа
             if response.status_code == 200:
                 return response
             elif response.status_code == 403:
                 log_debug(f"403 Forbidden для {url} (попытка {attempt})")
                 if attempt < max_retries:
-                    time.sleep(2 ** attempt)  # Экспоненциальная задержка
+                    time.sleep(2 ** attempt)
                     continue
             elif response.status_code == 429:
                 log_debug(f"429 Rate Limit для {url} (попытка {attempt})")
                 if attempt < max_retries:
-                    time.sleep(5 * attempt)  # Увеличенная задержка для rate limit
+                    time.sleep(5 * attempt)
                     continue
             else:
                 log_debug(f"HTTP {response.status_code} для {url}")
@@ -427,18 +474,13 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
         return []
 
 def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
-    """
-    Парсит ответ Autopiter и извлекает бренды используя точный селектор
-    """
+    """Парсит ответ Autopiter и извлекает бренды"""
     brands = set()
     
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
         
         # Используем ТОЧНЫЙ селектор из DevTools пользователя
-        # #main-content > div > div > div.Table__table____693a7dea7e60fe92 > div > div.IndividualTableRow__infoColumn___b7ecc9b28c9245b4 > span > span > span > span
-        
-        # Ищем main-content
         main_content = soup.select_one('#main-content')
         if not main_content:
             log_debug(f"Autopiter: не найден #main-content для {artikul}")
@@ -465,21 +507,20 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                 for span in brand_spans:
                     brand = span.get_text(strip=True)
                     if brand and len(brand) > 1 and not brand.isdigit():
-                        # Дополнительная проверка - исключаем мусор и данные из "Часто ищут"
                         if (len(brand) < 50 and 
-                                                            not any(exclude in brand.lower() for exclude in [
-                                    'сверла', 'свечи', 'автошина', 'заклепка', 'игла', 
-                                    'лейка', 'лента', 'помпа', 'поплавок', 'ремень', 
-                                    'фильтр', 'хомут', 'шина', 'щетка', 'кольцо',
-                                    'комплект', 'костюм', 'стартер', 'шайба', 'деталь',
-                                    'накладка', 'тормозная', 'задняя', 'комплект', 'колесо',
-                                    'производители', 'часто ищут', 'рекомендуем', 'сверла техмаш',
-                                    'тестовый', 'клиента', 'без артикула', 'оригинальная',
-                                    'дизель', 'дизеля', 'дизельный'
-                                ]) and
-                            not brand.lower().startswith('12643') and  # Исключаем артикулы
+                            not any(exclude in brand.lower() for exclude in [
+                                'сверла', 'свечи', 'автошина', 'заклепка', 'игла', 
+                                'лейка', 'лента', 'помпа', 'поплавок', 'ремень', 
+                                'фильтр', 'хомут', 'шина', 'щетка', 'кольцо',
+                                'комплект', 'костюм', 'стартер', 'шайба', 'деталь',
+                                'накладка', 'тормозная', 'задняя', 'комплект', 'колесо',
+                                'производители', 'часто ищут', 'рекомендуем', 'сверла техмаш',
+                                'тестовый', 'клиента', 'без артикула', 'оригинальная',
+                                'дизель', 'дизеля', 'дизельный'
+                            ]) and
+                            not brand.lower().startswith('12643') and
                             not brand.lower().startswith('d-') and
-                            not any(char.isdigit() for char in brand[:3])  # Исключаем артикулы в начале
+                            not any(char.isdigit() for char in brand[:3])
                         ):
                             brands.add(brand)
                             log_debug(f"Autopiter: найден бренд '{brand}' для {artikul}")
@@ -544,9 +585,7 @@ def split_combined_brands(brands: List[str]) -> List[str]:
         
         # Если нет разделителей, пробуем разделить по заглавным буквам
         if not has_separator:
-            # Ищем паттерны типа "BPWSKUBATRUCKMAX" -> "BPW", "SKUBA", "TRUCKMAX"
             if brand_clean.isupper() and len(brand_clean) > 10:
-                # Разделяем по заглавным буквам, но сохраняем известные бренды
                 known_brands = ['BPW', 'SKUBA', 'TRUCKMAX', 'DAF', 'OPEL', 'FORD', 'MANSONS', 'TRP', 
                                'BLUMAQ', 'EXOVO', 'SAMPASCANIA', 'SIMPECO', 'FRUEHAUF', 'GIGANT', 
                                'SMB', 'EUROPARTS', 'AFURAL', 'AIC', 'ASAMAUGER', 'DDA', 'FACET',
@@ -555,16 +594,13 @@ def split_combined_brands(brands: List[str]) -> List[str]:
                                'AURADIA', 'AUTOGAMMA', 'CARGO', 'AKINTECH', 'ABALAD', 'KUHNER',
                                'ANALOG DEVICES', 'ARVIN ROSI', 'CONELASTRA', 'CARDONE']
                 
-                # Сначала проверяем, есть ли известные бренды
                 found_known = False
                 for known_brand in known_brands:
                     if known_brand in brand_clean:
                         result.add(known_brand)
                         found_known = True
                 
-                # Если не нашли известные, пробуем разделить по заглавным
                 if not found_known:
-                    # Разделяем по заглавным буквам, но не разбиваем короткие части
                     parts = re.findall(r'[A-Z][a-z]*', brand_clean)
                     if len(parts) > 1:
                         for part in parts:
@@ -580,527 +616,219 @@ def split_combined_brands(brands: List[str]) -> List[str]:
     return sorted(list(result))
 
 def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None, logger=None) -> List[str]:
-	"""Получает бренды с Armtek по артикулу, используя только Selenium (быстро и стабильно)."""
-	try:
-		log_debug(f"Armtek: начало обработки артикула {artikul}")
-
-		# 1) Selenium без прокси — самый быстрый путь
-		brands_sel = parse_armtek_selenium(artikul, None)
-		if brands_sel:
-			return filter_armtek_brands(split_combined_brands(brands_sel))
-
-		# 2) Selenium с прокси — если без прокси пусто
-		if not proxy:
-			proxy_dict = get_next_proxy()
-			if proxy_dict:
-				proxy_url = proxy_dict.get('http', '')
-				if proxy_url.startswith('http://'):
-					proxy_url = proxy_url[7:]
-				proxy = proxy_url
-				log_debug(f"Armtek: автоматически получен прокси: {proxy}")
-		if proxy:
-			brands_sel = parse_armtek_selenium(artikul, proxy)
-			if brands_sel:
-				return filter_armtek_brands(split_combined_brands(brands_sel))
-
-		msg = f"Armtek: бренды не найдены для {artikul}"
-		log_debug(msg)
-		if logger:
-			try:
-				logger(msg)
-			except Exception:
-				pass
-		return []
-	except Exception as e:
-		log_debug(f"Ошибка Armtek для {artikul}: {str(e)}")
-		return []
-
-def parse_armtek_api(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
-    """Попытка получить данные через API Armtek"""
-    url = f"https://armtek.ru/api/search?query={quote(artikul)}&limit=50"
-    log_debug(f"Armtek API: запрос к {url}")
-    
+    """Получает бренды с Armtek по артикулу"""
     try:
-        current_proxies = proxies or get_next_proxy()
-        response = requests.get(
-            url,
-            headers={
-                "User-Agent": HEADERS["User-Agent"],
-                "Accept": "application/json, text/plain, */*",
-                "X-Requested-With": "XMLHttpRequest"
-            },
-            proxies=current_proxies,
-            timeout=15
-        )
-        
-        if response.status_code == 200:
-            # Проверяем content-type перед попыткой JSON декодирования
-            content_type = response.headers.get('content-type', '').lower()
-            if 'application/json' not in content_type and 'text/json' not in content_type:
-                log_debug(f"Armtek API: неверный content-type: {content_type}")
-                return []
-            
+        log_debug(f"Armtek: начало обработки артикула {artikul}")
+
+        # 1) Selenium без прокси — самый быстрый путь
+        brands_sel = parse_armtek_selenium(artikul, None, logger)
+        if brands_sel:
+            return filter_armtek_brands(split_combined_brands(brands_sel))
+
+        # 2) Selenium с прокси — если без прокси пусто
+        if not proxy:
+            proxy_dict = get_next_proxy()
+            if proxy_dict:
+                proxy_url = proxy_dict.get('http', '')
+                if proxy_url.startswith('http://'):
+                    proxy_url = proxy_url[7:]
+                proxy = proxy_url
+                log_debug(f"Armtek: автоматически получен прокси: {proxy}")
+        if proxy:
+            brands_sel = parse_armtek_selenium(artikul, proxy, logger)
+            if brands_sel:
+                return filter_armtek_brands(split_combined_brands(brands_sel))
+
+        # 3) HTTP fallback
+        brands_http = parse_armtek_http_fallback(artikul, proxy)
+        if brands_http:
+            return filter_armtek_brands(split_combined_brands(brands_http))
+
+        msg = f"Armtek: бренды не найдены для {artikul}"
+        log_debug(msg)
+        if logger:
             try:
-                data = response.json()
-                brands = set()
-                
-                # Обработка различных форматов ответа
-                if isinstance(data, dict):
-                    items = data.get('items', []) or data.get('products', []) or data.get('results', [])
-                    for item in items:
-                        if isinstance(item, dict):
-                            brand = item.get('brand') or item.get('manufacturer') or item.get('vendor')
-                            if isinstance(brand, dict):
-                                brand = brand.get('name')
-                            if brand and isinstance(brand, str):
-                                brands.add(brand)
-                
-                log_debug(f"Armtek API: найдено {len(brands)} брендов")
-                return sorted(brands)
-            except json.JSONDecodeError as e:
-                log_debug(f"Armtek API: ошибка декодирования JSON: {str(e)}")
-                # Логируем первые 200 символов ответа для отладки
-                response_text = response.text[:200]
-                log_debug(f"Armtek API: начало ответа: {response_text}")
-        else:
-            log_debug(f"Armtek API: HTTP {response.status_code}")
-            
+                logger(msg)
+            except Exception:
+                pass
+        return []
     except Exception as e:
-        log_debug(f"Armtek API: ошибка {str(e)}")
+        log_debug(f"Ошибка Armtek для {artikul}: {str(e)}")
+        return []
+
+def parse_armtek_http_fallback(artikul: str, proxy: Optional[str] = None) -> List[str]:
+    """HTTP fallback для Armtek"""
+    try:
+        url = f"https://armtek.ru/search?text={quote(artikul)}"
+        log_debug(f"Armtek HTTP fallback: запрос к {url}")
+        
+        response = make_request(url, proxy, timeout=10)
+        if response and response.status_code == 200:
+            return parse_armtek_http_response(response.text, artikul)
+    except Exception as e:
+        log_debug(f"Ошибка HTTP fallback для Armtek: {str(e)}")
     
     return []
 
-def parse_armtek_api_fallback(artikul: str, proxies: Optional[List[str]] = None) -> List[str]:
-	"""API fallback для Armtek - извлекает бренды через HTTP запросы к странице"""
-	brands = set()
-	
-	try:
-		# Используем прямое обращение к странице поиска
-		search_url = f"https://armtek.ru/search?text={artikul}"
-		log_debug(f"Armtek API fallback: запрос к {search_url}")
-		
-		# Пробуем с разными прокси
-		proxy_list = proxies or [None]
-		
-		for proxy in proxy_list:
-			try:
-				log_debug(f"Armtek API fallback: пробуем с прокси {proxy}")
-				response = make_request(search_url, proxy, timeout=15)
-				if response and response.status_code == 200:
-					content = response.text
-					log_debug(f"Armtek API fallback: получен ответ {len(content)} символов")
-					
-					# Ищем бренды в HTML через регулярные выражения
-					import re
-					
-					# Расширенные паттерны для поиска брендов в HTML
-					brand_patterns = [
-						r'data-brand="([^"]+)"',
-						r'"brand":\s*"([^"]+)"',
-						r'class="brand[^"]*">\s*([^<]+)',
-						r'<span[^>]*brand[^>]*>([^<]+)</span>',
-						r'<div[^>]*brand[^>]*>([^<]+)</div>',
-						r'class="font__caption1[^"]*brand[^"]*">\s*([^<]+)',
-						r'class="pin-brand-name[^"]*">\s*([^<]+)',
-						r'class="product-brand[^"]*">\s*([^<]+)',
-						r'class="manufacturer[^"]*">\s*([^<]+)',
-						r'class="vendor[^"]*">\s*([^<]+)',
-						# Поиск в JSON данных
-						r'"make":\s*"([^"]+)"',
-						r'"manufacturer":\s*"([^"]+)"',
-						r'"vendor":\s*"([^"]+)"',
-					]
-					
-					for pattern in brand_patterns:
-						matches = re.findall(pattern, content, re.IGNORECASE)
-						for match in matches:
-							brand = match.strip()
-							if brand and len(brand) > 1 and len(brand) < 50:
-								# Фильтруем артикулы и технические строки
-								if not re.match(r'^[A-Z0-9\-]+$', brand) and not brand.lower() in ['артикул', 'бренд', 'цена', 'brand', 'manufacturer', 'vendor']:
-									brands.add(brand)
-									log_debug(f"Armtek API fallback: найден бренд '{brand}' по паттерну")
-					
-					# Дополнительный поиск через BeautifulSoup
-					try:
-						from bs4 import BeautifulSoup
-						soup = BeautifulSoup(content, 'html.parser')
-						
-						# Ищем по селекторам
-						selectors = [
-							'.font__caption1.brand--selectable',
-							'.pin-brand-name span',
-							'.product-card .brand-name',
-							'.catalog-item .brand-name',
-							'[data-brand]',
-							'.brand-name',
-							'.product-brand',
-							'.manufacturer-name',
-							'.vendor-title'
-						]
-						
-						for selector in selectors:
-							elements = soup.select(selector)
-							for el in elements:
-								text = el.get_text(strip=True)
-								if text and len(text) > 1 and len(text) < 50:
-									if not re.match(r'^[A-Z0-9\-]+$', text) and not text.lower() in ['артикул', 'бренд', 'цена', 'brand', 'manufacturer', 'vendor']:
-										brands.add(text)
-										log_debug(f"Armtek API fallback: найден бренд '{text}' через BeautifulSoup")
-					except Exception as e:
-						log_debug(f"Armtek API fallback: ошибка BeautifulSoup: {str(e)}")
-					
-					if brands:
-						log_debug(f"Armtek API fallback: найдено {len(brands)} брендов через HTTP парсинг")
-						break
-					else:
-						log_debug("Armtek API fallback: бренды не найдены в HTML")
-						
-			except Exception as e:
-				log_debug(f"Ошибка HTTP запроса к Armtek с прокси {proxy}: {str(e)}")
-				continue
-				
-	except Exception as e:
-		log_debug(f"Общая ошибка API fallback для Armtek: {str(e)}")
-	
-	return list(brands)
-
 def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None) -> List[str]:
-	"""Selenium-парсинг Armtek: ждем появления элементов и собираем бренды.
-	Если на странице отображено сообщение "По вашему запросу ничего не найдено",
-	возвращаем пустой список и логируем событие.
-	"""
-	brands: Set[str] = set()
-	driver = None
-	
-	try:
-		log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
-		
-		# Получаем драйвер из пула или создаем новый
-		driver = get_driver_from_pool()
-		if driver is None:
-			log_debug("Armtek Selenium: создаем новый драйвер")
-			driver = _create_chrome_driver_robust(None, proxy)
-			if driver is None:
-				log_debug("Armtek Selenium: не удалось создать драйвер")
-				return []
-		
-		# Если прокси содержит авторизацию, игнорируем его для Selenium (Chrome не поддерживает в CLI)
-		effective_proxy = None if (proxy and '@' in proxy) else proxy
-		
-		url = f"https://armtek.ru/search?text={artikul}"
-		log_debug(f"Armtek Selenium: загружаем URL {url}")
-		
-		# Retry логика для загрузки страницы с улучшенной обработкой ошибок
-		for page_attempt in range(DRIVER_TIMEOUT_RETRIES):
-			try:
-				driver.get(url)
-				log_debug(f"Armtek Selenium: страница загружена, попытка {page_attempt + 1}")
-				break
-			except Exception as e:
-				error_msg = str(e)
-				log_debug(f"Попытка {page_attempt + 1} загрузки страницы: {error_msg}")
-				
-				# Если произошла критическая ошибка (tab crashed), пересоздаем драйвер
-				if "tab crashed" in error_msg.lower() or "chrome not reachable" in error_msg.lower() or "connection refused" in error_msg.lower():
-					log_debug("Критическая ошибка Chrome, пересоздаем драйвер")
-					try:
-						# Закрываем сломанный драйвер
-						if driver:
-							try:
-								driver.quit()
-							except:
-								pass
-						
-						# Очищаем процессы Chrome
-						import subprocess
-						subprocess.run(['pkill', '-f', 'chrome'], capture_output=True)
-						subprocess.run(['pkill', '-f', 'chromedriver'], capture_output=True)
-						
-						# Создаем новый драйвер
-						driver = _create_chrome_driver_robust(None, proxy)
-						log_debug("Создан новый драйвер после критической ошибки")
-						
-						# Пробуем загрузить страницу с новым драйвером
-						driver.get(url)
-						break
-					except Exception as recovery_error:
-						log_debug(f"Не удалось восстановить драйвер: {str(recovery_error)}")
-						return []
-				
-				if page_attempt < DRIVER_TIMEOUT_RETRIES - 1:
-					time.sleep(2)  # Увеличиваем паузу между попытками
-				else:
-					log_debug("Не удалось загрузить страницу после всех попыток")
-					return []
-		
-		# Явные ожидания появления результатов с улучшенной логикой
-		wait = WebDriverWait(driver, SELENIUM_TIMEOUT)
-		selectors_to_wait = [
-			(By.CSS_SELECTOR, '.results-list__items'),
-			(By.CSS_SELECTOR, '.font__body2.brand--selecting'),
-			(By.CSS_SELECTOR, '.font__caption1.brand--selectable'),
-			(By.CSS_SELECTOR, '.product-card'),
-			(By.CSS_SELECTOR, '.catalog-item'),
-			(By.CSS_SELECTOR, '.search-results'),
-			(By.CSS_SELECTOR, '.results'),
-			# Точный путь из DevTools пользователя (будет срабатывать, если DOM совпадает)
-			(By.CSS_SELECTOR, 'body > app-root > div > mp-main > search-result > div > div > project-ui-search-result-with-filters > div > div.results.has-filter-on-desktop > project-ui-search-result > div > div > div.results-list__items.ng-star-inserted'),
-			# Внутри контейнера результатов — искомый бренд
-			(By.CSS_SELECTOR, 'div.results-list__items span.font__body2.brand--selecting'),
-		]
-		
-		page_loaded = False
-		for by, sel in selectors_to_wait:
-			try:
-				# Ждем видимости, а не только наличия в DOM
-				wait.until(EC.visibility_of_any_elements_located((by, sel)))
-				log_debug(f"Armtek Selenium: найден элемент {sel}")
-				page_loaded = True
-				break
-			except Exception as e:
-				log_debug(f"Armtek Selenium: элемент {sel} не найден: {str(e)}")
-				continue
-		
-		if not page_loaded:
-			log_debug("Armtek Selenium: страница не загрузилась или нет результатов")
-			# Пробуем fallback - ждем просто загрузки страницы
-			try:
-				WebDriverWait(driver, 3).until(lambda d: d.execute_script("return document.readyState") == "complete")
-				log_debug("Armtek Selenium: страница загружена, но нет ожидаемых элементов")
-			except Exception:
-				log_debug("Armtek Selenium: страница не загрузилась полностью")
-				return []
-		
-		# Оптимизированная прокрутка страницы
-		try:
-			# Прокручиваем по частям для ускорения
-			driver.execute_script('window.scrollTo(0, document.body.scrollHeight/3);')
-			time.sleep(0.1)
-			driver.execute_script('window.scrollTo(0, document.body.scrollHeight*2/3);')
-			time.sleep(0.1)
-			driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
-			time.sleep(0.1)
-		except Exception:
-			pass
-		
-		# Ранний выход: проверяем блок "ничего не найдено"
-		try:
-			# Несколько надежных путей для текста "ничего не найдено"
-			nf = driver.find_elements(By.CSS_SELECTOR, 'div.not-found__title p.font__headline5, p.font__headline5')
-			if not nf:
-				nf = driver.find_elements(By.XPATH, "//p[contains(@class,'font__headline5') and contains(translate(., 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ', 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя'), 'ничего не найдено')]")
-			if any('ничего не найдено' in (el.text or '').lower() for el in nf):
-				msg = f"Armtek: по запросу {artikul} ничего не найдено"
-				log_debug(msg)
-				if logger:
-					try:
-						logger(msg)
-					except Exception:
-						pass
-				return []
-		except Exception:
-			pass
+    """Selenium-парсинг Armtek"""
+    brands: Set[str] = set()
+    driver = None
+    
+    try:
+        log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
+        
+        # Получаем драйвер из пула
+        driver = get_driver_from_pool()
+        if driver is None:
+            log_debug("Armtek Selenium: не удалось получить драйвер из пула")
+            return []
+        
+        # Если прокси содержит авторизацию, игнорируем его для Selenium
+        effective_proxy = None if (proxy and '@' in proxy) else proxy
+        
+        url = f"https://armtek.ru/search?text={artikul}"
+        log_debug(f"Armtek Selenium: загружаем URL {url}")
+        
+        # Retry логика для загрузки страницы
+        for page_attempt in range(DRIVER_TIMEOUT_RETRIES):
+            try:
+                driver.get(url)
+                log_debug(f"Armtek Selenium: страница загружена, попытка {page_attempt + 1}")
+                break
+            except Exception as e:
+                error_msg = str(e)
+                log_debug(f"Попытка {page_attempt + 1} загрузки страницы: {error_msg}")
+                
+                if "tab crashed" in error_msg.lower() or "chrome not reachable" in error_msg.lower():
+                    log_debug("Критическая ошибка Chrome, пересоздаем драйвер")
+                    try:
+                        return_driver_to_pool(driver)
+                        driver = None
+                        
+                        # Очищаем процессы
+                        force_cleanup_chrome_processes()
+                        
+                        # Пробуем получить новый драйвер
+                        driver = get_driver_from_pool()
+                        if driver:
+                            driver.get(url)
+                            break
+                    except Exception as recovery_error:
+                        log_debug(f"Не удалось восстановить драйвер: {str(recovery_error)}")
+                        return []
+                
+                if page_attempt < DRIVER_TIMEOUT_RETRIES - 1:
+                    time.sleep(2)
+                else:
+                    log_debug("Не удалось загрузить страницу после всех попыток")
+                    return []
+        
+        # Явные ожидания появления результатов
+        wait = WebDriverWait(driver, SELENIUM_TIMEOUT)
+        selectors_to_wait = [
+            (By.CSS_SELECTOR, '.results-list__items'),
+            (By.CSS_SELECTOR, '.font__body2.brand--selecting'),
+            (By.CSS_SELECTOR, '.font__caption1.brand--selectable'),
+            (By.CSS_SELECTOR, '.product-card'),
+        ]
+        
+        page_loaded = False
+        for by, sel in selectors_to_wait:
+            try:
+                wait.until(EC.visibility_of_any_elements_located((by, sel)))
+                log_debug(f"Armtek Selenium: найден элемент {sel}")
+                page_loaded = True
+                break
+            except Exception as e:
+                log_debug(f"Armtek Selenium: элемент {sel} не найден: {str(e)}")
+                continue
+        
+        if not page_loaded:
+            log_debug("Armtek Selenium: страница не загрузилась или нет результатов")
+            try:
+                WebDriverWait(driver, 3).until(lambda d: d.execute_script("return document.readyState") == "complete")
+                log_debug("Armtek Selenium: страница загружена, но нет ожидаемых элементов")
+            except Exception:
+                log_debug("Armtek Selenium: страница не загрузилась полностью")
+                return []
+        
+        # Прокрутка страницы
+        try:
+            driver.execute_script('window.scrollTo(0, document.body.scrollHeight/3);')
+            time.sleep(0.1)
+            driver.execute_script('window.scrollTo(0, document.body.scrollHeight*2/3);')
+            time.sleep(0.1)
+            driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+            time.sleep(0.1)
+        except Exception:
+            pass
+        
+        # Проверяем блок "ничего не найдено"
+        try:
+            nf = driver.find_elements(By.CSS_SELECTOR, 'div.not-found__title p.font__headline5, p.font__headline5')
+            if not nf:
+                nf = driver.find_elements(By.XPATH, "//p[contains(@class,'font__headline5') and contains(translate(., 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ', 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя'), 'ничего не найдено')]")
+            if any('ничего не найдено' in (el.text or '').lower() for el in nf):
+                msg = f"Armtek: по запросу {artikul} ничего не найдено"
+                log_debug(msg)
+                if logger:
+                    try:
+                        logger(msg)
+                    except Exception:
+                        pass
+                return []
+        except Exception:
+            pass
 
-		# Сбор брендов по селекторам - сначала точные селекторы для карточек товаров
-		brand_selectors = [
-			# Новые селекторы для современного Armtek
-			'.font__caption1.brand--selectable',
-			'.pin-brand-name span.font__caption1.brand--selectable',
-			'.product-card__content .pin-brand-name .brand--selectable',
-			'.pin-brand-name .brand--selectable',
-			'.product-card .brand-name',
-			'.catalog-item .brand-name',
-			'.item-card .brand-name',
-			# Точный селектор, предоставленный пользователем
-			'body > app-root > div > mp-main > search-result > div > div > project-ui-search-result-with-filters > div > div.results.has-filter-on-desktop > project-ui-search-result > div > div > div.results-list__items.ng-star-inserted > div > div:nth-child(2) > project-ui-article-card > project-ui-article-card-with-suggestions > div > div.content > div.row.ng-star-inserted > div > div.item.item-mobile > span.font__body2.brand--selecting',
-			# Селекторы для брендов в карточках товаров
-			'.font__body2.brand--selecting',
-			'.brand--selecting',
-			'.brand-name',
-			'.product-brand',
-			'.manufacturer-name',
-			'.vendor-title',
-			'.item-brand',
-			'.brand__name',
-			# Дополнительные селекторы
-			'[data-brand]',
-			'.product-card [data-brand]',
-			'.catalog-item [data-brand]',
-			'.item-card [data-brand]',
-			# Селекторы для текста брендов
-			'.product-card .font__caption1',
-			'.catalog-item .font__caption1',
-			'.item-card .font__caption1',
-		]
-
-		# Определяем границу секции "Возможные замены" и функцию проверки порядка элементов в DOM
-		replacements_header_el = None
-		def is_before_replacements(element) -> bool:
-			try:
-				if replacements_header_el is None:
-					return True
-				# element.compareDocumentPosition(header) & 4 => element находится перед header
-				pos = driver.execute_script("return arguments[0].compareDocumentPosition(arguments[1]);", element, replacements_header_el)
-				return bool(int(pos) & 4)
-			except Exception:
-				return True
-
-		try:
-			# Ищем заголовок секции "Возможные замены"
-			repl_headers = driver.find_elements(
-				By.XPATH,
-				"//p[contains(@class,'font__headline6') and contains(normalize-space(.), 'Возможные замены')]"
-			)
-			if repl_headers:
-				replacements_header_el = repl_headers[0]
-				log_debug("Armtek Selenium: найдена секция 'Возможные замены'")
-		except Exception:
-			pass
-		
-		# Сначала пробуем точные селекторы карточек товаров
-		exact_selectors = [
-			'.font__caption1.brand--selectable',
-			'.pin-brand-name span.font__caption1.brand--selectable',
-			'.product-card__content .pin-brand-name .brand--selectable',
-			'.product-card .brand-name',
-			'.catalog-item .brand-name',
-			'.item-card .brand-name',
-			# Бренд внутри контейнера результатов (основной текущий кейс)
-			'div.results-list__items span.font__body2.brand--selecting',
-			# Варианты точного пути, присланные пользователем
-			'body > app-root > div > mp-main > search-result > div > div > project-ui-search-result-with-filters > div > div.results.has-filter-on-desktop > project-ui-search-result > div > div > div.results-list__items.ng-star-inserted > div > div.item.border-bottom.ng-star-inserted > project-ui-article-card > project-ui-article-card-with-suggestions > div > div.content > div > div > div.item.item-mobile > span.font__body2.brand--selecting',
-		]
-		
-		log_debug(f"Armtek Selenium: начинаем поиск брендов по {len(exact_selectors)} точным селекторам")
-		
-		for selector in exact_selectors:
-			try:
-				elements = driver.find_elements(By.CSS_SELECTOR, selector)
-				log_debug(f"Armtek Selenium: найдено {len(elements)} элементов по селектору '{selector}'")
-				
-				for el in elements:
-					text = el.text.strip()
-					if text and len(text) > 1 and len(text) < 50:  # Ограничиваем длину
-						# Исключаем элементы, находящиеся после секции "Возможные замены"
-						if not is_before_replacements(el):
-							log_debug(f"Armtek Selenium: пропускаем элемент '{text}' - находится после секции замен")
-							continue
-						# Дополнительная фильтрация мусора
-						if not any(garbage in text.lower() for garbage in [
-							'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
-							'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
-							'автозапчасти', 'аккумуляторы', 'аксессуары', 'акции', 'бренды', 'ваш', 'возврат',
-							'войти', 'выбор', 'вывод', 'гараж', 'гарантийная', 'главная', 'госномеру',
-							'грузовые', 'дней', 'доставка', 'инструмент', 'интернет', 'искать', 'искомый',
-							'как', 'каталог', 'китайские', 'компании', 'контакты', 'корзина', 'легковые',
-							'магазины', 'москва', 'мотозапчасти', 'моторные', 'мы', 'нет', 'новости', 'ооо',
-							'оплата', 'оптовым', 'партнерам', 'планировщик', 'по', 'подбор', 'пожалуйста',
-							'поиск', 'покупателям', 'поставщикам', 'правовая', 'программа', 'работа',
-							'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины'
-						]):
-							brands.add(text)
-							log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
-						else:
-							log_debug(f"Armtek Selenium: пропускаем мусорный текст '{text}'")
-			except Exception as e:
-				log_debug(f"Armtek Selenium: ошибка поиска по селектору {selector}: {str(e)}")
-		
-		# Если точные селекторы не дали результатов, пробуем остальные
-		if not brands:
-			log_debug("Armtek Selenium: точные селекторы не дали результатов, пробуем остальные")
-			for selector in brand_selectors[6:]:  # Пропускаем уже проверенные точные селекторы
-				try:
-					elements = driver.find_elements(By.CSS_SELECTOR, selector)
-					log_debug(f"Armtek Selenium: найдено {len(elements)} элементов по селектору '{selector}'")
-					
-					for el in elements:
-						# Исключаем бренды из секции "Возможные замены" по DOM-порядку
-						if not is_before_replacements(el):
-							continue
-						text = el.text.strip()
-						if text and len(text) > 1 and len(text) < 50:
-							# Дополнительная фильтрация
-							if not any(garbage in text.lower() for garbage in [
-								'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
-								'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
-								'автозапчасти', 'аккумуляторы', 'аксессуары', 'акции', 'бренды', 'ваш', 'возврат',
-								'войти', 'выбор', 'вывод', 'гараж', 'гарантийная', 'главная', 'госномеру',
-								'грузовые', 'дней', 'доставка', 'инструмент', 'интернет', 'искать', 'искомый',
-								'как', 'каталог', 'китайские', 'компании', 'контакты', 'корзина', 'легковые',
-								'магазины', 'москва', 'мотозапчасти', 'моторные', 'мы', 'нет', 'новости', 'ооо',
-								'оплата', 'оптовым', 'партнерам', 'планировщик', 'по', 'подбор', 'пожалуйста',
-								'поиск', 'покупателям', 'поставщикам', 'правовая', 'программа', 'работа',
-								'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины'
-							]):
-								brands.add(text)
-								log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
-				except Exception as e:
-					log_debug(f"Armtek Selenium: ошибка поиска по селектору {selector}: {str(e)}")
-		
-		# Если брендов нет — пробуем из HTML и XPath
-		if not brands:
-			log_debug("Armtek Selenium: селекторы не дали результатов, пробуем парсинг HTML/XPath")
-			# 1) XPath вариант извлечения брендов
-			try:
-				xpath_elems = driver.find_elements(By.XPATH, "//div[contains(@class,'results-list__items')]//span[contains(@class,'brand--selecting') or contains(@class,'brand-name')]")
-				for el in xpath_elems:
-					text = (el.text or '').strip()
-					if text and 1 < len(text) < 50:
-						brands.add(text)
-			except Exception:
-				pass
-
-			# 2) HTML эвристика
-			if not brands:
-				page_source = driver.page_source
-				html_brands = parse_armtek_page_text(page_source, artikul)
-				if html_brands:
-					brands.update(html_brands)
-					log_debug(f"Armtek Selenium: найдено {len(html_brands)} брендов из HTML")
-				else:
-					log_debug("Armtek Selenium: HTML парсинг тоже не дал результатов")
-		
-		return list(brands)
-	finally:
-		# Возвращаем драйвер в пул вместо закрытия
-		if driver:
-			return_driver_to_pool(driver)
-	
-	# Fallback: если Selenium не сработал, пробуем API
-	if not brands:
-		log_debug(f"Armtek Selenium не сработал для {artikul}, пробуем API fallback")
-		try:
-			# Получаем прокси для API fallback
-			proxy_list = []
-			if proxy:
-				proxy_list.append(proxy)
-			else:
-				proxy_dict = get_next_proxy()
-				if proxy_dict:
-					proxy_url = proxy_dict.get('http', '')
-					if proxy_url.startswith('http://'):
-						proxy_url = proxy_url[7:]
-					proxy_list.append(proxy_url)
-			
-			api_brands = parse_armtek_api_fallback(artikul, proxy_list)
-			if api_brands:
-				log_debug(f"Armtek API fallback: найдено {len(api_brands)} брендов для {artikul}")
-				return api_brands
-			else:
-				log_debug(f"Armtek API fallback: бренды не найдены для {artikul}")
-		except Exception as e:
-			log_debug(f"Armtek API fallback тоже не сработал: {str(e)}")
-	
-	if brands:
-		log_debug(f"Armtek Selenium: итого найдено {len(brands)} брендов для {artikul}")
-	else:
-		log_debug(f"Armtek Selenium: бренды не найдены для {artikul}")
-	
-	return sorted(brands)
+        # Сбор брендов по селекторам
+        brand_selectors = [
+            '.font__caption1.brand--selectable',
+            '.pin-brand-name span.font__caption1.brand--selectable',
+            '.product-card__content .pin-brand-name .brand--selectable',
+            '.pin-brand-name .brand--selectable',
+            '.product-card .brand-name',
+            '.font__body2.brand--selecting',
+            '.brand--selecting',
+        ]
+        
+        for selector in brand_selectors:
+            try:
+                elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                log_debug(f"Armtek Selenium: найдено {len(elements)} элементов по селектору '{selector}'")
+                
+                for el in elements:
+                    text = el.text.strip()
+                    if text and len(text) > 1 and len(text) < 50:
+                        if not any(garbage in text.lower() for garbage in [
+                            'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
+                            'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
+                            'автозапчасти', 'аккумуляторы', 'аксессуары', 'акции', 'бренды', 'ваш', 'возврат',
+                            'войти', 'выбор', 'вывод', 'гараж', 'гарантийная', 'главная', 'госномеру',
+                            'грузовые', 'дней', 'доставка', 'инструмент', 'интернет', 'искать', 'искомый',
+                            'как', 'каталог', 'китайские', 'компании', 'контакты', 'корзина', 'легковые',
+                            'магазины', 'москва', 'мотозапчасти', 'моторные', 'мы', 'нет', 'новости', 'ооо',
+                            'оплата', 'оптовым', 'партнерам', 'планировщик', 'по', 'подбор', 'пожалуйста',
+                            'поиск', 'покупателям', 'поставщикам', 'правовая', 'программа', 'работа',
+                            'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины'
+                        ]):
+                            brands.add(text)
+                            log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
+            except Exception as e:
+                log_debug(f"Armtek Selenium: ошибка поиска по селектору {selector}: {str(e)}")
+        
+        return list(brands)
+        
+    except Exception as e:
+        log_debug(f"Armtek Selenium: общая ошибка: {str(e)}")
+        return []
+    finally:
+        # Всегда возвращаем драйвер в пул
+        if driver:
+            return_driver_to_pool(driver)
 
 def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> Optional[webdriver.Chrome]:
-    """Создает Chrome драйвер с улучшенной обработкой ошибок и retry логикой"""
+    """Создает Chrome драйвер с улучшенной обработкой ошибок"""
     for attempt in range(DRIVER_CREATION_RETRIES):
         try:
             chrome_options = Options()
@@ -1117,7 +845,6 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             chrome_options.add_argument('--disable-extensions')
             chrome_options.add_argument('--disable-plugins')
             chrome_options.add_argument('--disable-images')
-            # Не отключаем JS/CSS для Armtek: часть структуры и видимости управляется Angular
             chrome_options.add_argument('--disable-web-security')
             chrome_options.add_argument('--disable-features=VizDisplayCompositor')
             chrome_options.add_argument('--memory-pressure-off')
@@ -1127,30 +854,11 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             chrome_options.add_argument(f'--user-data-dir={temp_dir}')
             
             # Настройка прокси
-            if proxy:
-                if '@' in proxy:
-                    # Формат: login:password@ip:port
-                    auth_part, proxy_part = proxy.split('@', 1)
-                    if ':' in auth_part:
-                        username, password = auth_part.split(':', 1)
-                        # Для Chrome с аутентификацией прокси используем расширение
-                        chrome_options.add_argument(f'--proxy-server={proxy_part}')
-                        # Добавляем расширение для аутентификации прокси
-                        chrome_options.add_argument('--load-extension=/tmp/proxy-auth-extension')
-                    else:
-                        chrome_options.add_argument(f'--proxy-server={proxy}')
-                else:
-                    # Формат: ip:port
-                    chrome_options.add_argument(f'--proxy-server={proxy}')
-                
+            if proxy and '@' not in proxy:  # Пропускаем прокси с авторизацией
+                chrome_options.add_argument(f'--proxy-server={proxy}')
                 log_debug(f"Armtek Selenium: добавлен прокси {proxy}")
             
             # Дополнительные опции для стабильности и производительности
-            chrome_options.add_argument('--disable-extensions')
-            chrome_options.add_argument('--disable-plugins')
-            chrome_options.add_argument('--disable-images')
-            chrome_options.add_argument('--disable-web-security')
-            chrome_options.add_argument('--allow-running-insecure-content')
             chrome_options.add_argument('--disable-background-timer-throttling')
             chrome_options.add_argument('--disable-backgrounding-occluded-windows')
             chrome_options.add_argument('--disable-renderer-backgrounding')
@@ -1159,15 +867,9 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             chrome_options.add_argument('--no-first-run')
             chrome_options.add_argument('--no-default-browser-check')
             chrome_options.add_argument('--disable-logging')
-            chrome_options.add_argument('--disable-gpu-logging')
-            chrome_options.add_argument('--silent')
-            chrome_options.add_argument('--disable-crash-reporter')
-            chrome_options.add_argument('--disable-in-process-stack-traces')
             chrome_options.add_argument('--log-level=3')
-            chrome_options.add_argument('--disable-dev-tools')
-            chrome_options.add_argument('--disable-software-rasterizer')
             
-            # Пытаемся найти ChromeDriver в разных местах
+            # Пытаемся найти ChromeDriver
             service = None
             chrome_paths = [
                 '/usr/bin/chromedriver',
@@ -1178,8 +880,9 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             
             for chrome_path in chrome_paths:
                 try:
-                    service = Service(executable_path=chrome_path)
-                    break
+                    if os.path.exists(chrome_path):
+                        service = Service(executable_path=chrome_path)
+                        break
                 except Exception:
                     continue
             
@@ -1190,291 +893,114 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             
             # Устанавливаем таймауты
             driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-            driver.implicitly_wait(1)  # Еще больше уменьшаем для ускорения
+            driver.implicitly_wait(1)
             
             return driver
             
         except Exception as e:
             log_debug(f"Попытка {attempt + 1} создания Chrome драйвера: {str(e)}")
             if attempt < DRIVER_CREATION_RETRIES - 1:
-                time.sleep(2 ** attempt)  # Экспоненциальная задержка
+                time.sleep(2 ** attempt)
             else:
                 log_debug(f"Не удалось создать Chrome драйвер после {DRIVER_CREATION_RETRIES} попыток")
                 return None
     
     return None
 
-def _create_chrome_driver(temp_dir: str, with_user_data: bool = True, proxy: Optional[str] = None):
-    """Создает Chrome драйвер с настройками и прокси (для обратной совместимости)"""
-    return _create_chrome_driver_robust(temp_dir, proxy)
-
-def _create_chrome_driver_minimal(temp_dir: str, proxy: Optional[str] = None):
-    """Создает Chrome драйвер с минимальными настройками и прокси"""
-    try:
-        chrome_options = Options()
-        chrome_options.add_argument('--headless')
-        chrome_options.add_argument('--no-sandbox')
-        chrome_options.add_argument('--disable-dev-shm-usage')
-        chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--disable-extensions')
-        chrome_options.add_argument('--disable-plugins')
-        
-        # Настройка прокси
-        if proxy:
-            if '@' in proxy:
-                # Формат: login:password@ip:port
-                auth_part, proxy_part = proxy.split('@', 1)
-                if ':' in auth_part:
-                    username, password = auth_part.split(':', 1)
-                    # Для Chrome с аутентификацией прокси используем расширение
-                    chrome_options.add_argument(f'--proxy-server={proxy_part}')
-                    # Добавляем расширение для аутентификации прокси
-                    chrome_options.add_argument('--load-extension=/tmp/proxy-auth-extension')
-                else:
-                    chrome_options.add_argument(f'--proxy-server={proxy}')
-            else:
-                # Формат: ip:port
-                chrome_options.add_argument(f'--proxy-server={proxy}')
-            
-            log_debug(f"Armtek Selenium: добавлен прокси {proxy}")
-        
-        service = Service()
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        
-        # Устанавливаем таймауты
-        driver.set_page_load_timeout(15)
-        driver.implicitly_wait(5)
-        
-        return driver
-        
-    except Exception as e:
-        log_debug(f"Ошибка создания минимального Chrome драйвера: {str(e)}")
-        return None
-
-def parse_armtek_page_text(page_text: str, artikul: str) -> set:
-    """Парсит бренды из текста страницы Armtek с улучшенной фильтрацией"""
-    brands = set()
+def parse_armtek_http_response(html: str, artikul: str) -> List[str]:
+    """Парсит HTML ответа Armtek"""
+    soup = BeautifulSoup(html, 'html.parser')
+    brands: Set[str] = set()
     
-    # Список мусорных слов для исключения
+    # 1) Явные селекторы
+    selectors = [
+        '.font__body2.brand--selecting',
+        '.brand--selecting',
+        '.brand-name', '.product-brand', '.manufacturer-name',
+        '.vendor-title', '.item-brand', '.brand__name',
+        '.catalog-item__brand', '.product__brand', '.item__brand'
+    ]
+    for sel in selectors:
+        for el in soup.select(sel):
+            text = el.get_text(strip=True)
+            if text:
+                brands.add(text)
+    
+    # 2) data-brand
+    for el in soup.find_all(attrs={"data-brand": True}):
+        val = (el.get("data-brand") or '').strip()
+        if val:
+            brands.add(val)
+    
+    # 3) JSON-LD/скрипты
+    for script in soup.find_all('script'):
+        if not script.string:
+            continue
+        for m in re.findall(r'"brand"\s*:\s*"([^"]+)"', script.string):
+            m = m.strip()
+            if m:
+                brands.add(m)
+    
+    # 4) Текстовая эвристика
+    if not brands:
+        text_content = soup.get_text(" ")
+        for word in re.findall(r'\b[А-ЯЁA-Z][А-ЯЁA-Zа-яёa-z0-9-]{1,19}\b', text_content):
+            if len(word) > 1 and not word.isdigit():
+                brands.add(word)
+    
+    filtered = filter_armtek_brands(list(brands))
+    log_debug(f"Armtek HTTP: найдено {len(filtered)} брендов для {artikul}")
+    return filtered
+
+def filter_armtek_brands(brands: List[str]) -> List[str]:
+    """Фильтрация брендов Armtek"""
+    filtered: List[str] = []
+    
     garbage_words = {
         'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
         'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
-        'автозапчасти', 'аккумуляторы', 'аксессуары', 'акции', 'бренды', 'ваш', 'возврат',
-        'войти', 'выбор', 'вывод', 'гараж', 'гарантийная', 'главная', 'госномеру',
-        'грузовые', 'дней', 'доставка', 'инструмент', 'интернет', 'искать', 'искомый',
-        'как', 'каталог', 'китайские', 'компании', 'контакты', 'корзина', 'легковые',
-        'магазины', 'москва', 'мотозапчасти', 'моторные', 'мы', 'нет', 'новости', 'ооо',
-        'оплата', 'оптовым', 'партнерам', 'планировщик', 'по', 'подбор', 'пожалуйста',
-        'поиск', 'покупателям', 'поставщикам', 'правовая', 'программа', 'работа',
-        'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины',
-        'armtekparts', 'armtekru', 'canvastext', 'roboto', 'ldwbs', 'oracj', 'twmh'
+        'armtekparts', 'armtekru', 'canvastext', 'roboto', 'ldwbs', 'oracj', 'twmh',
+        'brand', 'new', 'test', 'tag', 'date', 'end', 'error', 'function', 'manager',
+        'главная', 'войти', 'корзина', 'каталог', 'поиск', 'новости', 'акции',
+        'контакты', 'о компании', 'правовая информация', 'программа лояльности',
+        'nxmupi', 'wti'
     }
     
-    # Паттерны для поиска брендов в HTML атрибутах
-    brand_patterns = [
-        r'data-brand="([^"]+)"',
-        r'brand["\s]*[:=]\s*["\']([^"\']+)["\']',
-        r'производитель["\s]*[:=]\s*["\']([^"\']+)["\']',
-        r'бренд["\s]*[:=]\s*["\']([^"\']+)["\']',
-        r'brand-name="([^"]+)"',
-        r'manufacturer="([^"]+)"',
-        r'vendor="([^"]+)"',
-    ]
-    
-    for pattern in brand_patterns:
-        for match in re.findall(pattern, page_text, re.IGNORECASE):
-            if match and len(match) > 1 and len(match) < 50:
-                brand = match.strip()
-                if brand.lower() not in garbage_words:
-                    brands.add(brand)
-    
-    # Дополнительная эвристика: слова-бренды (латиница/кириллица) с улучшенной фильтрацией
-    for word in re.findall(r'\b[А-ЯЁA-Z][А-ЯЁA-Zа-яёa-z0-9-]{1,19}\b', page_text):
-        if (len(word) > 1 and len(word) < 50 and 
-            not word.isdigit() and 
-            word.lower() not in garbage_words and
-            not any(char.isdigit() for char in word[:2])):  # Исключаем артикулы
-            brands.add(word)
-    
-    return brands
-
-def parse_armtek_http(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] = None) -> List[str]:
-    """Парсинг Armtek через HTTP запрос с улучшенной обработкой"""
-    url = f"https://armtek.ru/search?text={quote(artikul)}"
-    log_debug(f"Armtek HTTP: запрос к {url}")
-    
-    response = make_request(url, proxy, cache_key=f"armtek_http_{artikul}")
-    if not response:
-        return []
-    
-    html_text = response.text
-    # Диагностика: проверим наличие ключевых классов в HTML
-    try:
-        if 'brand--selectable' not in html_text and 'brand--selecting' not in html_text:
-            log_debug("Armtek HTTP: в HTML нет brand--selectable/brand--selecting — возможно, страница SSR без нужных блоков или требуется JS")
-    except Exception:
-        pass
-    soup = BeautifulSoup(html_text, 'html.parser')
-    brands = set()
-    
-    # Поиск брендов в структурированных данных
-    script_tags = soup.find_all('script', type='application/ld+json')
-    for script in script_tags:
-        try:
-            data = json.loads(script.string)
-            if isinstance(data, list):
-                for item in data:
-                    if item.get("@type") == "Product":
-                        brand = item.get("brand", {}).get("name")
-                        if brand:
-                            brands.add(brand)
-            elif isinstance(data, dict) and data.get("@type") == "Product":
-                brand = data.get("brand", {}).get("name")
-                if brand:
-                    brands.add(brand)
-        except:
-            pass
-    
-    # Поиск по CSS селекторам
-    brand_selectors = [
-        # Точные и актуальные селекторы из интерфейса Armtek
-        '.pin-brand-name span.font__caption1.brand--selectable',
-        '.font__caption1.brand--selectable',
-        'div.pin-brand-name .brand--selectable',
-        # Структурные источники бренда
-        '.product-card__brand',
-        '[itemprop="brand"]',
-        '.catalog-item__brand',
-        '[data-brand]'
-    ]
-    
-    for selector in brand_selectors:
-        try:
-            for tag in soup.select(selector):
-                brand = tag.get_text(strip=True)
-                if brand and 1 < len(brand) < 50 and not brand.isdigit():
-                    brands.add(brand)
-        except Exception:
+    for b in brands:
+        brand = b.strip()
+        if not brand:
             continue
-    
-    # Узкие регулярки по ожидаемым классам/атрибутам
-    if not brands:
-        try:
-            regex_patterns = [
-                r'class=\"font__caption1\s+brand--selectable\"[^>]*>([^<]+)</span>',
-                r'pin-brand-name[^<]+class=\"font__caption1\s+brand--selectable\"[^>]*>([^<]+)</span>',
-                r'data-brand=\"([^\"]+)\"'
-            ]
-            for rp in regex_patterns:
-                for m in re.findall(rp, html_text):
-                    val = (m or '').strip()
-                    if val and 1 < len(val) < 50 and not val.isdigit():
-                        brands.add(val)
-        except Exception:
-            pass
-    
-    return sorted(brands) if brands else []
+            
+        # Базовая фильтрация мусора
+        if len(brand) < 2 or len(brand) > 50:
+            continue
+        if brand.isdigit():
+            continue
+        if brand.lower() in garbage_words:
+            continue
+            
+        # Убираем только очевидные артикулы (начинающиеся с цифр)
+        if brand[0].isdigit() and len(brand) > 3:
+            continue
 
-def filter_armtek_brands(brands: List[str]) -> List[str]:
-	"""Фильтрация брендов Armtek с минимальной очисткой от мусора"""
-	filtered: List[str] = []
-	
-	# Минимальный список мусорных слов - только самые очевидные
-	garbage_words = {
-		'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
-		'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
-		'armtekparts', 'armtekru', 'canvastext', 'roboto', 'ldwbs', 'oracj', 'twmh',
-		'brand', 'new', 'test', 'tag', 'date', 'end', 'error', 'function', 'manager',
-		# Только самые очевидные мусорные слова из интерфейса
-		'главная', 'войти', 'корзина', 'каталог', 'поиск', 'новости', 'акции',
-		'контакты', 'о компании', 'правовая информация', 'программа лояльности',
-		# Паразитные фрагменты из SSR/шифрования
-		'nxmupi', 'wti'
-	}
-	
-	for b in brands:
-		brand = b.strip()
-		if not brand:
-			continue
-			
-		# Базовая фильтрация мусора
-		if len(brand) < 2 or len(brand) > 50:
-			continue
-		if brand.isdigit():
-			continue
-		if brand.lower() in garbage_words:
-			continue
-			
-		# Убираем только очевидные артикулы (начинающиеся с цифр)
-		if brand[0].isdigit() and len(brand) > 3:
-			continue
-
-		# Убираем строки с непонятной смесью регистров типа NxMUPi, WtI
-		letters_only = re.sub(r'[^A-Za-zА-Яа-яЁё]', '', brand)
-		if 2 <= len(letters_only) <= 6 and re.search(r'[A-Z][a-z][A-Z]', brand):
-			continue
-			
-		filtered.append(brand)
-		
-	return sorted(set(filtered))
-
-def parse_armtek_http_response(html: str, artikul: str) -> List[str]:
-	"""Парсит HTML ответа Armtek, извлекая бренды"""
-	soup = BeautifulSoup(html, 'html.parser')
-	brands: Set[str] = set()
-	
-	# 1) Явные селекторы
-	selectors = [
-		'.font__body2.brand--selecting',
-		'.brand--selecting',
-		'.brand-name', '.product-brand', '.manufacturer-name',
-		'.vendor-title', '.item-brand', '.brand__name',
-		'.catalog-item__brand', '.product__brand', '.item__brand'
-	]
-	for sel in selectors:
-		for el in soup.select(sel):
-			text = el.get_text(strip=True)
-			if text:
-				brands.add(text)
-	
-	# 2) data-brand
-	for el in soup.find_all(attrs={"data-brand": True}):
-		val = (el.get("data-brand") or '').strip()
-		if val:
-			brands.add(val)
-	
-	# 3) JSON-LD/скрипты
-	for script in soup.find_all('script'):
-		if not script.string:
-			continue
-		for m in re.findall(r'"brand"\s*:\s*"([^"]+)"', script.string):
-			m = m.strip()
-			if m:
-				brands.add(m)
-	
-	# 4) Текстовая эвристика (с поддержкой кириллицы)
-	if not brands:
-		text_content = soup.get_text(" ")
-		for word in re.findall(r'\b[А-ЯЁA-Z][А-ЯЁA-Zа-яёa-z0-9-]{1,19}\b', text_content):
-			if len(word) > 1 and not word.isdigit():
-				brands.add(word)
-	
-	filtered = filter_armtek_brands(list(brands))
-	log_debug(f"Armtek HTTP: найдено {len(filtered)} брендов для {artikul}")
-	return filtered
+        # Убираем строки с непонятной смесью регистров
+        letters_only = re.sub(r'[^A-Za-zА-Яа-яЁё]', '', brand)
+        if 2 <= len(letters_only) <= 6 and re.search(r'[A-Z][a-z][A-Z]', brand):
+            continue
+            
+        filtered.append(brand)
+        
+    return sorted(set(filtered))
 
 def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> List[str]:
-    """Получает бренды с Emex по артикулу с улучшенной обработкой блокировок"""
+    """Получает бренды с Emex по артикулу"""
     try:
         encoded_artikul = quote(artikul)
         
-        # Ротация User-Agent для обхода блокировок
+        # Ротация User-Agent
         user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
         ]
         
         headers = {
@@ -1482,21 +1008,6 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             "Accept": "application/json, text/plain, */*",
             "Referer": f"https://emex.ru/search?detailNum={encoded_artikul}",
             "X-Requested-With": "XMLHttpRequest",
-            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Accept-Encoding": "gzip, deflate",
-            "Connection": "keep-alive",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
-            "Origin": "https://emex.ru",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Dest": "empty",
-            "DNT": "1",
-            "Host": "emex.ru",
-            "Sec-Ch-Ua": '"Chromium";v="139", "Not=A?Brand";v="99"',
-            "Sec-Ch-Ua-Platform": '"Windows"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Content-Type": "application/json",
         }
         
         # Подготовим варианты записи артикула
@@ -1507,8 +1018,6 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                 raw_num.upper(),
                 raw_num.replace('-', ''),
                 raw_num.replace('-', '').upper(),
-                raw_num.replace(' ', ''),
-                raw_num.replace(' ', '').upper(),
             ]))
         except Exception:
             candidate_nums = [artikul]
@@ -1517,14 +1026,13 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
         session = requests.Session()
         session.headers.update(headers)
         
-        # Настройка прокси - принудительно используем прокси для Emex
+        # Настройка прокси
         proxies = None
         if proxy:
             try:
-                # Если proxy - это строка, преобразуем в словарь
                 if isinstance(proxy, str):
                     if proxy.startswith('http://'):
-                        proxy = proxy[7:]  # Убираем 'http://'
+                        proxy = proxy[7:]
                     proxies = {
                         'http': f'http://{proxy}',
                         'https': f'http://{proxy}'
@@ -1536,14 +1044,11 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             except Exception as e:
                 log_debug(f"Emex: ошибка настройки прокси {proxy}: {str(e)}")
         else:
-            # Если прокси не передан, получаем его автоматически
             try:
                 proxy_dict = get_next_proxy()
                 if proxy_dict:
                     session.proxies.update(proxy_dict)
                     log_debug(f"Emex: автоматически получен прокси")
-                else:
-                    log_debug(f"Emex: прокси недоступен, пробуем без прокси")
             except Exception as e:
                 log_debug(f"Emex: ошибка получения прокси: {str(e)}")
         
@@ -1554,11 +1059,10 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
         except Exception:
             pass
         
-        # Прогрев сессии (сокращенный)
+        # Прогрев сессии
         try:
-            log_debug(f"Emex: прогрев сессии с прокси: {proxies is not None}")
             session.get("https://emex.ru/", timeout=5, proxies=proxies)
-            time.sleep(0.5)  # Небольшая пауза между запросами
+            time.sleep(0.5)
         except Exception as e:
             log_debug(f"Emex: ошибка прогрева сессии: {str(e)}")
             pass
@@ -1568,20 +1072,18 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             session.cookies.get("XSRF-TOKEN")
             or session.cookies.get("xsrf-token")
             or session.cookies.get("X_XSRF_TOKEN")
-            or session.cookies.get("csrf-token")
         )
         if xsrf_token:
             session.headers.update({"X-XSRF-TOKEN": xsrf_token})
 
-        # Основные попытки с разными параметрами (сокращенный список)
+        # Основные попытки
         api_variants = [
             {"showAll": "false", "isHeaderSearch": "true"},
             {"showAll": "true", "isHeaderSearch": "true"},
         ]
         
-        # Счетчик попыток для предотвращения бесконечных циклов
         total_attempts = 0
-        max_total_attempts = 3  # Уменьшаем количество попыток для ускорения
+        max_total_attempts = 2  # Уменьшено количество попыток
         
         for num in candidate_nums:
             num_enc = quote(num)
@@ -1597,176 +1099,93 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                         f"&locationId=263&showAll={params['showAll']}&isHeaderSearch={params['isHeaderSearch']}"
                     )
                     
-                    log_debug(f"Emex API: попытка {total_attempts + 1} для {artikul} с параметрами {params}")
+                    log_debug(f"Emex API: попытка {total_attempts + 1} для {artikul}")
                     
-                    # Пробуем с разными заголовками сжатия (сокращенный список)
-                    for compression_headers in [
-                        {"Accept-Encoding": "gzip, deflate"},
-                        {"Accept-Encoding": "identity"},
-                    ]:
-                        if total_attempts >= max_total_attempts:
-                            break
-                            
-                        try:
-                            current_headers = headers.copy()
-                            current_headers.update(compression_headers)
-                            
-                            response = session.get(
-                                api_url,
-                                headers=current_headers,
-                                timeout=5,  # Еще больше уменьшаем таймаут
-                                proxies=proxies
-                            )
-                            
-                            total_attempts += 1
-                            
-                            if response.status_code == 200:
-                                content_type = response.headers.get('content-type', '').lower()
-                                if 'application/json' in content_type:
-                                    try:
-                                        data = response.json()
-                                        brands = set()
-                                        
-                                        # Обработка структуры ответа Emex
-                                        search_result = data.get("searchResult", {})
-                                        if search_result:
-                                            # Проверяем makes - основной источник брендов
-                                            makes = search_result.get("makes", {})
-                                            if makes:
-                                                makes_list = makes.get("list", [])
-                                                for item in makes_list:
-                                                    if isinstance(item, dict):
-                                                        brand = item.get("make")
-                                                        if brand and brand.strip():
-                                                            brands.add(brand.strip())
-                                                            log_debug(f"Emex API: добавлен бренд '{brand}' для {artikul}")
-                                            
-                                            # Дополнительно берем бренд из searchResult.make
-                                            sr_make = search_result.get("make")
-                                            if isinstance(sr_make, str) and sr_make.strip():
-                                                brands.add(sr_make.strip())
-                                                log_debug(f"Emex API: добавлен бренд из searchResult.make '{sr_make}' для {artikul}")
-                                        
-                                        if brands:
-                                            log_debug(f"Emex API: найдено {len(brands)} брендов для {artikul}")
-                                            return sorted(list(brands))
-                                        
-                                    except json.JSONDecodeError as e:
-                                        log_debug(f"Emex API: ошибка JSON для {artikul}: {str(e)}")
-                                        continue
-                            
-                            elif response.status_code == 429:  # Rate limit
-                                log_debug(f"Emex API: Rate limit для {artikul}, пропускаем")
-                                break  # Выходим из цикла при rate limit
-                            elif response.status_code == 403:  # Forbidden
-                                log_debug(f"Emex API: 403 Forbidden для {artikul}, помечаем прокси как проблемный и пробуем следующий")
-                                try:
-                                    # Помечаем текущий прокси как плохой
-                                    current_http = session.proxies.get('http') or ''
-                                    if current_http:
-                                        mark_proxy_bad(current_http)
-                                except Exception:
-                                    pass
-                                # Меняем прокси
-                                new_proxy = get_next_proxy()
-                                if new_proxy:
-                                    session.proxies.update(new_proxy)
-                                break  # Переходим к следующей конфигурации
-                            
-                        except requests.exceptions.Timeout:
-                            log_debug(f"Emex API: таймаут для {artikul} (попытка {total_attempts})")
-                            if total_attempts >= max_total_attempts:
-                                log_debug(f"Emex API: слишком много таймаутов для {artikul}, пропускаем")
-                                break
-                            # При таймауте пробуем сменить прокси
-                            if not proxy:
-                                try:
-                                    new_proxy_dict = get_next_proxy()
-                                    if new_proxy_dict:
-                                        session.proxies.update(new_proxy_dict)
-                                        log_debug(f"Emex API: смена прокси после таймаута")
-                                except Exception:
-                                    pass
-                            continue
-                        except requests.exceptions.RequestException as e:
-                            log_debug(f"Emex API: ошибка запроса для {artikul}: {str(e)}")
-                            # При ошибке запроса тоже пробуем сменить прокси
-                            if not proxy:
-                                try:
-                                    # Если это ProxyError или 502, помечаем текущий прокси как проблемный
-                                    try:
-                                        from requests.exceptions import ProxyError as _ProxyError
-                                        if isinstance(e, _ProxyError) or '502 Bad Gateway' in str(e):
-                                            current_http = session.proxies.get('http') or ''
-                                            if current_http:
-                                                mark_proxy_bad(current_http)
-                                    except Exception:
-                                        pass
-                                    new_proxy_dict = get_next_proxy()
-                                    if new_proxy_dict:
-                                        session.proxies.update(new_proxy_dict)
-                                        log_debug(f"Emex API: смена прокси после ошибки")
-                                except Exception:
-                                    pass
-                            continue
-                        
-                        # Уменьшенная пауза между попытками
-                        time.sleep(0.1)  # Уменьшаем паузу для ускорения
-                
-                except Exception as e:
-                    log_debug(f"Emex API: ошибка для {artikul}: {str(e)}")
+                    response = session.get(
+                        api_url,
+                        headers=headers,
+                        timeout=5,
+                        proxies=proxies
+                    )
+                    
                     total_attempts += 1
+                    
+                    if response.status_code == 200:
+                        content_type = response.headers.get('content-type', '').lower()
+                        if 'application/json' in content_type:
+                            try:
+                                data = response.json()
+                                brands = set()
+                                
+                                search_result = data.get("searchResult", {})
+                                if search_result:
+                                    makes = search_result.get("makes", {})
+                                    if makes:
+                                        makes_list = makes.get("list", [])
+                                        for item in makes_list:
+                                            if isinstance(item, dict):
+                                                brand = item.get("make")
+                                                if brand and brand.strip():
+                                                    brands.add(brand.strip())
+                                                    log_debug(f"Emex API: добавлен бренд '{brand}' для {artikul}")
+                                    
+                                    sr_make = search_result.get("make")
+                                    if isinstance(sr_make, str) and sr_make.strip():
+                                        brands.add(sr_make.strip())
+                                        log_debug(f"Emex API: добавлен бренд из searchResult.make '{sr_make}' для {artikul}")
+                                
+                                if brands:
+                                    log_debug(f"Emex API: найдено {len(brands)} брендов для {artikul}")
+                                    return sorted(list(brands))
+                                
+                            except json.JSONDecodeError as e:
+                                log_debug(f"Emex API: ошибка JSON для {artikul}: {str(e)}")
+                                continue
+                    
+                    elif response.status_code == 429:
+                        log_debug(f"Emex API: Rate limit для {artikul}, пропускаем")
+                        break
+                    elif response.status_code == 403:
+                        log_debug(f"Emex API: 403 Forbidden для {artikul}, помечаем прокси как проблемный")
+                        try:
+                            current_http = session.proxies.get('http') or ''
+                            if current_http:
+                                mark_proxy_bad(current_http)
+                        except Exception:
+                            pass
+                        new_proxy = get_next_proxy()
+                        if new_proxy:
+                            session.proxies.update(new_proxy)
+                        break
+                    
+                except requests.exceptions.Timeout:
+                    log_debug(f"Emex API: таймаут для {artikul} (попытка {total_attempts})")
+                    if total_attempts >= max_total_attempts:
+                        log_debug(f"Emex API: слишком много таймаутов для {artikul}, пропускаем")
+                        break
+                    if not proxy:
+                        try:
+                            new_proxy_dict = get_next_proxy()
+                            if new_proxy_dict:
+                                session.proxies.update(new_proxy_dict)
+                                log_debug(f"Emex API: смена прокси после таймаута")
+                        except Exception:
+                            pass
                     continue
+                except requests.exceptions.RequestException as e:
+                    log_debug(f"Emex API: ошибка запроса для {artikul}: {str(e)}")
+                    if not proxy:
+                        try:
+                            new_proxy_dict = get_next_proxy()
+                            if new_proxy_dict:
+                                session.proxies.update(new_proxy_dict)
+                                log_debug(f"Emex API: смена прокси после ошибки")
+                        except Exception:
+                            pass
+                    continue
+                
+                time.sleep(0.1)
 
-        # Если все попытки не удались, пробуем SeleniumFallback (ограниченный)
-        log_debug(f"Emex API: не удалось получить бренды для {artikul}, пробуем Selenium fallback")
-        try:
-            # Легкий парсинг страницы поиска: бренды часто присутствуют в блоке фильтров/подсказок
-            from selenium.webdriver.common.by import By as _By
-            brands = set()
-            opts = Options()
-            opts.add_argument('--headless=new')
-            opts.add_argument('--no-sandbox')
-            opts.add_argument('--disable-dev-shm-usage')
-            opts.add_argument('--blink-settings=imagesEnabled=false')
-            tmp_dir = tempfile.mkdtemp(prefix=f"chrome_emex_{uuid.uuid4().hex[:8]}_")
-            opts.add_argument(f'--user-data-dir={tmp_dir}')
-            drv = webdriver.Chrome(options=opts)
-            drv.set_page_load_timeout(15)
-            try:
-                search_url = f"https://emex.ru/search?detailNum={quote(artikul)}"
-                drv.get(search_url)
-                WebDriverWait(drv, 10).until(lambda d: d.execute_script('return document.readyState') == 'complete')
-                # Ищем бренды в фильтрах или в блоке makes
-                possible_selectors = [
-                    'div.makes-list span',
-                    '[data-qa="makes-filter"] span',
-                    'div[data-qa="brand-name"]',
-                ]
-                for sel in possible_selectors:
-                    try:
-                        elems = drv.find_elements(_By.CSS_SELECTOR, sel)
-                        for el in elems:
-                            txt = el.text.strip()
-                            if txt and len(txt) > 1 and not txt.isdigit():
-                                brands.add(txt)
-                    except Exception:
-                        continue
-            finally:
-                try:
-                    drv.quit()
-                except Exception:
-                    pass
-                try:
-                    import shutil
-                    shutil.rmtree(tmp_dir, ignore_errors=True)
-                except Exception:
-                    pass
-            if brands:
-                log_debug(f"Emex Selenium fallback: найдено {len(brands)} брендов для {artikul}")
-                return sorted(list(brands))
-        except Exception as _e:
-            log_debug(f"Emex Selenium fallback ошибка: {str(_e)}")
         return []
         
     except Exception as e:
@@ -1776,225 +1195,14 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
 # Инициализация прокси при импорте модуля
 load_proxies_from_file()
 
-def parse_armtek_alternative(artikul: str, proxy: Optional[str] = None) -> List[str]:
-    """Альтернативный метод парсинга Armtek через различные эндпоинты"""
-    alternative_urls = [
-        f"https://armtek.ru/catalog/search?q={artikul}",
-        f"https://armtek.ru/products/search?query={artikul}",
-        f"https://armtek.ru/search?q={artikul}",
-        f"https://armtek.ru/catalog?search={artikul}",
-        f"https://armtek.ru/search?query={artikul}",
-        f"https://armtek.ru/catalog/search?query={artikul}",
-        f"https://armtek.ru/products?search={artikul}",
-        f"https://armtek.ru/items?q={artikul}"
-    ]
-    
-    for url in alternative_urls:
-        try:
-            log_debug(f"Armtek альтернативный: пробуем {url}")
-            response = make_request(url, proxy, max_retries=1)
-            if response and response.status_code == 200:
-                brands = parse_armtek_http_response(response.text, artikul)
-                if brands:
-                    log_debug(f"Armtek альтернативный: найдено {len(brands)} брендов на {url}")
-                    return brands
-        except Exception as e:
-            log_debug(f"Ошибка запроса для {url}: {str(e)} (попытка 1)")
-            continue
-    
-    log_debug(f"Armtek альтернативный: все эндпоинты не дали результатов для {artikul}")
-    return []
+# Функция для глобальной очистки ресурсов
+def global_cleanup():
+    """Глобальная очистка всех ресурсов"""
+    log_debug("Запуск глобальной очистки ресурсов...")
+    cleanup_driver_pool()
+    force_cleanup_chrome_processes()
+    log_debug("Глобальная очистка завершена")
 
-# Вспомогательные методы для работы с пулом драйверов Armtek
-def _create_chrome_driver_minimal():
-    """Создает минимальный Chrome драйвер для Armtek"""
-    options = Options()
-    options.add_argument('--headless=new')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--disable-extensions')
-    options.add_argument('--disable-plugins')
-    options.add_argument('--disable-images')
-    options.add_argument('--disable-web-security')
-    options.add_argument('--disable-features=VizDisplayCompositor')
-    options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
-    
-    # Уникальная временная директория для каждого драйвера
-    temp_dir = os.path.join(tempfile.gettempdir(), f'chrome_armtek_{uuid.uuid4().hex[:8]}')
-    options.add_argument(f'--user-data-dir={temp_dir}')
-    
-    try:
-        driver = webdriver.Chrome(options=options)
-        driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-        driver.implicitly_wait(2)
-        return driver
-    except Exception as e:
-        log_debug(f"Ошибка создания драйвера: {str(e)}")
-        return None
-
-def _parse_with_driver(artikul: str, driver):
-    """Парсит Armtek с использованием существующего драйвера"""
-    try:
-        url = f"https://armtek.ru/search?text={quote(artikul)}"
-        driver.get(url)
-        
-        # Ждем загрузки страницы
-        time.sleep(2)
-        
-        # Проверяем на "ничего не найдено"
-        page_text = driver.page_source.lower()
-        if 'ничего не найдено' in page_text or 'не найдено' in page_text:
-            return []
-        
-        # Ищем бренды по селекторам
-        brands = set()
-        
-        # Основные селекторы для брендов
-        selectors = [
-            '.font__body2.brand--selecting',
-            '.brand--selecting',
-            '[data-brand]',
-            '.brand-name'
-        ]
-        
-        for selector in selectors:
-            try:
-                elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                for elem in elements:
-                    brand_text = elem.text.strip()
-                    if brand_text and len(brand_text) > 1:
-                        brands.add(brand_text.upper())
-            except Exception:
-                continue
-        
-        # Если ничего не найдено, пробуем парсинг по тексту
-        if not brands:
-            brands = parse_armtek_page_text(driver.page_source)
-        
-        return list(brands)
-        
-    except Exception as e:
-        log_debug(f"Ошибка парсинга с драйвером для {artikul}: {str(e)}")
-        return []
-
-# Добавляем методы к функции get_brands_by_artikul_armtek
-get_brands_by_artikul_armtek._create_chrome_driver_minimal = _create_chrome_driver_minimal
-get_brands_by_artikul_armtek._parse_with_driver = _parse_with_driver
-
-def parse_armtek_cross_numbers(artikul: str, proxy: Optional[str] = None, logger=None) -> List[str]:
-	"""Selenium-парсинг Armtek: ищем реальные кросс-номера вместо выдуманных артикулов"""
-	cross_numbers: Set[str] = set()
-	temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_{uuid.uuid4().hex[:8]}_")
-	try:
-		log_debug(f"Armtek Selenium: поиск кросс-номеров для артикула {artikul}")
-		# Если прокси содержит авторизацию, игнорируем его для Selenium (Chrome не поддерживает в CLI)
-		effective_proxy = None if (proxy and '@' in proxy) else proxy
-		driver = _create_chrome_driver(temp_dir=temp_dir, with_user_data=True, proxy=effective_proxy)
-		if driver is None:
-			log_debug("Armtek Selenium: не удалось создать драйвер")
-			return []
-		url = f"https://armtek.ru/search?text={artikul}"
-		driver.get(url)
-		
-		# Явные ожидания появления результатов
-		wait = WebDriverWait(driver, SELENIUM_TIMEOUT)
-		selectors_to_wait = [
-			(By.CSS_SELECTOR, '.results-list__items'),
-			(By.CSS_SELECTOR, '.font__body2.brand--selecting'),
-			(By.CSS_SELECTOR, '.font__caption1.brand--selectable'),
-		]
-		for by, sel in selectors_to_wait:
-			try:
-				wait.until(EC.presence_of_element_located((by, sel)))
-				break
-			except Exception:
-				continue
-		
-		# Прокручиваем страницу для подгрузки
-		try:
-			driver.execute_script('window.scrollTo(0, document.body.scrollHeight/2);')
-			time.sleep(0.2)
-			driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
-			time.sleep(0.2)
-		except Exception:
-			pass
-		
-		# Ранний выход: проверяем блок "ничего не найдено"
-		try:
-			nf = driver.find_elements(By.CSS_SELECTOR, 'div.not-found__title p.font__headline5, p.font__headline5')
-			if any('ничего не найдено' in (el.text or '').lower() for el in nf):
-				msg = f"Armtek: по запросу {artikul} ничего не найдено"
-				log_debug(msg)
-				if logger:
-					try:
-						logger(msg)
-					except Exception:
-						pass
-				return []
-		except Exception:
-			pass
-
-		# Ищем реальные кросс-номера в карточках товаров
-		try:
-			# Ищем артикулы в карточках товаров
-			article_selectors = [
-				'.product-card__article',
-				'.article-number',
-				'.product-article',
-				'.item-article',
-				'.catalog-item__article',
-				'[data-article]',
-				'.font__caption1.article--selectable',
-			]
-			
-			for selector in article_selectors:
-				try:
-					elements = driver.find_elements(By.CSS_SELECTOR, selector)
-					for el in elements:
-						text = el.text.strip()
-						if text and len(text) > 3 and len(text) < 30:
-							# Проверяем, что это похоже на артикул
-							if re.match(r'^[A-Z0-9\-\.]+$', text):
-								cross_numbers.add(text)
-								log_debug(f"Armtek: найден кросс-номер '{text}' по селектору '{selector}'")
-				except Exception as e:
-					log_debug(f"Armtek Selenium: ошибка поиска по селектору {selector}: {str(e)}")
-			
-			# Если не нашли артикулы, ищем в тексте карточек
-			if not cross_numbers:
-				try:
-					product_cards = driver.find_elements(By.CSS_SELECTOR, '.product-card, .catalog-item, .item-card')
-					for card in product_cards:
-						card_text = card.text
-						# Ищем артикулы в тексте карточки
-						articles = re.findall(r'\b[A-Z]{2,}[0-9\-\.]{2,}\b', card_text)
-						for article in articles:
-							if len(article) > 3 and len(article) < 30:
-								cross_numbers.add(article)
-								log_debug(f"Armtek: найден кросс-номер '{article}' в тексте карточки")
-				except Exception as e:
-					log_debug(f"Armtek Selenium: ошибка поиска в карточках: {str(e)}")
-			
-		except Exception as e:
-			log_debug(f"Armtek Selenium: ошибка поиска кросс-номеров: {str(e)}")
-		
-		# Фильтруем результаты - убираем исходный артикул и слишком похожие
-		filtered_cross_numbers = set()
-		for cross in cross_numbers:
-			if cross != artikul and not cross.startswith(artikul) and not artikul.startswith(cross):
-				filtered_cross_numbers.add(cross)
-		
-		if filtered_cross_numbers:
-			log_debug(f"Armtek: найдено {len(filtered_cross_numbers)} уникальных кросс-номеров")
-			return sorted(list(filtered_cross_numbers))
-		else:
-			log_debug("Armtek: кросс-номера не найдены")
-			return []
-		
-	finally:
-		try:
-			driver.quit()
-		except Exception:
-			pass
-		shutil.rmtree(temp_dir, ignore_errors=True)
+# Регистрируем очистку при завершении
+import atexit
+atexit.register(global_cleanup)
