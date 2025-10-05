@@ -201,7 +201,9 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                     min_price_selectors = [
                         '.SelectedOffer__price___Xzg0ZD',
                         '.SelectedOffer__price___Xzg0ZD span',
-                        'div.SelectedOffer__price___Xzg0ZD'
+                        'div.SelectedOffer__price___Xzg0ZD',
+                        'div[class*="SelectedOffer__price"]',
+                        'span[class*="SelectedOffer__price"]'
                     ]
                     
                     for selector in min_price_selectors:
@@ -249,33 +251,39 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                     # Ищем цену в правильной ячейке - пробуем несколько вариантов
                                     price_val = None
                                     
-                                    # Сначала пробуем стандартную ячейку цены (7-я колонка)
-                                    if len(cells) > 7:
+                                    # Сначала ищем в ячейках с классом price или в div с ценой
+                                    for cell in cells:
+                                        # Ищем в ячейках с классом содержащим price
+                                        if 'price' in str(cell.get('class', [])).lower():
+                                            price_text = cell.get_text(strip=True)
+                                            price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
+                                            if price_match:
+                                                price_val = float(price_match.group(1).replace(' ', ''))
+                                                break
+                                        
+                                        # Ищем в div с ценой внутри ячейки
+                                        price_divs = cell.find_all('div', class_=re.compile(r'.*[Pp]rice.*'))
+                                        if not price_divs:
+                                            price_divs = cell.find_all('span', class_=re.compile(r'.*[Pp]rice.*'))
+                                        if not price_divs:
+                                            price_divs = cell.find_all(['div', 'span'], class_=re.compile(r'.*NonRetailAppraiseTR__priceWrapper.*'))
+                                        
+                                        for price_div in price_divs:
+                                            price_text = price_div.get_text(strip=True)
+                                            price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
+                                            if price_match:
+                                                price_val = float(price_match.group(1).replace(' ', ''))
+                                                break
+                                        
+                                        if price_val is not None:
+                                            break
+                                    
+                                    # Если не нашли, пробуем стандартную ячейку цены (7-я колонка)
+                                    if price_val is None and len(cells) > 7:
                                         price_text = cells[7].get_text(strip=True)
                                         price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
                                         if price_match:
                                             price_val = float(price_match.group(1).replace(' ', ''))
-                                    
-                                    # Если не нашли, ищем в ячейках с классом price
-                                    if price_val is None:
-                                        for cell in cells:
-                                            if 'price' in cell.get('class', []) or 'Price' in str(cell.get('class', [])):
-                                                price_text = cell.get_text(strip=True)
-                                                price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
-                                                if price_match:
-                                                    price_val = float(price_match.group(1).replace(' ', ''))
-                                                    break
-                                    
-                                    # Если все еще не нашли, ищем в div с ценой внутри ячеек
-                                    if price_val is None:
-                                        for cell in cells:
-                                            price_div = cell.find('div', class_=re.compile(r'.*[Pp]rice.*'))
-                                            if price_div:
-                                                price_text = price_div.get_text(strip=True)
-                                                price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
-                                                if price_match:
-                                                    price_val = float(price_match.group(1).replace(' ', ''))
-                                                    break
                                     
                                     if price_val is not None:
                                         # Извлекаем цифры из кода поставщика
@@ -361,7 +369,9 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                     min_price_selectors = [
                         '.SelectedOffer__price___Xzg0ZD',
                         '.SelectedOffer__price___Xzg0ZD span',
-                        'div.SelectedOffer__price___Xzg0ZD'
+                        'div.SelectedOffer__price___Xzg0ZD',
+                        'div[class*="SelectedOffer__price"]',
+                        'span[class*="SelectedOffer__price"]'
                     ]
                     
                     for selector in min_price_selectors:
@@ -396,36 +406,38 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                         # Ищем цену в правильной ячейке - пробуем несколько вариантов
                         price_val = None
                         
-                        # Сначала пробуем стандартную ячейку цены (7-я колонка)
-                        if len(cells) > 7:
-                            price_text = cells[7].text.strip()
-                            price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
-                            if price_match:
-                                price_val = float(price_match.group(1).replace(' ', ''))
-                        
-                        # Если не нашли, ищем в ячейках с классом price
-                        if price_val is None:
-                            for cell in cells:
-                                cell_class = cell.get_attribute('class') or ''
-                                if 'price' in cell_class.lower():
-                                    price_text = cell.text.strip()
-                                    price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
-                                    if price_match:
-                                        price_val = float(price_match.group(1).replace(' ', ''))
-                                        break
-                        
-                        # Если все еще не нашли, ищем в div с ценой внутри ячеек
-                        if price_val is None:
-                            for cell in cells:
-                                try:
-                                    price_div = cell.find_element(By.CSS_SELECTOR, 'div[class*="price"], div[class*="Price"]')
+                        # Сначала ищем в ячейках с классом price или в div с ценой
+                        for cell in cells:
+                            # Ищем в ячейках с классом содержащим price
+                            cell_class = cell.get_attribute('class') or ''
+                            if 'price' in cell_class.lower():
+                                price_text = cell.text.strip()
+                                price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
+                                if price_match:
+                                    price_val = float(price_match.group(1).replace(' ', ''))
+                                    break
+                            
+                            # Ищем в div с ценой внутри ячейки
+                            try:
+                                price_divs = cell.find_elements(By.CSS_SELECTOR, 'div[class*="price"], span[class*="price"], div[class*="NonRetailAppraiseTR__priceWrapper"]')
+                                for price_div in price_divs:
                                     price_text = price_div.text.strip()
                                     price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
                                     if price_match:
                                         price_val = float(price_match.group(1).replace(' ', ''))
                                         break
-                                except Exception:
-                                    continue
+                            except Exception:
+                                continue
+                            
+                            if price_val is not None:
+                                break
+                        
+                        # Если не нашли, пробуем стандартную ячейку цены (7-я колонка)
+                        if price_val is None and len(cells) > 7:
+                            price_text = cells[7].text.strip()
+                            price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
+                            if price_match:
+                                price_val = float(price_match.group(1).replace(' ', ''))
                         
                         if price_val is not None:
                             # Извлекаем цифры из кода поставщика
