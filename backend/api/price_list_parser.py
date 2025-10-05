@@ -198,14 +198,22 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                     print(f"[DEBUG] HTML сохранен в /tmp/autopiter_debug.html")
                     
                     # Ищем минимальную цену конкурента из блока SelectedOffer
-                    min_price_el = card_soup.select_one('.SelectedOffer__price___Xzg0ZD')
-                    if min_price_el:
-                        min_price_text = min_price_el.get_text(strip=True)
-                        min_match = re.search(r'(\d[\d\s]*)', min_price_text.replace('\xa0', ' '))
-                        if min_match:
-                            competitor_min = float(min_match.group(1).replace(' ', ''))
-                            print(f"[DEBUG] Найдена минимальная цена конкурента: {competitor_min}")
-                            result['min_competitor_price'] = competitor_min
+                    min_price_selectors = [
+                        '.SelectedOffer__price___Xzg0ZD',
+                        '.SelectedOffer__price___Xzg0ZD span',
+                        'div.SelectedOffer__price___Xzg0ZD'
+                    ]
+                    
+                    for selector in min_price_selectors:
+                        min_price_el = card_soup.select_one(selector)
+                        if min_price_el:
+                            min_price_text = min_price_el.get_text(strip=True)
+                            min_match = re.search(r'(\d[\d\s]*)', min_price_text.replace('\xa0', ' '))
+                            if min_match:
+                                competitor_min = float(min_match.group(1).replace(' ', ''))
+                                print(f"[DEBUG] Найдена минимальная цена конкурента: {competitor_min}")
+                                result['min_competitor_price'] = competitor_min
+                                break
                     
                     # Ищем таблицу с предложениями
                     tables = card_soup.find_all('table')
@@ -237,15 +245,41 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                 # Регион | Поставщик | Производитель | Номер | Наименование | Наличие | Доставка | Цена | Заказ
                                 if len(cells) >= 8:
                                     supplier_text = cells[1].get_text(strip=True)  # Колонка "Поставщик"
-                                    price_text = cells[7].get_text(strip=True)     # Колонка "Цена"
                                     
-                                    # Извлекаем цифры из кода поставщика
-                                    sup_digits = re.sub(r'\D+', '', supplier_text)
+                                    # Ищем цену в правильной ячейке - пробуем несколько вариантов
+                                    price_val = None
                                     
-                                    # Извлекаем цену
-                                    price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
-                                    if price_match:
-                                        price_val = float(price_match.group(1).replace(' ', ''))
+                                    # Сначала пробуем стандартную ячейку цены (7-я колонка)
+                                    if len(cells) > 7:
+                                        price_text = cells[7].get_text(strip=True)
+                                        price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
+                                        if price_match:
+                                            price_val = float(price_match.group(1).replace(' ', ''))
+                                    
+                                    # Если не нашли, ищем в ячейках с классом price
+                                    if price_val is None:
+                                        for cell in cells:
+                                            if 'price' in cell.get('class', []) or 'Price' in str(cell.get('class', [])):
+                                                price_text = cell.get_text(strip=True)
+                                                price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
+                                                if price_match:
+                                                    price_val = float(price_match.group(1).replace(' ', ''))
+                                                    break
+                                    
+                                    # Если все еще не нашли, ищем в div с ценой внутри ячеек
+                                    if price_val is None:
+                                        for cell in cells:
+                                            price_div = cell.find('div', class_=re.compile(r'.*[Pp]rice.*'))
+                                            if price_div:
+                                                price_text = price_div.get_text(strip=True)
+                                                price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
+                                                if price_match:
+                                                    price_val = float(price_match.group(1).replace(' ', ''))
+                                                    break
+                                    
+                                    if price_val is not None:
+                                        # Извлекаем цифры из кода поставщика
+                                        sup_digits = re.sub(r'\D+', '', supplier_text)
                                         
                                         print(f"[DEBUG] Найден поставщик '{supplier_text}' ({sup_digits}) с ценой {price_val}")
                                         
@@ -324,15 +358,24 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                 
                 # Ищем минимальную цену конкурента
                 if result['min_competitor_price'] is None:
-                    try:
-                        min_price_el = driver.find_element(By.CSS_SELECTOR, '.SelectedOffer__price___Xzg0ZD')
-                        min_price_text = min_price_el.text.strip()
-                        min_match = re.search(r'(\d[\d\s]*)', min_price_text.replace('\xa0', ' '))
-                        if min_match:
-                            result['min_competitor_price'] = float(min_match.group(1).replace(' ', ''))
-                            print(f"[DEBUG] Selenium: найдена минимальная цена конкурента: {result['min_competitor_price']}")
-                    except Exception as e:
-                        print(f"[DEBUG] Selenium: не удалось найти минимальную цену: {str(e)}")
+                    min_price_selectors = [
+                        '.SelectedOffer__price___Xzg0ZD',
+                        '.SelectedOffer__price___Xzg0ZD span',
+                        'div.SelectedOffer__price___Xzg0ZD'
+                    ]
+                    
+                    for selector in min_price_selectors:
+                        try:
+                            min_price_el = driver.find_element(By.CSS_SELECTOR, selector)
+                            min_price_text = min_price_el.text.strip()
+                            min_match = re.search(r'(\d[\d\s]*)', min_price_text.replace('\xa0', ' '))
+                            if min_match:
+                                result['min_competitor_price'] = float(min_match.group(1).replace(' ', ''))
+                                print(f"[DEBUG] Selenium: найдена минимальная цена конкурента: {result['min_competitor_price']}")
+                                break
+                        except Exception as e:
+                            print(f"[DEBUG] Selenium: не удалось найти минимальную цену по селектору {selector}: {str(e)}")
+                            continue
                 
                 # Парсим таблицу с предложениями
                 rows = table.find_elements(By.TAG_NAME, "tr")
@@ -349,15 +392,44 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                             
                         # Получаем текст из ячеек
                         supplier_text = cells[1].text.strip()  # Поставщик
-                        price_text = cells[7].text.strip()     # Цена
                         
-                        # Извлекаем цифры из кода поставщика
-                        sup_digits = re.sub(r'\D+', '', supplier_text)
+                        # Ищем цену в правильной ячейке - пробуем несколько вариантов
+                        price_val = None
                         
-                        # Извлекаем цену
-                        price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
-                        if price_match:
-                            price_val = float(price_match.group(1).replace(' ', ''))
+                        # Сначала пробуем стандартную ячейку цены (7-я колонка)
+                        if len(cells) > 7:
+                            price_text = cells[7].text.strip()
+                            price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
+                            if price_match:
+                                price_val = float(price_match.group(1).replace(' ', ''))
+                        
+                        # Если не нашли, ищем в ячейках с классом price
+                        if price_val is None:
+                            for cell in cells:
+                                cell_class = cell.get_attribute('class') or ''
+                                if 'price' in cell_class.lower():
+                                    price_text = cell.text.strip()
+                                    price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
+                                    if price_match:
+                                        price_val = float(price_match.group(1).replace(' ', ''))
+                                        break
+                        
+                        # Если все еще не нашли, ищем в div с ценой внутри ячеек
+                        if price_val is None:
+                            for cell in cells:
+                                try:
+                                    price_div = cell.find_element(By.CSS_SELECTOR, 'div[class*="price"], div[class*="Price"]')
+                                    price_text = price_div.text.strip()
+                                    price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
+                                    if price_match:
+                                        price_val = float(price_match.group(1).replace(' ', ''))
+                                        break
+                                except Exception:
+                                    continue
+                        
+                        if price_val is not None:
+                            # Извлекаем цифры из кода поставщика
+                            sup_digits = re.sub(r'\D+', '', supplier_text)
                             
                             print(f"[DEBUG] Selenium: найден поставщик '{supplier_text}' ({sup_digits}) с ценой {price_val}")
                             
