@@ -41,7 +41,7 @@ HEADERS = {
 }
 # Оптимизированные таймауты для ускорения работы
 TIMEOUT = 5  # Увеличиваем для стабильности
-SELENIUM_TIMEOUT = 12  # Чуть больше времени на отрисовку Angular
+SELENIUM_TIMEOUT = 8  # Оптимизированное время для ускорения
 PAGE_LOAD_TIMEOUT = 12  # Увеличиваем для стабильности
 
 # Настройки для пула драйверов
@@ -838,21 +838,27 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		# Явные ожидания появления результатов с улучшенной логикой
 		wait = WebDriverWait(driver, SELENIUM_TIMEOUT)
 		selectors_to_wait = [
+			# Основные контейнеры результатов
+			(By.CSS_SELECTOR, '.results'),
+			(By.CSS_SELECTOR, '.search-results'),
 			(By.CSS_SELECTOR, '.results-list__items'),
-			(By.CSS_SELECTOR, '.font__body2.brand--selecting'),
+			# Бренды - обновленные селекторы
+			(By.CSS_SELECTOR, 'span.font__body2.brand--selecting'),
+			(By.CSS_SELECTOR, '.brand--selecting'),
 			(By.CSS_SELECTOR, '.font__caption1.brand--selectable'),
+			# Карточки товаров
 			(By.CSS_SELECTOR, '.product-card'),
 			(By.CSS_SELECTOR, '.catalog-item'),
-			(By.CSS_SELECTOR, '.search-results'),
-			(By.CSS_SELECTOR, '.results'),
-			# Точный путь из DevTools пользователя (будет срабатывать, если DOM совпадает)
-			(By.CSS_SELECTOR, 'body > app-root > div > mp-main > search-result > div > div > project-ui-search-result-with-filters > div > div.results.has-filter-on-desktop > project-ui-search-result > div > div > div.results-list__items.ng-star-inserted'),
-			# Внутри контейнера результатов — искомый бренд
-			(By.CSS_SELECTOR, 'div.results-list__items span.font__body2.brand--selecting'),
+			(By.CSS_SELECTOR, 'project-ui-article-card'),
+			# Более общие селекторы для fallback
+			(By.CSS_SELECTOR, '[class*="result"]'),
+			(By.CSS_SELECTOR, '[class*="item"]'),
 		]
 		
 		page_loaded = False
-		for by, sel in selectors_to_wait:
+		# Ограничиваем количество попыток для ускорения
+		max_attempts = min(5, len(selectors_to_wait))
+		for i, (by, sel) in enumerate(selectors_to_wait[:max_attempts]):
 			try:
 				# Ждем видимости, а не только наличия в DOM
 				wait.until(EC.visibility_of_any_elements_located((by, sel)))
@@ -865,23 +871,30 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		
 		if not page_loaded:
 			log_debug("Armtek Selenium: страница не загрузилась или нет результатов")
+			# Сохраняем HTML для отладки
+			try:
+				html_content = driver.page_source
+				debug_file = f"/tmp/armtek_debug_{artikul}.html"
+				with open(debug_file, 'w', encoding='utf-8') as f:
+					f.write(html_content)
+				log_debug(f"Armtek Selenium: HTML сохранен в {debug_file}")
+			except Exception as e:
+				log_debug(f"Armtek Selenium: не удалось сохранить HTML: {str(e)}")
+			
 			# Пробуем fallback - ждем просто загрузки страницы
 			try:
-				WebDriverWait(driver, 3).until(lambda d: d.execute_script("return document.readyState") == "complete")
+				WebDriverWait(driver, 2).until(lambda d: d.execute_script("return document.readyState") == "complete")
 				log_debug("Armtek Selenium: страница загружена, но нет ожидаемых элементов")
 			except Exception:
 				log_debug("Armtek Selenium: страница не загрузилась полностью")
 				return []
 		
-		# Оптимизированная прокрутка страницы
+		# Быстрая прокрутка страницы для подгрузки контента
 		try:
-			# Прокручиваем по частям для ускорения
-			driver.execute_script('window.scrollTo(0, document.body.scrollHeight/3);')
-			time.sleep(0.1)
-			driver.execute_script('window.scrollTo(0, document.body.scrollHeight*2/3);')
-			time.sleep(0.1)
+			driver.execute_script('window.scrollTo(0, document.body.scrollHeight/2);')
+			time.sleep(0.05)
 			driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
-			time.sleep(0.1)
+			time.sleep(0.05)
 		except Exception:
 			pass
 		
@@ -961,16 +974,20 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		
 		# Сначала пробуем точные селекторы карточек товаров
 		exact_selectors = [
+			# Основные селекторы брендов (по скриншоту пользователя)
+			'span.font__body2.brand--selecting',
+			'.brand--selecting',
 			'.font__caption1.brand--selectable',
-			'.pin-brand-name span.font__caption1.brand--selectable',
-			'.product-card__content .pin-brand-name .brand--selectable',
+			# Бренды в карточках товаров
 			'.product-card .brand-name',
 			'.catalog-item .brand-name',
 			'.item-card .brand-name',
-			# Бренд внутри контейнера результатов (основной текущий кейс)
+			'.pin-brand-name span.font__caption1.brand--selectable',
+			'.product-card__content .pin-brand-name .brand--selectable',
+			# Более общие селекторы
 			'div.results-list__items span.font__body2.brand--selecting',
-			# Варианты точного пути, присланные пользователем
-			'body > app-root > div > mp-main > search-result > div > div > project-ui-search-result-with-filters > div > div.results.has-filter-on-desktop > project-ui-search-result > div > div > div.results-list__items.ng-star-inserted > div > div.item.border-bottom.ng-star-inserted > project-ui-article-card > project-ui-article-card-with-suggestions > div > div.content > div > div > div.item.item-mobile > span.font__body2.brand--selecting',
+			'[class*="brand"]',
+			'[data-brand]',
 		]
 		
 		log_debug(f"Armtek Selenium: начинаем поиск брендов по {len(exact_selectors)} точным селекторам")
@@ -1004,38 +1021,42 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 							log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
 						else:
 							log_debug(f"Armtek Selenium: пропускаем мусорный текст '{text}'")
+				
+				# Ранний выход при нахождении достаточного количества брендов
+				if len(brands) >= 3:
+					log_debug(f"Armtek Selenium: найдено достаточно брендов ({len(brands)}), прерываем поиск")
+					break
 			except Exception as e:
 				log_debug(f"Armtek Selenium: ошибка поиска по селектору {selector}: {str(e)}")
 		
-		# Если точные селекторы не дали результатов, пробуем остальные
+		# Если точные селекторы не дали результатов, пробуем упрощенный поиск
 		if not brands:
-			log_debug("Armtek Selenium: точные селекторы не дали результатов, пробуем остальные")
-			for selector in brand_selectors[6:]:  # Пропускаем уже проверенные точные селекторы
+			log_debug("Armtek Selenium: точные селекторы не дали результатов, пробуем упрощенный поиск")
+			# Упрощенный поиск - только основные селекторы для ускорения
+			simple_selectors = [
+				'span[class*="brand"]',
+				'div[class*="brand"]',
+				'[data-brand]',
+				'.font__body2',
+				'.font__caption1'
+			]
+			
+			for selector in simple_selectors:
 				try:
 					elements = driver.find_elements(By.CSS_SELECTOR, selector)
 					log_debug(f"Armtek Selenium: найдено {len(elements)} элементов по селектору '{selector}'")
 					
 					for el in elements:
-						# Исключаем бренды из секции "Возможные замены" по DOM-порядку
-						if not is_before_replacements(el):
-							continue
 						text = el.text.strip()
 						if text and len(text) > 1 and len(text) < 50:
-							# Дополнительная фильтрация
-							if not any(garbage in text.lower() for garbage in [
-								'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
-								'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
-								'автозапчасти', 'аккумуляторы', 'аксессуары', 'акции', 'бренды', 'ваш', 'возврат',
-								'войти', 'выбор', 'вывод', 'гараж', 'гарантийная', 'главная', 'госномеру',
-								'грузовые', 'дней', 'доставка', 'инструмент', 'интернет', 'искать', 'искомый',
-								'как', 'каталог', 'китайские', 'компании', 'контакты', 'корзина', 'легковые',
-								'магазины', 'москва', 'мотозапчасти', 'моторные', 'мы', 'нет', 'новости', 'ооо',
-								'оплата', 'оптовым', 'партнерам', 'планировщик', 'по', 'подбор', 'пожалуйста',
-								'поиск', 'покупателям', 'поставщикам', 'правовая', 'программа', 'работа',
-								'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины'
-							]):
+							# Простая фильтрация для ускорения
+							if text.isalpha() or (len(text) <= 15 and any(c.isalpha() for c in text)):
 								brands.add(text)
 								log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
+					
+					# Ранний выход при нахождении брендов
+					if brands:
+						break
 				except Exception as e:
 					log_debug(f"Armtek Selenium: ошибка поиска по селектору {selector}: {str(e)}")
 		
