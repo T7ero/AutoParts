@@ -251,14 +251,20 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                     # Ищем цену в правильной ячейке - пробуем несколько вариантов
                                     price_val = None
                                     
+                                    print(f"[DEBUG] Ищем цену в строке {row_idx}, количество ячеек: {len(cells)}")
+                                    
                                     # Сначала ищем в ячейках с классом price или в div с ценой
-                                    for cell in cells:
+                                    for cell_idx, cell in enumerate(cells):
+                                        cell_class = str(cell.get('class', []))
+                                        cell_text = cell.get_text(strip=True)
+                                        print(f"[DEBUG] Ячейка {cell_idx}: класс='{cell_class}', текст='{cell_text}'")
+                                        
                                         # Ищем в ячейках с классом содержащим price
-                                        if 'price' in str(cell.get('class', [])).lower():
-                                            price_text = cell.get_text(strip=True)
-                                            price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
+                                        if 'price' in cell_class.lower():
+                                            price_match = re.search(r'(\d[\d\s]*)', cell_text.replace('\xa0', ' '))
                                             if price_match:
                                                 price_val = float(price_match.group(1).replace(' ', ''))
+                                                print(f"[DEBUG] Найдена цена {price_val} в ячейке с классом price")
                                                 break
                                         
                                         # Ищем в div с ценой внутри ячейки
@@ -273,6 +279,7 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                             price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
                                             if price_match:
                                                 price_val = float(price_match.group(1).replace(' ', ''))
+                                                print(f"[DEBUG] Найдена цена {price_val} в div с классом price")
                                                 break
                                         
                                         if price_val is not None:
@@ -281,9 +288,13 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                     # Если не нашли, пробуем стандартную ячейку цены (7-я колонка)
                                     if price_val is None and len(cells) > 7:
                                         price_text = cells[7].get_text(strip=True)
+                                        print(f"[DEBUG] Пробуем стандартную ячейку цены (7): '{price_text}'")
                                         price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
                                         if price_match:
                                             price_val = float(price_match.group(1).replace(' ', ''))
+                                            print(f"[DEBUG] Найдена цена {price_val} в стандартной ячейке")
+                                    
+                                    print(f"[DEBUG] Итоговая найденная цена: {price_val}")
                                     
                                     if price_val is not None:
                                         # Извлекаем цифры из кода поставщика
