@@ -203,7 +203,11 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                         '.SelectedOffer__price___Xzg0ZD span',
                         'div.SelectedOffer__price___Xzg0ZD',
                         'div[class*="SelectedOffer__price"]',
-                        'span[class*="SelectedOffer__price"]'
+                        'span[class*="SelectedOffer__price"]',
+                        '.AppraiseBestItems__root___ZmRhZj .SelectedOffer__price___Xzg0ZD',
+                        '.AppraiseCard__wrapper___ZmZjYm .SelectedOffer__price___Xzg0ZD',
+                        '.AppraiseBestItems__root___ZmRhZj div[class*="SelectedOffer__price"]',
+                        '.AppraiseCard__wrapper___ZmZjYm div[class*="SelectedOffer__price"]'
                     ]
                     
                     for selector in min_price_selectors:
@@ -253,46 +257,46 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                     
                                     print(f"[DEBUG] Ищем цену в строке {row_idx}, количество ячеек: {len(cells)}")
                                     
-                                    # Сначала ищем в ячейках с классом price или в div с ценой
-                                    for cell_idx, cell in enumerate(cells):
-                                        cell_class = str(cell.get('class', []))
-                                        cell_text = cell.get_text(strip=True)
-                                        print(f"[DEBUG] Ячейка {cell_idx}: класс='{cell_class}', текст='{cell_text}'")
+                                    # Сначала пробуем найти цену в правильной колонке (7-я колонка обычно содержит цену)
+                                    if len(cells) > 7:
+                                        price_cell = cells[7]
+                                        price_text = price_cell.get_text(strip=True)
+                                        print(f"[DEBUG] Проверяем колонку 7 (цена): '{price_text}'")
                                         
-                                        # Ищем в ячейках с классом содержащим price
-                                        if 'price' in cell_class.lower():
-                                            price_match = re.search(r'(\d[\d\s]*)', cell_text.replace('\xa0', ' '))
-                                            if price_match:
-                                                price_val = float(price_match.group(1).replace(' ', ''))
-                                                print(f"[DEBUG] Найдена цена {price_val} в ячейке с классом price")
-                                                break
-                                        
-                                        # Ищем в div с ценой внутри ячейки
-                                        price_divs = cell.find_all('div', class_=re.compile(r'.*[Pp]rice.*'))
-                                        if not price_divs:
-                                            price_divs = cell.find_all('span', class_=re.compile(r'.*[Pp]rice.*'))
-                                        if not price_divs:
-                                            price_divs = cell.find_all(['div', 'span'], class_=re.compile(r'.*NonRetailAppraiseTR__priceWrapper.*'))
-                                        
+                                        # Ищем цену в div с классом NonRetailAppraiseTR__priceWrapper
+                                        price_divs = price_cell.find_all(['div', 'span'], class_=re.compile(r'.*NonRetailAppraiseTR__priceWrapper.*'))
                                         for price_div in price_divs:
-                                            price_text = price_div.get_text(strip=True)
-                                            price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
+                                            div_text = price_div.get_text(strip=True)
+                                            price_match = re.search(r'(\d[\d\s]*)', div_text.replace('\xa0', ' '))
                                             if price_match:
                                                 price_val = float(price_match.group(1).replace(' ', ''))
-                                                print(f"[DEBUG] Найдена цена {price_val} в div с классом price")
+                                                print(f"[DEBUG] Найдена цена {price_val} в div NonRetailAppraiseTR__priceWrapper")
                                                 break
                                         
-                                        if price_val is not None:
-                                            break
+                                        # Если не нашли в div, ищем в тексте ячейки
+                                        if price_val is None:
+                                            price_match = re.search(r'(\d[\d\s]*)\s*₽', price_text)
+                                            if price_match:
+                                                price_val = float(price_match.group(1).replace(' ', ''))
+                                                print(f"[DEBUG] Найдена цена {price_val} в тексте ячейки")
                                     
-                                    # Если не нашли, пробуем стандартную ячейку цены (7-я колонка)
-                                    if price_val is None and len(cells) > 7:
-                                        price_text = cells[7].get_text(strip=True)
-                                        print(f"[DEBUG] Пробуем стандартную ячейку цены (7): '{price_text}'")
-                                        price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
-                                        if price_match:
-                                            price_val = float(price_match.group(1).replace(' ', ''))
-                                            print(f"[DEBUG] Найдена цена {price_val} в стандартной ячейке")
+                                    # Если не нашли, пробуем другие ячейки с ценой
+                                    if price_val is None:
+                                        for cell_idx, cell in enumerate(cells):
+                                            cell_class = str(cell.get('class', []))
+                                            cell_text = cell.get_text(strip=True)
+                                            
+                                            # Пропускаем ячейки с кодом поставщика и региона
+                                            if 'supplier' in cell_class.lower() or 'region' in cell_class.lower():
+                                                continue
+                                            
+                                            # Ищем ячейки с классом price
+                                            if 'price' in cell_class.lower():
+                                                price_match = re.search(r'(\d[\d\s]*)\s*₽', cell_text)
+                                                if price_match:
+                                                    price_val = float(price_match.group(1).replace(' ', ''))
+                                                    print(f"[DEBUG] Найдена цена {price_val} в ячейке с классом price")
+                                                    break
                                     
                                     print(f"[DEBUG] Итоговая найденная цена: {price_val}")
                                     
@@ -382,7 +386,11 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                         '.SelectedOffer__price___Xzg0ZD span',
                         'div.SelectedOffer__price___Xzg0ZD',
                         'div[class*="SelectedOffer__price"]',
-                        'span[class*="SelectedOffer__price"]'
+                        'span[class*="SelectedOffer__price"]',
+                        '.AppraiseBestItems__root___ZmRhZj .SelectedOffer__price___Xzg0ZD',
+                        '.AppraiseCard__wrapper___ZmZjYm .SelectedOffer__price___Xzg0ZD',
+                        '.AppraiseBestItems__root___ZmRhZj div[class*="SelectedOffer__price"]',
+                        '.AppraiseCard__wrapper___ZmZjYm div[class*="SelectedOffer__price"]'
                     ]
                     
                     for selector in min_price_selectors:
@@ -417,38 +425,53 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                         # Ищем цену в правильной ячейке - пробуем несколько вариантов
                         price_val = None
                         
-                        # Сначала ищем в ячейках с классом price или в div с ценой
-                        for cell in cells:
-                            # Ищем в ячейках с классом содержащим price
-                            cell_class = cell.get_attribute('class') or ''
-                            if 'price' in cell_class.lower():
-                                price_text = cell.text.strip()
-                                price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
-                                if price_match:
-                                    price_val = float(price_match.group(1).replace(' ', ''))
-                                    break
+                        print(f"[DEBUG] Selenium: ищем цену в строке {row_idx}, количество ячеек: {len(cells)}")
+                        
+                        # Сначала пробуем найти цену в правильной колонке (7-я колонка обычно содержит цену)
+                        if len(cells) > 7:
+                            price_cell = cells[7]
+                            price_text = price_cell.text.strip()
+                            print(f"[DEBUG] Selenium: проверяем колонку 7 (цена): '{price_text}'")
                             
-                            # Ищем в div с ценой внутри ячейки
+                            # Ищем цену в div с классом NonRetailAppraiseTR__priceWrapper
                             try:
-                                price_divs = cell.find_elements(By.CSS_SELECTOR, 'div[class*="price"], span[class*="price"], div[class*="NonRetailAppraiseTR__priceWrapper"]')
+                                price_divs = price_cell.find_elements(By.CSS_SELECTOR, 'div[class*="NonRetailAppraiseTR__priceWrapper"], span[class*="NonRetailAppraiseTR__priceWrapper"]')
                                 for price_div in price_divs:
-                                    price_text = price_div.text.strip()
-                                    price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
+                                    div_text = price_div.text.strip()
+                                    price_match = re.search(r'(\d[\d\s]*)', div_text.replace('\xa0', ' '))
                                     if price_match:
                                         price_val = float(price_match.group(1).replace(' ', ''))
+                                        print(f"[DEBUG] Selenium: найдена цена {price_val} в div NonRetailAppraiseTR__priceWrapper")
                                         break
                             except Exception:
-                                continue
+                                pass
                             
-                            if price_val is not None:
-                                break
+                            # Если не нашли в div, ищем в тексте ячейки
+                            if price_val is None:
+                                price_match = re.search(r'(\d[\d\s]*)\s*₽', price_text)
+                                if price_match:
+                                    price_val = float(price_match.group(1).replace(' ', ''))
+                                    print(f"[DEBUG] Selenium: найдена цена {price_val} в тексте ячейки")
                         
-                        # Если не нашли, пробуем стандартную ячейку цены (7-я колонка)
-                        if price_val is None and len(cells) > 7:
-                            price_text = cells[7].text.strip()
-                            price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
-                            if price_match:
-                                price_val = float(price_match.group(1).replace(' ', ''))
+                        # Если не нашли, пробуем другие ячейки с ценой
+                        if price_val is None:
+                            for cell_idx, cell in enumerate(cells):
+                                cell_class = cell.get_attribute('class') or ''
+                                cell_text = cell.text.strip()
+                                
+                                # Пропускаем ячейки с кодом поставщика и региона
+                                if 'supplier' in cell_class.lower() or 'region' in cell_class.lower():
+                                    continue
+                                
+                                # Ищем ячейки с классом price
+                                if 'price' in cell_class.lower():
+                                    price_match = re.search(r'(\d[\d\s]*)\s*₽', cell_text)
+                                    if price_match:
+                                        price_val = float(price_match.group(1).replace(' ', ''))
+                                        print(f"[DEBUG] Selenium: найдена цена {price_val} в ячейке с классом price")
+                                        break
+                        
+                        print(f"[DEBUG] Selenium: итоговая найденная цена: {price_val}")
                         
                         if price_val is not None:
                             # Извлекаем цифры из кода поставщика
