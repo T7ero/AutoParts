@@ -163,8 +163,10 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
         'error_message': ''
     }
     
+    # Определяем URL в начале функции
+    product_url = f"https://autopiter.ru/goods/{quote(str(article))}"
+    
     try:
-        product_url = f"https://autopiter.ru/goods/{quote(article)}"
         supplier_codes = SUPPLIER_CODES['autopiter']
         our_prices = []  # Будем собирать все наши цены
         competitor_prices = []  # Будем собирать все цены конкурентов
