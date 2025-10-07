@@ -155,7 +155,7 @@ def process_price_list_task(self, task_id: int):
                 }
         
         # Параллельная обработка позиций
-        max_workers = 3  # Ограничиваем количество потоков для стабильности
+        max_workers = 1  # Устанавливаем в 1 для устранения 429 Rate Limit ошибок
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Запускаем анализ всех позиций

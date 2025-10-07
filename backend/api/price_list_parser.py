@@ -172,8 +172,8 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
         our_prices = []  # Будем собирать все наши цены
         competitor_prices = []  # Будем собирать все цены конкурентов
         
-        # Небольшая задержка перед запросом, чтобы избежать rate limit
-        time.sleep(random.uniform(0.5, 1.5))
+        # Увеличенная задержка перед запросом, чтобы избежать rate limit
+        time.sleep(random.uniform(2.0, 4.0))
         
         # Получаем прокси для запросов
         proxy_dict = get_next_proxy()
@@ -312,7 +312,20 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                         
                                         print(f"[DEBUG] Найден поставщик '{supplier_text}' ({sup_digits}) с ценой {price_val}")
                                         
-                                        if sup_digits in supplier_codes:
+                                        # Более точная проверка кода поставщика
+                                        is_our_supplier = False
+                                        if sup_digits:
+                                            # Проверяем точное совпадение
+                                            if sup_digits in supplier_codes:
+                                                is_our_supplier = True
+                                            else:
+                                                # Проверяем, содержит ли код поставщика наши коды как подстроку
+                                                for our_code in supplier_codes:
+                                                    if our_code in sup_digits:
+                                                        is_our_supplier = True
+                                                        break
+                                        
+                                        if is_our_supplier:
                                             our_prices.append(price_val)
                                             print(f"[DEBUG] Добавлена наша цена {price_val} для поставщика {sup_digits}")
                                         else:
@@ -485,7 +498,20 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                             
                             print(f"[DEBUG] Selenium: найден поставщик '{supplier_text}' ({sup_digits}) с ценой {price_val}")
                             
-                            if sup_digits in supplier_codes:
+                            # Более точная проверка кода поставщика
+                            is_our_supplier = False
+                            if sup_digits:
+                                # Проверяем точное совпадение
+                                if sup_digits in supplier_codes:
+                                    is_our_supplier = True
+                                else:
+                                    # Проверяем, содержит ли код поставщика наши коды как подстроку
+                                    for our_code in supplier_codes:
+                                        if our_code in sup_digits:
+                                            is_our_supplier = True
+                                            break
+                            
+                            if is_our_supplier:
                                 our_prices.append(price_val)
                             else:
                                 competitor_prices.append(price_val)
