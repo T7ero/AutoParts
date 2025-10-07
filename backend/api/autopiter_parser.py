@@ -371,7 +371,7 @@ def make_request(
             elif response.status_code == 429:
                 log_debug(f"429 Rate Limit для {url} (попытка {attempt})")
                 if attempt < max_retries:
-                    wait_time = 15 * attempt  # Значительно увеличенная задержка для rate limit
+                    wait_time = 30 * (2 ** attempt)  # Еще более агрессивная задержка: 30, 60, 120 секунд
                     log_debug(f"Ждем {wait_time} секунд перед повторной попыткой")
                     time.sleep(wait_time)
                     continue

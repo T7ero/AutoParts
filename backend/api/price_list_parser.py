@@ -172,8 +172,8 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
         our_prices = []  # Будем собирать все наши цены
         competitor_prices = []  # Будем собирать все цены конкурентов
         
-        # Увеличенная задержка перед запросом, чтобы избежать rate limit
-        time.sleep(random.uniform(2.0, 4.0))
+        # Значительно увеличенная задержка перед запросом, чтобы избежать rate limit
+        time.sleep(random.uniform(5.0, 10.0))
         
         # Получаем прокси для запросов
         proxy_dict = get_next_proxy()
@@ -356,6 +356,8 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
     
     # Если HTTP не нашел нужные элементы, пробуем Selenium с прокси
     if not result['is_found']:
+        # Дополнительная задержка перед Selenium для снижения нагрузки
+        time.sleep(random.uniform(3.0, 6.0))
         driver = None
         try:
             options = Options()
