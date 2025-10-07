@@ -25,9 +25,10 @@ from decimal import Decimal
 from .autopiter_parser import get_next_proxy, make_request, get_brands_by_artikul, get_brands_by_artikul_emex, get_brands_by_artikul_armtek
 
 # Настройки для парсинга прайс-листа
-TIMEOUT = 10
-SELENIUM_TIMEOUT = 15
-PAGE_LOAD_TIMEOUT = 15
+TIMEOUT = 15  # Увеличиваем таймаут
+SELENIUM_TIMEOUT = 20
+PAGE_LOAD_TIMEOUT = 20
+MAX_HTTP_RETRIES = 3  # Максимальное количество попыток HTTP-запросов
 
 # Коды поставщиков для каждой площадки
 SUPPLIER_CODES = {
@@ -171,6 +172,9 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
         our_prices = []  # Будем собирать все наши цены
         competitor_prices = []  # Будем собирать все цены конкурентов
         
+        # Небольшая задержка перед запросом, чтобы избежать rate limit
+        time.sleep(random.uniform(0.5, 1.5))
+        
         # Получаем прокси для запросов
         proxy_dict = get_next_proxy()
         proxy_str = None
@@ -179,7 +183,7 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
             if proxy_url.startswith('http://'):
                 proxy_str = proxy_url[7:]  # Убираем 'http://'
         
-        resp = make_request(product_url, proxy=proxy_str, timeout=TIMEOUT)
+        resp = make_request(product_url, proxy=proxy_str, timeout=TIMEOUT, max_retries=MAX_HTTP_RETRIES)
         if resp and resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
             
@@ -188,7 +192,7 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
             if card_link:
                 card_url = 'https://autopiter.ru' + card_link['href']
                 # Парсим карточку товара с тем же прокси
-                card_resp = make_request(card_url, proxy=proxy_str, timeout=TIMEOUT)
+                card_resp = make_request(card_url, proxy=proxy_str, timeout=TIMEOUT, max_retries=MAX_HTTP_RETRIES)
                 if card_resp and card_resp.status_code == 200:
                     card_soup = BeautifulSoup(card_resp.text, 'html.parser')
                     
@@ -549,7 +553,7 @@ def check_emex_item(supplier_code: str, manufacturer: str, article: str, competi
         url = f"https://emex.ru/search?q={quote(search_query)}"
         
         # Делаем запрос
-        response = make_request(url, timeout=TIMEOUT)
+        response = make_request(url, timeout=TIMEOUT, max_retries=MAX_HTTP_RETRIES)
         if not response:
             result['error_message'] = "Ошибка запроса к Емекс"
             return result
@@ -596,7 +600,7 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
         # Пытаемся достать цену из HTML поисковой страницы
         search_query = f"{manufacturer} {article}"
         url = f"https://armtek.ru/search?text={quote(search_query)}"
-        resp = make_request(url, timeout=TIMEOUT)
+        resp = make_request(url, timeout=TIMEOUT, max_retries=MAX_HTTP_RETRIES)
         if resp and resp.status_code == 200:
             txt = BeautifulSoup(resp.text, 'html.parser').get_text(' ', strip=True)
             m = re.search(r'от\s*(\d[\d\s]*)\s*₽', txt) or re.search(r'\b(\d[\d\s]{2,})\b\s*₽', txt)
