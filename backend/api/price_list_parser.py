@@ -612,8 +612,11 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
         'error_message': ''
     }
     
+    # Увеличенная задержка перед запросом, чтобы избежать rate limit
+    time.sleep(random.uniform(5.0, 10.0))
+    
     try:
-        # Проверка брендов через основной Selenium-парсер
+        # Сначала проверяем бренды через основной Selenium-парсер
         man_ok = False
         try:
             brands = get_brands_by_artikul_armtek(article) or []
@@ -621,27 +624,171 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
             for b in brands:
                 if _norm_brand(b) == man_norm:
                     man_ok = True
+                    result['competitor_brand'] = b
                     break
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[DEBUG] Ошибка получения брендов Armtek: {str(e)}")
         
-        # Пытаемся достать цену из HTML поисковой страницы
-        search_query = f"{manufacturer} {article}"
-        url = f"https://armtek.ru/search?text={quote(search_query)}"
-        resp = make_request(url, timeout=TIMEOUT, max_retries=MAX_HTTP_RETRIES)
-        if resp and resp.status_code == 200:
-            txt = BeautifulSoup(resp.text, 'html.parser').get_text(' ', strip=True)
-            m = re.search(r'от\s*(\d[\d\s]*)\s*₽', txt) or re.search(r'\b(\d[\d\s]{2,})\b\s*₽', txt)
-            if m:
+        # Если нашли бренды, переходим к поиску минимальной цены
+        if man_ok:
+            try:
+                # Ищем минимальную цену через Selenium
+                driver = None
                 try:
-                    result['marketplace_price'] = float(m.group(1).replace(' ', ''))
-                except Exception:
-                    pass
-        result['is_found'] = bool(result['marketplace_price'] is not None or man_ok)
+                    options = Options()
+                    options.add_argument('--headless=new')
+                    options.add_argument('--no-sandbox')
+                    options.add_argument('--disable-dev-shm-usage')
+                    options.add_argument('--disable-gpu')
+                    options.add_argument('--disable-extensions')
+                    options.add_argument('--disable-logging')
+                    options.add_argument('--log-level=3')
+                    options.add_argument('--silent')
+                    
+                    # Добавляем прокси для Selenium, если доступен
+                    proxy_dict = get_next_proxy()
+                    if proxy_dict:
+                        proxy_url = proxy_dict.get('http', '')
+                        if proxy_url.startswith('http://'):
+                            proxy_host = proxy_url[7:]  # Убираем 'http://'
+                            options.add_argument(f'--proxy-server=http://{proxy_host}')
+                    
+                    driver = webdriver.Chrome(options=options)
+                    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+                    driver.implicitly_wait(3)
+                    
+                    # Переходим на поисковую страницу
+                    search_url = f"https://armtek.ru/search?text={quote(str(article))}"
+                    driver.get(search_url)
+                    
+                    print(f"[DEBUG] Armtek: загружена поисковая страница для {article}")
+                    
+                    # Ищем первую ссылку на карточку товара
+                    try:
+                        # Ждем загрузки результатов поиска
+                        WebDriverWait(driver, 10).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, 'a[href*="/product/"]'))
+                        )
+                        
+                        # Находим первую ссылку на карточку товара
+                        product_link = driver.find_element(By.CSS_SELECTOR, 'a[href*="/product/"]')
+                        product_url = product_link.get_attribute('href')
+                        
+                        if product_url:
+                            print(f"[DEBUG] Armtek: найдена ссылка на карточку: {product_url}")
+                            
+                            # Переходим в карточку товара
+                            driver.get(product_url)
+                            print(f"[DEBUG] Armtek: перешли в карточку товара")
+                            
+                            # Ждем загрузки страницы
+                            time.sleep(3)
+                            
+                            # Ищем минимальную цену среди всех предложений
+                            min_price = None
+                            
+                            # Селекторы для поиска цен
+                            price_selectors = [
+                                'span.font__headline6.no-wrap',
+                                'span.font__headline6',
+                                '.card__price span',
+                                '[class*="price"] span',
+                                '.font__headline6'
+                            ]
+                            
+                            for selector in price_selectors:
+                                try:
+                                    price_elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                                    prices = []
+                                    
+                                    for element in price_elements:
+                                        price_text = element.text.strip()
+                                        if price_text and '₽' in price_text:
+                                            # Извлекаем числовое значение цены
+                                            price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
+                                            if price_match:
+                                                try:
+                                                    price_value = float(price_match.group(1).replace(' ', ''))
+                                                    prices.append(price_value)
+                                                    print(f"[DEBUG] Armtek: найдена цена {price_value}₽")
+                                                except ValueError:
+                                                    continue
+                                    
+                                    if prices:
+                                        min_price = min(prices)
+                                        print(f"[DEBUG] Armtek: минимальная цена найдена: {min_price}₽")
+                                        break
+                                        
+                                except Exception as e:
+                                    print(f"[DEBUG] Armtek: ошибка поиска цен по селектору {selector}: {str(e)}")
+                                    continue
+                            
+                            if min_price:
+                                result['marketplace_price'] = min_price
+                                result['min_competitor_price'] = min_price  # На Armtek это одно и то же
+                                result['is_found'] = True
+                                print(f"[DEBUG] Armtek: итоговый результат - найдено: {min_price}₽")
+                            else:
+                                print(f"[DEBUG] Armtek: цены не найдены")
+                                
+                    except Exception as e:
+                        print(f"[DEBUG] Armtek: ошибка поиска карточки товара: {str(e)}")
+                        
+                except Exception as e:
+                    print(f"[DEBUG] Armtek: ошибка Selenium: {str(e)}")
+                    
+                finally:
+                    try:
+                        if driver:
+                            driver.quit()
+                    except Exception:
+                        pass
+                        
+            except Exception as e:
+                print(f"[DEBUG] Armtek: ошибка поиска минимальной цены: {str(e)}")
+        
+        # Если Selenium не сработал, пробуем HTTP запрос
+        if not result['is_found']:
+            try:
+                search_url = f"https://armtek.ru/search?text={quote(str(article))}"
+                resp = make_request(search_url, timeout=TIMEOUT, max_retries=MAX_HTTP_RETRIES)
+                if resp and resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, 'html.parser')
+                    
+                    # Ищем цены в HTML
+                    price_patterns = [
+                        r'(\d[\d\s]*)\s*₽',
+                        r'от\s*(\d[\d\s]*)\s*₽'
+                    ]
+                    
+                    text = soup.get_text(' ', strip=True)
+                    prices = []
+                    
+                    for pattern in price_patterns:
+                        matches = re.findall(pattern, text)
+                        for match in matches:
+                            try:
+                                price_value = float(match.replace(' ', ''))
+                                if 100 <= price_value <= 1000000:  # Разумный диапазон цен
+                                    prices.append(price_value)
+                            except ValueError:
+                                continue
+                    
+                    if prices:
+                        min_price = min(prices)
+                        result['marketplace_price'] = min_price
+                        result['min_competitor_price'] = min_price
+                        result['is_found'] = True
+                        print(f"[DEBUG] Armtek HTTP: найдена минимальная цена: {min_price}₽")
+                        
+            except Exception as e:
+                print(f"[DEBUG] Armtek: ошибка HTTP парсинга: {str(e)}")
         
     except Exception as e:
         result['error_message'] = f"Ошибка парсинга Армтек: {str(e)}"
+        print(f"[DEBUG] Armtek: общая ошибка: {str(e)}")
     
+    print(f"[DEBUG] Armtek: итоговый результат - найдено: {result['is_found']}, цена: {result['marketplace_price']}₽")
     return result
 
 def create_result_excel(items: List[Dict], output_path: str) -> bool:
