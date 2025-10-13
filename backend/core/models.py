@@ -66,7 +66,7 @@ class CrossReference(models.Model):
     """Модель кросс-ссылки"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     part = models.ForeignKey(Part, on_delete=models.CASCADE, verbose_name="Запчасть")
-    cross_article = models.CharField(max_length=100, verbose_name="Кросс-артикул")
+    cross_article = models.CharField(max_length=100, blank=True, null=True, verbose_name="Кросс-артикул")
     cross_brand = models.CharField(max_length=100, verbose_name="Кросс-бренд")
     source = models.CharField(max_length=20, choices=ParsingTask.SOURCE_CHOICES, verbose_name="Источник")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Создана")
