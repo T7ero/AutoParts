@@ -2,8 +2,147 @@ from django.db import models
 from django.contrib.auth.models import User
 from django.core.validators import MinValueValidator
 import uuid
+import os
 
 
+def get_upload_path(instance, filename):
+    """Генерирует путь для загрузки файлов"""
+    return os.path.join('uploads', str(instance.id), filename)
+
+
+class ParsingTask(models.Model):
+    """Модель задачи парсинга"""
+    STATUS_CHOICES = [
+        ('pending', 'Ожидает'),
+        ('processing', 'Обрабатывается'),
+        ('completed', 'Завершена'),
+        ('failed', 'Ошибка'),
+    ]
+    
+    SOURCE_CHOICES = [
+        ('autopiter', 'АвтоПитер'),
+        ('emex', 'Емекс'),
+        ('armtek', 'Армтек'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    file = models.FileField(upload_to='uploads/', verbose_name="Файл")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name="Статус")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Создана")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="Обновлена")
+    result_file = models.FileField(upload_to='results/', blank=True, null=True, verbose_name="Файл результата")
+    log_file = models.FileField(upload_to='logs/', blank=True, null=True, verbose_name="Файл логов")
+    error_message = models.TextField(blank=True, null=True, verbose_name="Сообщение об ошибке")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="Пользователь")
+    sources = models.JSONField(default=list, verbose_name="Источники")
+
+    class Meta:
+        verbose_name = "Задача парсинга"
+        verbose_name_plural = "Задачи парсинга"
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Задача {self.id} - {self.status}"
+
+
+class Part(models.Model):
+    """Модель запчасти"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    article = models.CharField(max_length=100, verbose_name="Артикул")
+    brand = models.CharField(max_length=100, verbose_name="Бренд")
+    name = models.CharField(max_length=500, verbose_name="Наименование")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Создана")
+
+    class Meta:
+        verbose_name = "Запчасть"
+        verbose_name_plural = "Запчасти"
+        ordering = ['article', 'brand']
+
+    def __str__(self):
+        return f"{self.brand} {self.article}"
+
+
+class CrossReference(models.Model):
+    """Модель кросс-ссылки"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    part = models.ForeignKey(Part, on_delete=models.CASCADE, verbose_name="Запчасть")
+    cross_article = models.CharField(max_length=100, verbose_name="Кросс-артикул")
+    cross_brand = models.CharField(max_length=100, verbose_name="Кросс-бренд")
+    source = models.CharField(max_length=20, choices=ParsingTask.SOURCE_CHOICES, verbose_name="Источник")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Создана")
+
+    class Meta:
+        verbose_name = "Кросс-ссылка"
+        verbose_name_plural = "Кросс-ссылки"
+        ordering = ['cross_brand', 'cross_article']
+
+    def __str__(self):
+        return f"{self.cross_brand} {self.cross_article}"
+
+
+class PriceListTask(models.Model):
+    """Модель задачи анализа прайс-листа"""
+    STATUS_CHOICES = [
+        ('pending', 'Ожидает'),
+        ('processing', 'Обрабатывается'),
+        ('completed', 'Завершена'),
+        ('failed', 'Ошибка'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    file = models.FileField(upload_to='uploads/', verbose_name="Файл прайс-листа")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name="Статус")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Создана")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="Обновлена")
+    result_file = models.FileField(upload_to='results/', blank=True, null=True, verbose_name="Файл результата")
+    error_message = models.TextField(blank=True, null=True, verbose_name="Сообщение об ошибке")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="Пользователь")
+    total_items = models.IntegerField(default=0, verbose_name="Всего позиций")
+    processed_items = models.IntegerField(default=0, verbose_name="Обработано позиций")
+
+    class Meta:
+        verbose_name = "Задача анализа прайс-листа"
+        verbose_name_plural = "Задачи анализа прайс-листов"
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Анализ прайс-листа {self.id} - {self.status}"
+
+
+class PriceListItem(models.Model):
+    """Модель позиции в прайс-листе"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    task = models.ForeignKey(PriceListTask, on_delete=models.CASCADE, verbose_name="Задача")
+    supplier_code = models.CharField(max_length=50, verbose_name="Код поставщика")
+    manufacturer = models.CharField(max_length=100, verbose_name="Производитель")
+    article = models.CharField(max_length=100, verbose_name="Артикул")
+    nomenclature = models.CharField(max_length=500, verbose_name="Номенклатура")
+    quantity = models.IntegerField(default=0, verbose_name="Количество")
+    our_price = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True, verbose_name="Наша цена")
+    
+    # Результаты анализа
+    autopiter_found = models.BooleanField(default=False, verbose_name="Найдено на АвтоПитере")
+    autopiter_our_price = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True, verbose_name="Наша цена на АвтоПитере")
+    autopiter_min_price = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True, verbose_name="Мин. цена на АвтоПитере")
+    
+    emex_found = models.BooleanField(default=False, verbose_name="Найдено на Емекс")
+    emex_price = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True, verbose_name="Цена на Емекс")
+    
+    armtek_found = models.BooleanField(default=False, verbose_name="Найдено на Армтек")
+    armtek_price = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True, verbose_name="Цена на Армтек")
+    
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Создана")
+
+    class Meta:
+        verbose_name = "Позиция прайс-листа"
+        verbose_name_plural = "Позиции прайс-листов"
+        ordering = ['task', 'article']
+
+    def __str__(self):
+        return f"{self.manufacturer} {self.article} - {self.our_price}₽"
+
+
+# Новые модели для анализа прайс-листов конкурентов
 class Competitor(models.Model):
     """Модель конкурента"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
