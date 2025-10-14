@@ -73,7 +73,6 @@ class ParsingTask(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
     file = models.FileField(upload_to=get_upload_path, verbose_name="Файл для парсинга")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
-    progress = models.IntegerField(default=0)
     result_file = models.FileField(upload_to='results/', null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
