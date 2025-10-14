@@ -5,7 +5,7 @@ import django.db.models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0002_auto_add_log_and_result_files'),
+        ('core', '0004_add_price_list_models'),
     ]
 
     operations = [

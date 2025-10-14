@@ -8,7 +8,7 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0005_parsingtask_sources'),
+        ('core', '0002_auto_add_log_and_result_files'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
