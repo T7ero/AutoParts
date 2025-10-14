@@ -9,6 +9,7 @@ class Part(models.Model):
     """Модель для хранения информации о запчастях"""
     name = models.CharField(max_length=255, verbose_name="Название")
     part_number = models.CharField(max_length=100, verbose_name="Номер детали")
+    article = models.CharField(max_length=100, verbose_name="Артикул", blank=True, default='')
     brand = models.CharField(max_length=100, verbose_name="Бренд")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -106,6 +107,7 @@ class PriceListTask(models.Model):
     file = models.FileField(upload_to='uploads/', verbose_name="Файл прайс-листа")
     platform = models.CharField(max_length=20, choices=PLATFORM_CHOICES, verbose_name="Площадка")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name="Статус")
+    progress = models.IntegerField(default=0, verbose_name="Прогресс (%)")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     completed_at = models.DateTimeField(null=True, blank=True, verbose_name="Дата завершения")
     total_items = models.IntegerField(default=0, verbose_name="Всего позиций")
@@ -114,6 +116,7 @@ class PriceListTask(models.Model):
     not_found_items = models.IntegerField(default=0, verbose_name="Не найдено позиций")
     log = models.TextField(blank=True, verbose_name="Лог выполнения")
     result_file = models.FileField(upload_to='results/', null=True, blank=True, verbose_name="Файл результата")
+    log_file = models.FileField(upload_to='logs/', null=True, blank=True, verbose_name="Файл логов")
     error_message = models.TextField(blank=True, verbose_name="Сообщение об ошибке")
     
     # Фильтры для анализа цен
