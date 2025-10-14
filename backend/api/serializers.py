@@ -4,7 +4,7 @@ from core.models import Part, CrossReference, ParsingTask
 class PartSerializer(serializers.ModelSerializer):
     class Meta:
         model = Part
-        fields = ['id', 'name', 'part_number', 'brand', 'created_at']
+        fields = ['id', 'name', 'part_number', 'brand', 'created_at', 'updated_at']
 
 class CrossReferenceSerializer(serializers.ModelSerializer):
     class Meta:
@@ -16,9 +16,9 @@ class ParsingTaskSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = ParsingTask
-        fields = ['id', 'user', 'file', 'file_name', 'status', 'result_file',
-                 'created_at', 'error_message']
-        read_only_fields = ['user', 'status', 'result_file', 'error_message']
+        fields = ['id', 'user', 'file', 'file_name', 'status', 'progress', 'result_file', 'result_files', 'log',
+                 'created_at', 'updated_at', 'error_message']
+        read_only_fields = ['user', 'status', 'progress', 'result_file', 'result_files', 'log', 'error_message']
     
     def get_file_name(self, obj):
         """Получить название файла"""

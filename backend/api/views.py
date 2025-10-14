@@ -63,6 +63,7 @@ def create_parsing_task(request):
             user=user,
             file=file,
             status='pending',
+            progress=0,
             sources=sources_data
         )
         
@@ -217,22 +218,22 @@ def task_logs(request, task_id):
             })
         elif task.status == 'processing':
             logs.append({
-                'timestamp': task.created_at.isoformat(),
-                'message': f"Задача в процессе выполнения"
+                'timestamp': task.updated_at.isoformat(),
+                'message': f"Задача в процессе выполнения. Прогресс: {task.progress}%"
             })
         elif task.status == 'completed':
             logs.append({
-                'timestamp': task.created_at.isoformat(),
+                'timestamp': task.updated_at.isoformat(),
                 'message': f"Задача завершена успешно. Прогресс: 100%"
             })
             if hasattr(task, '_processed_rows') and task._processed_rows:
                 logs.append({
-                    'timestamp': task.created_at.isoformat(),
+                    'timestamp': task.updated_at.isoformat(),
                     'message': f"Обработано строк: {task._processed_rows}"
                 })
         elif task.status == 'failed':
             logs.append({
-                'timestamp': task.created_at.isoformat(),
+                'timestamp': task.updated_at.isoformat(),
                 'message': f"Задача завершена с ошибкой: {task.error_message or 'Неизвестная ошибка'}"
             })
         
@@ -258,17 +259,17 @@ def task_logs(request, task_id):
                 # Добавляем информацию о результатах парсинга
                 if 'autopiter_results' in celery_result.info:
                     logs.append({
-                        'timestamp': task.created_at.isoformat(),
+                        'timestamp': task.updated_at.isoformat(),
                         'message': f"Autopiter: найдено {len(celery_result.info['autopiter_results'])} результатов"
                     })
                 if 'emex_results' in celery_result.info:
                     logs.append({
-                        'timestamp': task.created_at.isoformat(),
+                        'timestamp': task.updated_at.isoformat(),
                         'message': f"Emex: найдено {len(celery_result.info['emex_results'])} результатов"
                     })
                 if 'armtek_results' in celery_result.info:
                     logs.append({
-                        'timestamp': task.created_at.isoformat(),
+                        'timestamp': task.updated_at.isoformat(),
                         'message': f"Armtek: найдено {len(celery_result.info['armtek_results'])} результатов"
                     })
                 
@@ -277,7 +278,7 @@ def task_logs(request, task_id):
                     current_row = celery_result.info['current_row']
                     total_rows = celery_result.info.get('total_rows', 'неизвестно')
                     logs.append({
-                        'timestamp': task.created_at.isoformat(),
+                        'timestamp': task.updated_at.isoformat(),
                         'message': f"Обрабатывается строка {current_row} из {total_rows}"
                     })
                 
@@ -291,9 +292,9 @@ def task_logs(request, task_id):
         
         # Добавляем информацию о времени выполнения
         if task.status in ['completed', 'failed']:
-            duration = task.created_at - task.created_at  # Используем created_at для совместимости
+            duration = task.updated_at - task.created_at
             logs.append({
-                'timestamp': task.created_at.isoformat(),
+                'timestamp': task.updated_at.isoformat(),
                 'message': f"Время выполнения: {duration.total_seconds():.1f} секунд"
             })
         
@@ -303,10 +304,10 @@ def task_logs(request, task_id):
         return Response({
             'task_id': task_id,
             'status': task.status,
-            'progress': 0,  # Заглушка для совместимости
+            'progress': task.progress,
             'logs': logs,
             'created_at': task.created_at.isoformat(),
-            'updated_at': task.created_at.isoformat(),  # Используем created_at для совместимости
+            'updated_at': task.updated_at.isoformat(),
             'file_name': task.file.name if task.file else None
         })
         
