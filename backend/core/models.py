@@ -80,7 +80,6 @@ class ParsingTask(models.Model):
     log = models.TextField(null=True, blank=True, verbose_name="Лог задачи")
     result_files = JSONField(null=True, blank=True, verbose_name="Ссылки на все файлы")
     sources = JSONField(null=True, blank=True, verbose_name="Выбранные источники")
-    updated_at = models.DateTimeField(auto_now=True, verbose_name="Дата обновления")
 
     class Meta:
         verbose_name = "Задача парсинга"

@@ -63,7 +63,6 @@ def create_parsing_task(request):
             user=user,
             file=file,
             status='pending',
-            progress=0,
             sources=sources_data
         )
         

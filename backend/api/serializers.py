@@ -16,9 +16,8 @@ class ParsingTaskSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = ParsingTask
-        fields = ['id', 'user', 'file', 'file_name', 'status', 'result_file', 'result_files', 'log',
-                 'created_at', 'updated_at', 'error_message']  # УБРАЛИ progress
-        read_only_fields = ['user', 'status', 'result_file', 'result_files', 'log', 'error_message']  # УБРАЛИ progress
+        fields = ['id', 'user', 'file', 'file_name', 'status', 'result_file', 'created_at', 'error_message']
+        read_only_fields = ['user', 'status', 'result_file', 'error_message']
     
     def get_file_name(self, obj):
         """Получить название файла"""
@@ -51,4 +50,4 @@ class ParsingTaskSerializer(serializers.ModelSerializer):
             return task
         except Exception as e:
             print(f"Ошибка создания задачи: {str(e)}")
-            raise serializers.ValidationError(f"Ошибка создания задачи: {str(e)}")
+            raise serializers.ValidationError(f"Ошибка создания задачи: {str(e)}") 

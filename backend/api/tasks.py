@@ -318,7 +318,7 @@ def split_large_file(file_path: str, max_rows_per_batch: int = 100) -> List[str]
 def process_parsing_task(self, task_id):
     # Проверяем, не завершена ли уже задача
     try:
-        task = ParsingTask.objects.get(id=task_id)
+    task = ParsingTask.objects.get(id=task_id)
         if task.status == 'completed':
             log_debug(f"Task {task_id} уже завершена, пропускаем повторную обработку")
             return None
