@@ -77,7 +77,6 @@ class ParsingTask(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     error_message = models.TextField(null=True, blank=True)
-    result_files = JSONField(null=True, blank=True, verbose_name="Ссылки на все файлы")
     sources = JSONField(null=True, blank=True, verbose_name="Выбранные источники")
 
     class Meta:
@@ -99,7 +98,6 @@ class PriceListTask(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="Пользователь")
     file = models.FileField(upload_to='uploads/', verbose_name="Файл прайс-листа")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name="Статус")
-    progress = models.IntegerField(default=0, verbose_name="Прогресс (%)")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     completed_at = models.DateTimeField(null=True, blank=True, verbose_name="Дата завершения")
     total_items = models.IntegerField(default=0, verbose_name="Всего позиций")
