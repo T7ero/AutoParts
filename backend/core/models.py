@@ -101,8 +101,6 @@ class PriceListTask(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     total_items = models.IntegerField(default=0, verbose_name="Всего позиций")
     processed_items = models.IntegerField(default=0, verbose_name="Обработано позиций")
-    found_items = models.IntegerField(default=0, verbose_name="Найдено позиций")
-    not_found_items = models.IntegerField(default=0, verbose_name="Не найдено позиций")
     result_file = models.FileField(upload_to='results/', null=True, blank=True, verbose_name="Файл результата")
     error_message = models.TextField(blank=True, verbose_name="Сообщение об ошибке")
     
