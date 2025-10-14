@@ -99,7 +99,6 @@ class PriceListTask(models.Model):
     file = models.FileField(upload_to='uploads/', verbose_name="Файл прайс-листа")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name="Статус")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
-    completed_at = models.DateTimeField(null=True, blank=True, verbose_name="Дата завершения")
     total_items = models.IntegerField(default=0, verbose_name="Всего позиций")
     processed_items = models.IntegerField(default=0, verbose_name="Обработано позиций")
     found_items = models.IntegerField(default=0, verbose_name="Найдено позиций")
