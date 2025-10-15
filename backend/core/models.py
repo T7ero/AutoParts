@@ -104,6 +104,13 @@ class PriceListTask(models.Model):
     result_file = models.FileField(upload_to='results/', null=True, blank=True, verbose_name="Файл результата")
     error_message = models.TextField(blank=True, verbose_name="Сообщение об ошибке")
     
+    # Площадка для анализа
+    platform = models.CharField(max_length=20, choices=[
+        ('autopiter', 'АвтоПитер'),
+        ('emex', 'Emex'),
+        ('armtek', 'Armtek'),
+    ], default='autopiter', verbose_name="Площадка")
+    
     # Фильтры для анализа цен
     competitor_brand_filter = models.CharField(max_length=100, blank=True, verbose_name="Фильтр бренда конкурента")
     include_price_analysis = models.BooleanField(default=True, verbose_name="Включить анализ цен")
