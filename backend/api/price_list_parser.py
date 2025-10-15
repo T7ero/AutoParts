@@ -579,10 +579,9 @@ def check_emex_item(supplier_code: str, manufacturer: str, article: str, competi
         except Exception:
             pass
 
-        # Формируем поисковый запрос (не ограничиваем набором SUPPLIER_CODES — коды могут быть любыми)
-        base_query = f"{manufacturer} {article}".strip()
-        search_query = f"{supplier_code} {base_query}" if supplier_code else base_query
-        url = f"https://emex.ru/search?q={quote(search_query)}"
+        # Формируем URL Emex на основе detailNum (стабильный вариант страницы предложений)
+        # Код поставщика используем только для фильтра в DOM, не добавляем в URL
+        url = f"https://emex.ru/search?detailNum={quote(article)}"
 
         # Делаем запрос
         response = make_request(url, timeout=TIMEOUT, max_retries=MAX_HTTP_RETRIES)
