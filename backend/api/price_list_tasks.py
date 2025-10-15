@@ -28,23 +28,13 @@ def process_price_list_task(self, task_id: int):
         task.save()
         
         def log(msg):
-            """Логирование с сохранением в базу"""
+            """Логирование"""
             timestamp = datetime.now().strftime('%d.%m.%Y, %H:%M:%S')
             log_message = f"[{timestamp}] {msg}"
             print(log_message)
             
-            # Добавляем в лог задачи
-            if not task.log:
-                task.log = log_message
-            else:
-                task.log += f"\n{log_message}"
-            
-            # Ограничиваем размер лога
-            log_lines = task.log.split('\n')
-            if len(log_lines) > 1000:
-                task.log = '\n'.join(log_lines[-1000:])
-            
-            task.save()
+            # Просто выводим в консоль, так как поле log отсутствует в модели
+            # В будущем можно добавить отдельную таблицу для логов
         
         log(f"Начинаем анализ прайс-листа на площадке {task.get_platform_display()}")
         
