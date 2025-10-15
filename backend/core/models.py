@@ -139,6 +139,11 @@ class PriceListItem(models.Model):
     min_competitor_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="Мин. цена конкурента")
     competitor_brand = models.CharField(max_length=100, blank=True, verbose_name="Бренд конкурента с мин. ценой")
     error_message = models.TextField(blank=True, verbose_name="Сообщение об ошибке")
+    
+    # Дополнительные поля для совместимости с существующей БД
+    armtek_found = models.BooleanField(default=False, verbose_name="Найдено на Armtek")
+    autopiter_found = models.BooleanField(default=False, verbose_name="Найдено на Autopiter")
+    emex_found = models.BooleanField(default=False, verbose_name="Найдено на Emex")
 
     class Meta:
         verbose_name = "Позиция прайс-листа"
