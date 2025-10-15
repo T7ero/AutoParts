@@ -115,12 +115,8 @@ def process_price_list_task(self, task_id: int):
                 item.error_message = result.get('error_message') or ''
                 item.save()
                 
-                # Обновляем счетчики
+                # Обновляем счетчик обработанных
                 task.processed_items += 1
-                if result['is_found']:
-                    task.found_items += 1
-                else:
-                    task.not_found_items += 1
                 task.save()
                 
                 log(f"Обработано {task.processed_items}/{task.total_items}: {'найдено' if result['is_found'] else 'не найдено'}")
@@ -133,7 +129,6 @@ def process_price_list_task(self, task_id: int):
                 item.save()
                 
                 task.processed_items += 1
-                task.not_found_items += 1
                 task.save()
                 
                 return {
@@ -197,17 +192,19 @@ def process_price_list_task(self, task_id: int):
         
         # Завершаем задачу
         task.status = 'completed'
-        task.completed_at = timezone.now()
         task.save()
         
-        log(f"Анализ завершен. Обработано: {task.processed_items}, Найдено: {task.found_items}, Не найдено: {task.not_found_items}")
+        # Считаем найденные/не найденные по позициям задачи
+        found_cnt = sum(1 for it in db_items if it.is_found)
+        not_found_cnt = len(db_items) - found_cnt
+        log(f"Анализ завершен. Обработано: {task.processed_items}, Найдено: {found_cnt}, Не найдено: {not_found_cnt}")
         
         return {
             'status': 'completed',
             'task_id': task_id,
             'processed_items': task.processed_items,
-            'found_items': task.found_items,
-            'not_found_items': task.not_found_items,
+            'found_items': found_cnt,
+            'not_found_items': not_found_cnt,
             'result_file': task.result_file.name if task.result_file else None
         }
         
