@@ -551,7 +551,12 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
     return result
 
 def check_emex_item(supplier_code: str, manufacturer: str, article: str, competitor_brand_filter: str = None) -> Dict:
-    """Проверяет наличие позиции на Емекс и анализирует цены"""
+    """Проверяет наличие позиции на Emex и анализирует цены.
+
+    Если передан код поставщика (как на странице data-vendor-id/data-vendor-code),
+    пытается найти оффер конкретного поставщика и извлечь его цену.
+    При отсутствии кода — использует общую минимальную цену из выдачи.
+    """
     result = {
         'is_found': False,
         'marketplace_price': None,
@@ -559,9 +564,9 @@ def check_emex_item(supplier_code: str, manufacturer: str, article: str, competi
         'competitor_brand': None,
         'error_message': ''
     }
-    
+
     try:
-        # Проверяем наличие брендов через основной парсер
+        # Проверяем наличие брендов через основной Emex-парсер (помогает понять релевантность)
         man_ok = False
         try:
             brands = get_brands_by_artikul_emex(article) or []
@@ -569,37 +574,85 @@ def check_emex_item(supplier_code: str, manufacturer: str, article: str, competi
             for b in brands:
                 if _norm_brand(b) == man_norm:
                     man_ok = True
+                    result['competitor_brand'] = b
                     break
         except Exception:
             pass
 
-        # Формируем поисковый запрос
-        search_query = f"{manufacturer} {article}"
-        if supplier_code and supplier_code in SUPPLIER_CODES['emex']:
-            search_query = f"{supplier_code} {search_query}"
-        
+        # Формируем поисковый запрос (не ограничиваем набором SUPPLIER_CODES — коды могут быть любыми)
+        base_query = f"{manufacturer} {article}".strip()
+        search_query = f"{supplier_code} {base_query}" if supplier_code else base_query
         url = f"https://emex.ru/search?q={quote(search_query)}"
-        
+
         # Делаем запрос
         response = make_request(url, timeout=TIMEOUT, max_retries=MAX_HTTP_RETRIES)
         if not response:
-            result['error_message'] = "Ошибка запроса к Емекс"
+            result['error_message'] = "Ошибка запроса к Emex"
             return result
-        
+
         soup = BeautifulSoup(response.text, 'html.parser')
-        # Упрощенно ищем цену в выдаче
-        txt = soup.get_text(' ', strip=True)
-        m = re.search(r'от\s*(\d[\d\s]*)\s*₽', txt) or re.search(r'\b(\d[\d\s]{2,})\b\s*₽', txt)
-        if m:
+
+        def extract_price_from_text(text: str) -> Optional[float]:
             try:
-                result['marketplace_price'] = float(m.group(1).replace(' ', ''))
+                m = re.search(r"(\d[\d\s]{2,})\s*₽", text)
+                if m:
+                    return float(m.group(1).replace(' ', ''))
             except Exception:
-                pass
-        result['is_found'] = bool(result['marketplace_price'] is not None or man_ok)
-        
+                return None
+            return None
+
+        offer_price: Optional[float] = None
+
+        # Если известен код поставщика — ищем оффер с соответствующим data-атрибутом
+        if supplier_code:
+            # Ищем узлы с атрибутами data-vendor-id/data-vendor-code равными supplier_code
+            vendor_nodes = soup.find_all(attrs={
+                'data-vendor-id': supplier_code
+            }) or soup.find_all(attrs={
+                'data-vendor-code': supplier_code
+            })
+
+            for node in vendor_nodes:
+                # Подымаемся к карточке оффера и ищем цену внутри блока
+                container = node
+                # Ограничим глубину подъема, чтобы не выйти за пределы нужного блока
+                for _ in range(5):
+                    if container is None:
+                        break
+                    # Ищем все видимые тексты с символом рубля внутри контейнера
+                    price_texts = [t for t in container.stripped_strings if '₽' in t]
+                    for pt in price_texts:
+                        price_val = extract_price_from_text(pt)
+                        if price_val:
+                            offer_price = price_val
+                            break
+                    if offer_price is not None:
+                        break
+                    container = container.parent
+                if offer_price is not None:
+                    break
+
+        # Фолбэк: если по коду поставщика не нашли, берём минимальную цену со всей страницы
+        if offer_price is None:
+            txt = soup.get_text(' ', strip=True)
+            # «от N ₽» или просто «N ₽»
+            m = re.search(r'от\s*(\d[\d\s]*)\s*₽', txt) or re.search(r'(\d[\d\s]{2,})\s*₽', txt)
+            if m:
+                try:
+                    offer_price = float(m.group(1).replace(' ', ''))
+                except Exception:
+                    offer_price = None
+
+        # Заполняем результат
+        if offer_price is not None:
+            result['marketplace_price'] = offer_price
+            result['is_found'] = True
+        else:
+            result['is_found'] = bool(man_ok)
+
     except Exception as e:
-        result['error_message'] = f"Ошибка парсинга Емекс: {str(e)}"
-    
+        result['error_message'] = f"Ошибка парсинга Emex: {str(e)}"
+
     return result
 
 def check_armtek_item(supplier_code: str, manufacturer: str, article: str, competitor_brand_filter: str = None) -> Dict:
