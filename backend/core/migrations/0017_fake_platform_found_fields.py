@@ -7,8 +7,5 @@ class Migration(migrations.Migration):
         ('core', '0016_add_platform_found_fields'),
     ]
 
-    operations = [
-        # Эта миграция ничего не делает, так как поля уже существуют в БД
-        # Она нужна только для того, чтобы Django считал миграцию 0016 примененной
-        migrations.RunSQL.noop,
-    ]
+    # Пустая миграция-заглушка для корректного состояния графа миграций
+    operations = []
