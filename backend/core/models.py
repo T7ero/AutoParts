@@ -132,6 +132,7 @@ class PriceListItem(models.Model):
     nomenclature = models.TextField(verbose_name="Номенклатура")
     quantity = models.IntegerField(default=0, verbose_name="Количество")
     our_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="Наша цена")
+    created_at = models.DateTimeField(auto_now_add=True)
     
     # Результаты парсинга
     is_found = models.BooleanField(default=False, verbose_name="Найдено на площадке")
