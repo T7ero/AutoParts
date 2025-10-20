@@ -356,8 +356,8 @@ def process_parsing_task(self, task_id):
                         'status': task.status,
                         'progress': task.progress,
                         'error_message': task.error_message,
-                        'result_files': task.result_files,
-                        'log': (task.log or '')[-2000:],  # последние 2000 символов
+                        'result_files': {},  # Поле отсутствует в модели
+                        'log': '',  # Поле отсутствует в модели
                     }
                 }
             )
@@ -581,17 +581,9 @@ def process_parsing_task(self, task_id):
                 task.progress = progress
                 task.status = 'in_progress'
                 
-                # Сохраняем логи в базу данных для отображения в интерфейсе
+                # Логирование (без сохранения в БД, так как поле log отсутствует)
                 current_log = f"[{datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Обрабатываем строку {index + 1}: {len(numbers_to_parse)} артикулов"
-                if task.log:
-                    task.log += '\n' + current_log
-                else:
-                    task.log = current_log
-                
-                # Ограничиваем размер логов (последние 1000 символов)
-                if len(task.log) > 10000:
-                    lines = task.log.split('\n')
-                    task.log = '\n'.join(lines[-50:])  # Последние 50 строк
+                print(f"[DEBUG] {current_log}")
                 
                 task.save()
                 ws_send()
@@ -753,8 +745,8 @@ def process_parsing_task(self, task_id):
                                     'Артикул по Бренду № 2': clean_excel_string(original_num),  # Исходный артикул
                                     'Источник': src
                                 })
-                            # промежуточный лог
-                            task.log = '\n'.join(log_messages[-100:])
+                            # промежуточный лог (без сохранения в БД)
+                            print(f"[DEBUG] {log_messages[-1] if log_messages else 'Обработка артикула'}")
                             task.save(); ws_send()
                     
                     except Exception as e:
@@ -768,7 +760,7 @@ def process_parsing_task(self, task_id):
                 if (index + 1) % 3 == 0 or index == total_rows - 1:
                     progress = int((index + 1) / total_rows * 100)
                     task.progress = progress
-                    task.log = '\n'.join(log_messages[-100:])  # Ограничиваем лог
+                    # task.log = '\n'.join(log_messages[-100:])  # Поле отсутствует в модели
                     task.status = 'in_progress'
                     task.save()
                     ws_send()
@@ -794,22 +786,22 @@ def process_parsing_task(self, task_id):
                             df_autopiter = pd.DataFrame(results_autopiter)
                             autopiter_file = f'media/results/autopiter_results_{task.id}.xlsx'
                             df_autopiter.to_excel(autopiter_file, index=False, engine='openpyxl')
-                            task.result_files = task.result_files or {}
-                            task.result_files['autopiter'] = autopiter_file
+                            # task.result_files = task.result_files or {}
+                            # task.result_files['autopiter'] = autopiter_file
                         if results_armtek:
                             results_armtek = dedupe_rows(results_armtek)
                             df_armtek = pd.DataFrame(results_armtek)
                             armtek_file = f'media/results/armtek_results_{task.id}.xlsx'
                             df_armtek.to_excel(armtek_file, index=False, engine='openpyxl')
-                            task.result_files = task.result_files or {}
-                            task.result_files['armtek'] = armtek_file
+                            # task.result_files = task.result_files or {}
+                            # task.result_files['armtek'] = armtek_file
                         if results_emex:
                             results_emex = dedupe_rows(results_emex)
                             df_emex = pd.DataFrame(results_emex)
                             emex_file = f'media/results/emex_results_{task.id}.xlsx'
                             df_emex.to_excel(emex_file, index=False, engine='openpyxl')
-                            task.result_files = task.result_files or {}
-                            task.result_files['emex'] = emex_file
+                            # task.result_files = task.result_files or {}
+                            # task.result_files['emex'] = emex_file
                         task.save()
                         log("Чекпоинт: промежуточные файлы результатов сохранены")
                     except Exception as e:
@@ -819,23 +811,17 @@ def process_parsing_task(self, task_id):
                 log(f"Error processing row {index + 1}: {str(e)}")
                 task._processed_rows += 1  # Увеличиваем счетчик даже при ошибке
                 
-                # Добавляем логирование ошибки в базу данных
+                # Логирование ошибки (без сохранения в БД)
                 error_log = f"[{datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Ошибка обработки строки {index + 1}: {str(e)}"
-                if task.log:
-                    task.log += '\n' + error_log
-                else:
-                    task.log = error_log
+                print(f"[DEBUG] {error_log}")
                 task.save()
                 continue
         
         completion_log = f"[{datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Обработка завершена. Обработано строк: {task._processed_rows} из {total_rows}"
         log(completion_log)
         
-        # Добавляем в базу данных
-        if task.log:
-            task.log += '\n' + completion_log
-        else:
-            task.log = completion_log
+        # Логирование завершения (без сохранения в БД)
+        print(f"[DEBUG] {completion_log}")
         task.save()
         
         # Создаем результаты с улучшенной обработкой ошибок
@@ -853,8 +839,8 @@ def process_parsing_task(self, task_id):
                     # Пробуем без engine
                     df_autopiter.to_excel(autopiter_file, index=False)
                     log(f"Создан файл Autopiter (без engine): {autopiter_file}")
-                task.result_files = task.result_files or {}
-                task.result_files['autopiter'] = autopiter_file
+                # task.result_files = task.result_files or {}
+                # task.result_files['autopiter'] = autopiter_file
                 log(f"Файл Autopiter добавлен в result_files: {autopiter_file}")
             
             if results_armtek:
@@ -870,8 +856,8 @@ def process_parsing_task(self, task_id):
                     # Пробуем без engine
                     df_armtek.to_excel(armtek_file, index=False)
                     log(f"Создан файл Armtek (без engine): {armtek_file}")
-                task.result_files = task.result_files or {}
-                task.result_files['armtek'] = armtek_file
+                # task.result_files = task.result_files or {}
+                # task.result_files['armtek'] = armtek_file
                 log(f"Файл Armtek добавлен в result_files: {armtek_file}")
             
             if results_emex:
@@ -887,8 +873,8 @@ def process_parsing_task(self, task_id):
                     # Пробуем без engine
                     df_emex.to_excel(emex_file, index=False)
                     log(f"Создан файл Emex (без engine): {emex_file}")
-                task.result_files = task.result_files or {}
-                task.result_files['emex'] = emex_file
+                # task.result_files = task.result_files or {}
+                # task.result_files['emex'] = emex_file
                 log(f"Файл Emex добавлен в result_files: {emex_file}")
         except Exception as e:
             log(f"Критическая ошибка при создании Excel файлов: {str(e)}")
@@ -897,7 +883,7 @@ def process_parsing_task(self, task_id):
         task.status = 'completed'
         task.progress = 100
         task.save()
-        log(f"Task завершен. Result files: {task.result_files}")
+        log(f"Task завершен. Result files: созданы файлы результатов")
         ws_send()
         
         # Очистка Chrome процессов и пула драйверов
@@ -911,7 +897,7 @@ def process_parsing_task(self, task_id):
         return {
             'status': 'completed',
             'task_id': task_id,
-            'result_files': task.result_files,
+            'result_files': {},  # Поле отсутствует в модели
             'processed_rows': task._processed_rows,
             'message': 'Task completed successfully'
         }
