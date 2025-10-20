@@ -66,11 +66,18 @@ def _norm_brand(val: str) -> str:
 
 def parse_price_list_file(file_path: str) -> List[Dict]:
     """Парсит Excel файл прайс-листа и возвращает список позиций.
-    Ищет строку заголовков в первых 20 строках (подходит под ваш шаблон с «шапкой»).
+    Расширенный импорт: ищет строку заголовков в первых ~60 строках,
+    поддерживает синонимы названий колонок и «шапки» с пустыми/мердж-ячейками.
     """
     try:
-        # Читаем без заголовков
-        df_raw = pd.read_excel(file_path, header=None, dtype=str)
+        # Читаем без заголовков с повышенной совместимостью
+        df_raw = pd.read_excel(
+            file_path,
+            header=None,
+            dtype=str,
+            keep_default_na=False,
+            engine='openpyxl'
+        )
 
         def norm(val):
             try:
@@ -82,18 +89,33 @@ def parse_price_list_file(file_path: str) -> List[Dict]:
         man_idx = art_idx = None
         supp_idx = nom_idx = qty_idx = price_idx = None
 
-        scan_rows = min(20, len(df_raw))
+        # Синонимы для поиска колонок
+        manufacturer_keys = ['производител', 'бренд', 'марка', 'изготовител']
+        article_keys = ['артикул', 'номер', 'код детали', 'код производителя']
+        supplier_keys = ['код поставщика', 'код товара', 'код пост', 'поставщик', 'код склада']
+        name_keys = ['номенклатура', 'наимен', 'описание', 'товар']
+        qty_keys = ['колич', 'остаток', 'в наличии', 'наличие', 'остатки']
+        price_keys = ['цена', 'стоим', 'оптов', 'рознич']
+
+        def find_idx(row_vals, keys):
+            try:
+                return next((j for j, c in enumerate(row_vals) if any(k in c for k in keys)), None)
+            except Exception:
+                return None
+
+        # Увеличиваем окно поиска шапки
+        scan_rows = min(60, len(df_raw))
         for i in range(scan_rows):
             row_vals = [norm(v) for v in df_raw.iloc[i].tolist()]
-            tmp_man = next((j for j, c in enumerate(row_vals) if 'производител' in c or 'бренд' in c), None)
-            tmp_art = next((j for j, c in enumerate(row_vals) if 'артикул' in c), None)
+            tmp_man = find_idx(row_vals, manufacturer_keys)
+            tmp_art = find_idx(row_vals, article_keys)
             if tmp_man is not None and tmp_art is not None:
                 header_row = i
                 man_idx, art_idx = tmp_man, tmp_art
-                supp_idx = next((j for j, c in enumerate(row_vals) if 'код поставщика' in c or ('поставщик' in c and 'код' in c)), None)
-                nom_idx = next((j for j, c in enumerate(row_vals) if 'номенклатура' in c or 'наимен' in c), None)
-                qty_idx = next((j for j, c in enumerate(row_vals) if 'колич' in c or 'в наличии' in c), None)
-                price_idx = next((j for j, c in enumerate(row_vals) if 'цена' in c or 'оптов' in c), None)
+                supp_idx = find_idx(row_vals, supplier_keys)
+                nom_idx = find_idx(row_vals, name_keys)
+                qty_idx = find_idx(row_vals, qty_keys)
+                price_idx = find_idx(row_vals, price_keys)
                 break
 
         if header_row is None:
@@ -104,8 +126,10 @@ def parse_price_list_file(file_path: str) -> List[Dict]:
             if pd.isna(headers[k]) or str(headers[k]).strip() == '':
                 headers[k] = headers[k-1] if k > 0 else f'col_{k}'
 
+        # Берём данные после шапки и чистим пустые строки
         df = df_raw.iloc[header_row + 1:].reset_index(drop=True)
         df.columns = headers
+        df = df.dropna(how='all')
 
         supplier_col = df.columns[supp_idx] if supp_idx is not None and supp_idx < len(df.columns) else None
         manufacturer_col = df.columns[man_idx]
