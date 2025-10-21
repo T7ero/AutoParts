@@ -332,7 +332,6 @@ def process_parsing_task(self, task_id):
     
     # Отмечаем задачу как выполняющуюся
     task.status = 'in_progress'
-    task.progress = 0
     task.save()
     
     log_messages = []
@@ -354,7 +353,6 @@ def process_parsing_task(self, task_id):
                     'data': {
                         'id': task.id,
                         'status': task.status,
-                        'progress': task.progress,
                         'error_message': task.error_message,
                         'result_files': {},  # Поле отсутствует в модели
                         'log': '',  # Поле отсутствует в модели
@@ -576,9 +574,7 @@ def process_parsing_task(self, task_id):
                     continue
                 
                 log(f"Обрабатываем строку {index + 1}: {len(numbers_to_parse)} артикулов")
-                # Обновляем прогресс и логи для отображения в интерфейсе
-                progress = int((index + 1) / total_rows * 100)
-                task.progress = progress
+                # Обновляем статус для отображения в интерфейсе
                 task.status = 'in_progress'
                 
                 # Логирование (без сохранения в БД, так как поле log отсутствует)
@@ -756,10 +752,8 @@ def process_parsing_task(self, task_id):
                 # Увеличиваем счетчик обработанных строк
                 task._processed_rows += 1
                 
-                # Обновляем прогресс каждые 3 строки для более частого обновления
+                # Обновляем статус каждые 3 строки для более частого обновления
                 if (index + 1) % 3 == 0 or index == total_rows - 1:
-                    progress = int((index + 1) / total_rows * 100)
-                    task.progress = progress
                     # task.log = '\n'.join(log_messages[-100:])  # Поле отсутствует в модели
                     task.status = 'in_progress'
                     task.save()
@@ -881,7 +875,6 @@ def process_parsing_task(self, task_id):
         
         # Принудительно сохраняем task с файлами
         task.status = 'completed'
-        task.progress = 100
         task.save()
         log(f"Task завершен. Result files: созданы файлы результатов")
         ws_send()

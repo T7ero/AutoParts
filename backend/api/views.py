@@ -63,8 +63,7 @@ def create_parsing_task(request):
             user=user,
             file=file,
             status='pending',
-            sources=sources_data,
-            progress=0
+            sources=sources_data
         )
         
         # Запускаем задачу в фоне
@@ -219,7 +218,7 @@ def task_logs(request, task_id):
         elif task.status == 'processing':
             logs.append({
                 'timestamp': task.updated_at.isoformat(),
-                'message': f"Задача в процессе выполнения. Прогресс: {task.progress}%"
+                'message': f"Задача в процессе выполнения"
             })
         elif task.status == 'completed':
             logs.append({
@@ -304,7 +303,6 @@ def task_logs(request, task_id):
         return Response({
             'task_id': task_id,
             'status': task.status,
-            'progress': task.progress,
             'logs': logs,
             'created_at': task.created_at.isoformat(),
             'updated_at': task.updated_at.isoformat(),
