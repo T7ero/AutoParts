@@ -63,7 +63,8 @@ def create_parsing_task(request):
             user=user,
             file=file,
             status='pending',
-            sources=sources_data
+            sources=sources_data,
+            progress=0
         )
         
         # Запускаем задачу в фоне

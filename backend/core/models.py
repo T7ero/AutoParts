@@ -115,6 +115,11 @@ class PriceListTask(models.Model):
     competitor_brand_filter = models.CharField(max_length=100, blank=True, verbose_name="Фильтр бренда конкурента")
     include_price_analysis = models.BooleanField(default=True, verbose_name="Включить анализ цен")
     
+    # Дополнительные поля для совместимости с существующей БД
+    found_items = models.IntegerField(default=0, verbose_name="Найденные позиции")
+    not_found_items = models.IntegerField(default=0, verbose_name="Ненайденные позиции")
+    log = models.TextField(blank=True, verbose_name="Лог выполнения")
+    
     class Meta:
         verbose_name = "Задача анализа прайс-листа"
         verbose_name_plural = "Задачи анализа прайс-листа"

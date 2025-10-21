@@ -33,8 +33,12 @@ def process_price_list_task(self, task_id: int):
             log_message = f"[{timestamp}] {msg}"
             print(log_message)
             
-            # Просто выводим в консоль, так как поле log отсутствует в модели
-            # В будущем можно добавить отдельную таблицу для логов
+            # Сохраняем в поле log задачи
+            if task.log:
+                task.log += '\n' + log_message
+            else:
+                task.log = log_message
+            task.save()
         
         log(f"Начинаем анализ прайс-листа на площадке {task.get_platform_display()}")
         
@@ -197,6 +201,13 @@ def process_price_list_task(self, task_id: int):
         # Считаем найденные/не найденные по позициям задачи
         found_cnt = sum(1 for it in db_items if it.is_found)
         not_found_cnt = len(db_items) - found_cnt
+        
+        # Обновляем поля задачи
+        task.found_items = found_cnt
+        task.not_found_items = not_found_cnt
+        task.status = 'completed'
+        task.save()
+        
         log(f"Анализ завершен. Обработано: {task.processed_items}, Найдено: {found_cnt}, Не найдено: {not_found_cnt}")
         
         return {
