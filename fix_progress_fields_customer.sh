@@ -4,11 +4,11 @@ echo "🔧 Исправление полей progress на сервере зак
 
 # 1. Остановить контейнеры
 echo "⏹️ Остановка контейнеров..."
-docker compose down
+sudo docker compose down
 
 # 2. Запустить только базу данных
 echo "🗄️ Запуск базы данных..."
-docker compose up -d db
+sudo docker compose up -d db
 
 # 3. Подождать готовности БД
 echo "⏳ Ожидание готовности базы данных..."
@@ -16,7 +16,7 @@ sleep 10
 
 # 4. Исправить поле progress в core_pricelisttask
 echo "🔧 Исправление поля progress в core_pricelisttask..."
-docker compose exec db psql -U postgres -d autoparts -c "
+sudo docker compose exec db psql -U postgres -d autoparts -c "
 -- Удалить поле progress если оно есть
 ALTER TABLE core_pricelisttask DROP COLUMN IF EXISTS progress;
 
@@ -33,7 +33,7 @@ UPDATE core_pricelisttask SET log = '' WHERE log IS NULL;
 
 # 5. Исправить поле progress в core_parsingtask
 echo "🔧 Исправление поля progress в core_parsingtask..."
-docker compose exec db psql -U postgres -d autoparts -c "
+sudo docker compose exec db psql -U postgres -d autoparts -c "
 -- Удалить поле progress если оно есть
 ALTER TABLE core_parsingtask DROP COLUMN IF EXISTS progress;
 
@@ -47,14 +47,14 @@ UPDATE core_parsingtask SET log = '' WHERE log IS NULL;
 # 6. Проверить структуру таблиц
 echo "🔍 Проверка структуры таблиц..."
 echo "=== core_pricelisttask ==="
-docker compose exec db psql -U postgres -d autoparts -c "\d core_pricelisttask" | grep -E "(progress|found_items|not_found_items|log)"
+sudo docker compose exec db psql -U postgres -d autoparts -c "\d core_pricelisttask" | grep -E "(progress|found_items|not_found_items|log)"
 
 echo "=== core_parsingtask ==="
-docker compose exec db psql -U postgres -d autoparts -c "\d core_parsingtask" | grep -E "(progress|log)"
+sudo docker compose exec db psql -U postgres -d autoparts -c "\d core_parsingtask" | grep -E "(progress|log)"
 
 # 7. Запустить все контейнеры
 echo "🚀 Запуск всех контейнеров..."
-docker compose up -d
+sudo docker compose up -d
 
 # 8. Подождать запуска
 echo "⏳ Ожидание запуска сервисов..."
@@ -62,7 +62,7 @@ sleep 15
 
 # 9. Проверить статус
 echo "✅ Проверка статуса..."
-docker compose ps
+sudo docker compose ps
 
 echo "🎉 Исправление завершено!"
 echo "Теперь попробуйте загрузить файлы в оба модуля:"
