@@ -185,6 +185,7 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
         'marketplace_price': None,
         'min_competitor_price': None,
         'competitor_brand': None,
+        'quantity_in_stock': None,
         'error_message': ''
     }
     
@@ -195,6 +196,7 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
         supplier_codes = SUPPLIER_CODES['autopiter']
         our_prices = []  # Будем собирать все наши цены
         competitor_prices = []  # Будем собирать все цены конкурентов
+        competitor_data = []  # Будем собирать данные конкурентов (цена + количество)
         
         # Значительно увеличенная задержка перед запросом, чтобы избежать rate limit
         time.sleep(random.uniform(5.0, 10.0))
@@ -333,6 +335,33 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                     
                                     print(f"[DEBUG] Итоговая найденная цена: {price_val}")
                                     
+                                    # Извлекаем количество товара из ячейки с количеством
+                                    quantity_val = None
+                                    if len(cells) >= 6:  # Колонка с количеством обычно 5-я (индекс 5)
+                                        quantity_cell = cells[5]  # Колонка "Наличие"
+                                        quantity_text = quantity_cell.get_text(strip=True)
+                                        print(f"[DEBUG] Проверяем колонку 5 (количество): '{quantity_text}'")
+                                        
+                                        # Ищем количество в div с классом NonRetailAppraiseTR__quantity
+                                        quantity_divs = quantity_cell.find_all(['div', 'span'], class_=re.compile(r'.*NonRetailAppraiseTR__quantity.*'))
+                                        for quantity_div in quantity_divs:
+                                            div_text = quantity_div.get_text(strip=True)
+                                            # Извлекаем число из текста типа "32 шт" или ">20 шт"
+                                            quantity_match = re.search(r'(\d+)', div_text)
+                                            if quantity_match:
+                                                quantity_val = int(quantity_match.group(1))
+                                                print(f"[DEBUG] Найдено количество {quantity_val} в div NonRetailAppraiseTR__quantity")
+                                                break
+                                        
+                                        # Если не нашли в div, ищем в тексте ячейки
+                                        if quantity_val is None:
+                                            quantity_match = re.search(r'(\d+)', quantity_text)
+                                            if quantity_match:
+                                                quantity_val = int(quantity_match.group(1))
+                                                print(f"[DEBUG] Найдено количество {quantity_val} в тексте ячейки")
+                                    
+                                    print(f"[DEBUG] Итоговое найденное количество: {quantity_val}")
+                                    
                                     if price_val is not None:
                                         # Извлекаем цифры из кода поставщика
                                         sup_digits = re.sub(r'\D+', '', supplier_text)
@@ -357,7 +386,12 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                             print(f"[DEBUG] Добавлена наша цена {price_val} для поставщика {sup_digits}")
                                         else:
                                             competitor_prices.append(price_val)
-                                            print(f"[DEBUG] Добавлена цена конкурента {price_val} для поставщика {sup_digits}")
+                                            competitor_data.append({
+                                                'price': price_val,
+                                                'quantity': quantity_val,
+                                                'supplier': sup_digits
+                                            })
+                                            print(f"[DEBUG] Добавлена цена конкурента {price_val} для поставщика {sup_digits}, количество: {quantity_val}")
                                             
                             except Exception as e:
                                 print(f"[DEBUG] Ошибка парсинга строки {row_idx}: {str(e)}")
@@ -372,10 +406,15 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                     else:
                         print(f"[DEBUG] Наши цены не найдены. Наши коды поставщиков: {supplier_codes}")
                     
-                    # Если не нашли минимальную цену конкурента из SelectedOffer, используем минимальную из таблицы
-                    if result['min_competitor_price'] is None and competitor_prices:
-                        result['min_competitor_price'] = min(competitor_prices)
-                        print(f"[DEBUG] Установлена минимальная цена конкурента из таблицы: {result['min_competitor_price']}")
+                    # Если нашли минимальную цену конкурента из таблицы, используем её (она более точная с количеством)
+                    if competitor_data:
+                        # Находим предложение с минимальной ценой
+                        min_competitor_offer = min(competitor_data, key=lambda x: x['price'])
+                        result['min_competitor_price'] = min_competitor_offer['price']
+                        result['quantity_in_stock'] = min_competitor_offer['quantity']
+                        print(f"[DEBUG] Установлена минимальная цена конкурента из таблицы: {result['min_competitor_price']}, количество: {result['quantity_in_stock']}")
+                    elif result['min_competitor_price'] is None:
+                        print(f"[DEBUG] Минимальная цена конкурента не найдена")
                     
     except Exception as e:
         result['error_message'] = f'HTTP parsing failed: {str(e)}'
@@ -605,6 +644,7 @@ def check_emex_item(supplier_code: str, manufacturer: str, article: str, competi
         'marketplace_price': None,
         'min_competitor_price': None,
         'competitor_brand': None,
+        'quantity_in_stock': None,
         'error_message': ''
     }
 
@@ -704,6 +744,7 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
         'marketplace_price': None,
         'min_competitor_price': None,
         'competitor_brand': None,
+        'quantity_in_stock': None,
         'error_message': ''
     }
     
@@ -781,6 +822,7 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
                             
                             # Ищем минимальную цену среди всех предложений
                             min_price = None
+                            min_price_quantity = None
                             
                             # Селекторы для поиска цен
                             price_selectors = [
@@ -806,12 +848,57 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
                                                     price_value = float(price_match.group(1).replace(' ', ''))
                                                     prices.append(price_value)
                                                     print(f"[DEBUG] Armtek: найдена цена {price_value}₽")
+                                                    
+                                                    # Ищем количество товара для этой цены
+                                                    # Ищем родительский контейнер предложения
+                                                    offer_container = element
+                                                    for _ in range(5):  # Поднимаемся по DOM дереву
+                                                        offer_container = offer_container.find_element(By.XPATH, '..')
+                                                        try:
+                                                            # Ищем элемент с количеством в том же контейнере
+                                                            quantity_elements = offer_container.find_elements(By.CSS_SELECTOR, 'p.font__body2')
+                                                            for q_elem in quantity_elements:
+                                                                q_text = q_elem.text.strip()
+                                                                if 'шт' in q_text:
+                                                                    # Извлекаем число из текста типа ">20 шт" или "32 шт"
+                                                                    q_match = re.search(r'(\d+)', q_text)
+                                                                    if q_match:
+                                                                        quantity_value = int(q_match.group(1))
+                                                                        print(f"[DEBUG] Armtek: найдено количество {quantity_value} для цены {price_value}")
+                                                                        if min_price is None or price_value < min_price:
+                                                                            min_price = price_value
+                                                                            min_price_quantity = quantity_value
+                                                                        break
+                                                            if min_price_quantity is not None:
+                                                                break
+                                                        except Exception:
+                                                            continue
+                                                    if min_price_quantity is not None:
+                                                        break
+                                                    
                                                 except ValueError:
                                                     continue
                                     
-                                    if prices:
+                                    if prices and min_price is None:
                                         min_price = min(prices)
                                         print(f"[DEBUG] Armtek: минимальная цена найдена: {min_price}₽")
+                                        
+                                        # Если не нашли количество для минимальной цены, ищем его отдельно
+                                        if min_price_quantity is None:
+                                            try:
+                                                # Ищем все элементы с количеством
+                                                quantity_elements = driver.find_elements(By.CSS_SELECTOR, 'p.font__body2')
+                                                for q_elem in quantity_elements:
+                                                    q_text = q_elem.text.strip()
+                                                    if 'шт' in q_text:
+                                                        q_match = re.search(r'(\d+)', q_text)
+                                                        if q_match:
+                                                            min_price_quantity = int(q_match.group(1))
+                                                            print(f"[DEBUG] Armtek: найдено общее количество {min_price_quantity}")
+                                                            break
+                                            except Exception as e:
+                                                print(f"[DEBUG] Armtek: ошибка поиска количества: {str(e)}")
+                                        
                                         break
                                         
                                 except Exception as e:
@@ -821,8 +908,9 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
                             if min_price:
                                 result['marketplace_price'] = min_price
                                 result['min_competitor_price'] = min_price  # На Armtek это одно и то же
+                                result['quantity_in_stock'] = min_price_quantity
                                 result['is_found'] = True
-                                print(f"[DEBUG] Armtek: итоговый результат - найдено: {min_price}₽")
+                                print(f"[DEBUG] Armtek: итоговый результат - найдено: {min_price}₽, количество: {min_price_quantity}")
                             else:
                                 print(f"[DEBUG] Armtek: цены не найдены")
                                 
