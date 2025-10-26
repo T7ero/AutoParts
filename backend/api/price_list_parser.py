@@ -375,14 +375,18 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                             # Проверяем точное совпадение
                                             if sup_digits in supplier_codes:
                                                 is_our_supplier = True
-                                                print(f"[DEBUG] Точное совпадение найдено: {sup_digits}")
+                                                print(f"[DEBUG] ✅ ТОЧНОЕ СОВПАДЕНИЕ НАЙДЕНО: {sup_digits} в наших кодах!")
                                             else:
                                                 # Проверяем, содержит ли код поставщика наши коды как подстроку
                                                 for our_code in supplier_codes:
                                                     if our_code in sup_digits:
                                                         is_our_supplier = True
-                                                        print(f"[DEBUG] Подстрока найдена: {our_code} в {sup_digits}")
+                                                        print(f"[DEBUG] ✅ ПОДСТРОКА НАЙДЕНА: {our_code} в {sup_digits}")
                                                         break
+                                                if not is_our_supplier:
+                                                    print(f"[DEBUG] ❌ Поставщик {sup_digits} НЕ найден в наших кодах {supplier_codes}")
+                                        else:
+                                            print(f"[DEBUG] ❌ Не удалось извлечь цифры из кода поставщика: '{supplier_text}'")
                                         
                                         print(f"[DEBUG] Это наш поставщик: {is_our_supplier}")
                                         
@@ -403,13 +407,20 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                 continue
                     
                     # Обрабатываем найденные цены
+                    print(f"[DEBUG] === ИТОГОВАЯ СТАТИСТИКА ===")
+                    print(f"[DEBUG] Найдено наших поставщиков: {len(our_prices)}")
+                    print(f"[DEBUG] Найдено конкурентов: {len(competitor_prices)}")
+                    print(f"[DEBUG] Наши коды: {supplier_codes}")
+                    print(f"[DEBUG] =========================")
+                    
                     if our_prices:
                         # Берем минимальную цену среди наших поставщиков
                         result['marketplace_price'] = min(our_prices)
                         result['is_found'] = True
                         print(f"[DEBUG] Найдены наши цены: {our_prices}, минимальная: {result['marketplace_price']}")
                     else:
-                        print(f"[DEBUG] Наши цены не найдены. Наши коды поставщиков: {supplier_codes}")
+                        print(f"[DEBUG] ❌ НАШИ ЦЕНЫ НЕ НАЙДЕНЫ! Наши коды поставщиков: {supplier_codes}")
+                        print(f"[DEBUG] Возможно, нужно обновить коды поставщиков или наши поставщики не представлены на этой странице")
                     
                     # Если нашли минимальную цену конкурента из таблицы, используем её (она более точная с количеством)
                     if competitor_data:
@@ -597,14 +608,18 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                             # Проверяем точное совпадение
                             if sup_digits in supplier_codes:
                                 is_our_supplier = True
-                                print(f"[DEBUG] Selenium: точное совпадение найдено: {sup_digits}")
+                                print(f"[DEBUG] Selenium: ✅ ТОЧНОЕ СОВПАДЕНИЕ НАЙДЕНО: {sup_digits} в наших кодах!")
                             else:
                                 # Проверяем, содержит ли код поставщика наши коды как подстроку
                                 for our_code in supplier_codes:
                                     if our_code in sup_digits:
                                         is_our_supplier = True
-                                        print(f"[DEBUG] Selenium: подстрока найдена: {our_code} в {sup_digits}")
+                                        print(f"[DEBUG] Selenium: ✅ ПОДСТРОКА НАЙДЕНА: {our_code} в {sup_digits}")
                                         break
+                                if not is_our_supplier:
+                                    print(f"[DEBUG] Selenium: ❌ Поставщик {sup_digits} НЕ найден в наших кодах {supplier_codes}")
+                        else:
+                            print(f"[DEBUG] Selenium: ❌ Не удалось извлечь цифры из кода поставщика: '{supplier_text}'")
                         
                         print(f"[DEBUG] Selenium: это наш поставщик: {is_our_supplier}")
                         
