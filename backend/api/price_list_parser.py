@@ -805,6 +805,9 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
                     options.add_argument('--disable-logging')
                     options.add_argument('--log-level=3')
                     options.add_argument('--silent')
+                    options.add_argument('--disable-web-security')
+                    options.add_argument('--disable-features=VizDisplayCompositor')
+                    options.add_argument('--remote-debugging-port=9223')
                     
                     # Добавляем прокси для Selenium, если доступен
                     proxy_dict = get_next_proxy()
@@ -826,118 +829,143 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
                     
                     # Ищем первую ссылку на карточку товара
                     try:
-                        # Ждем загрузки результатов поиска
-                        WebDriverWait(driver, 10).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, 'a[href*="/product/"]'))
-                        )
+                        # Ждем загрузки результатов поиска с более широким набором селекторов
+                        product_link = None
+                        link_selectors = [
+                            'a[href*="/product/"]',
+                            'a[href*="/goods/"]',
+                            'a[href*="/item/"]',
+                            '.product-card a',
+                            '.goods-item a',
+                            '.item-card a'
+                        ]
                         
-                        # Находим первую ссылку на карточку товара
-                        product_link = driver.find_element(By.CSS_SELECTOR, 'a[href*="/product/"]')
-                        product_url = product_link.get_attribute('href')
+                        for selector in link_selectors:
+                            try:
+                                WebDriverWait(driver, 5).until(
+                                    EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                                )
+                                product_link = driver.find_element(By.CSS_SELECTOR, selector)
+                                print(f"[DEBUG] Armtek: найдена ссылка по селектору {selector}")
+                                break
+                            except Exception as e:
+                                print(f"[DEBUG] Armtek: не найдена ссылка по селектору {selector}: {str(e)}")
+                                continue
                         
-                        if product_url:
-                            print(f"[DEBUG] Armtek: найдена ссылка на карточку: {product_url}")
+                        if product_link:
+                            product_url = product_link.get_attribute('href')
                             
-                            # Переходим в карточку товара
-                            driver.get(product_url)
-                            print(f"[DEBUG] Armtek: перешли в карточку товара")
-                            
-                            # Ждем загрузки страницы
-                            time.sleep(3)
-                            
-                            # Ищем минимальную цену среди всех предложений
-                            min_price = None
-                            min_price_quantity = None
-                            
-                            # Селекторы для поиска цен
-                            price_selectors = [
-                                'span.font__headline6.no-wrap',
-                                'span.font__headline6',
-                                '.card__price span',
-                                '[class*="price"] span',
-                                '.font__headline6'
-                            ]
-                            
-                            for selector in price_selectors:
-                                try:
-                                    price_elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                                    prices = []
-                                    
-                                    for element in price_elements:
-                                        price_text = element.text.strip()
-                                        if price_text and '₽' in price_text:
-                                            # Извлекаем числовое значение цены
-                                            price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
-                                            if price_match:
-                                                try:
-                                                    price_value = float(price_match.group(1).replace(' ', ''))
-                                                    prices.append(price_value)
-                                                    print(f"[DEBUG] Armtek: найдена цена {price_value}₽")
-                                                    
-                                                    # Ищем количество товара для этой цены
-                                                    # Ищем родительский контейнер предложения
-                                                    offer_container = element
-                                                    for _ in range(5):  # Поднимаемся по DOM дереву
-                                                        offer_container = offer_container.find_element(By.XPATH, '..')
-                                                        try:
-                                                            # Ищем элемент с количеством в том же контейнере
-                                                            quantity_elements = offer_container.find_elements(By.CSS_SELECTOR, 'p.font__body2')
-                                                            for q_elem in quantity_elements:
-                                                                q_text = q_elem.text.strip()
-                                                                if 'шт' in q_text:
-                                                                    # Извлекаем число из текста типа ">20 шт" или "32 шт"
-                                                                    q_match = re.search(r'(\d+)', q_text)
-                                                                    if q_match:
-                                                                        quantity_value = int(q_match.group(1))
-                                                                        print(f"[DEBUG] Armtek: найдено количество {quantity_value} для цены {price_value}")
-                                                                        if min_price is None or price_value < min_price:
-                                                                            min_price = price_value
-                                                                            min_price_quantity = quantity_value
-                                                                        break
-                                                            if min_price_quantity is not None:
-                                                                break
-                                                        except Exception:
-                                                            continue
-                                                    if min_price_quantity is not None:
-                                                        break
-                                                    
-                                                except ValueError:
-                                                    continue
-                                    
-                                    if prices and min_price is None:
-                                        min_price = min(prices)
-                                        print(f"[DEBUG] Armtek: минимальная цена найдена: {min_price}₽")
+                            if product_url:
+                                print(f"[DEBUG] Armtek: найдена ссылка на карточку: {product_url}")
+                                
+                                # Переходим в карточку товара
+                                driver.get(product_url)
+                                print(f"[DEBUG] Armtek: перешли в карточку товара")
+                                
+                                # Ждем загрузки страницы
+                                time.sleep(3)
+                                
+                                # Ищем минимальную цену среди всех предложений
+                                min_price = None
+                                min_price_quantity = None
+                                
+                                # Селекторы для поиска цен
+                                price_selectors = [
+                                    'span.font__headline6.no-wrap',
+                                    'span.font__headline6',
+                                    '.card__price span',
+                                    '[class*="price"] span',
+                                    '.font__headline6',
+                                    'span[class*="price"]',
+                                    '.price span',
+                                    '.cost span',
+                                    'span[class*="cost"]'
+                                ]
+                                
+                                for selector in price_selectors:
+                                    try:
+                                        price_elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                                        prices = []
                                         
-                                        # Если не нашли количество для минимальной цены, ищем его отдельно
-                                        if min_price_quantity is None:
-                                            try:
-                                                # Ищем все элементы с количеством
-                                                quantity_elements = driver.find_elements(By.CSS_SELECTOR, 'p.font__body2')
-                                                for q_elem in quantity_elements:
-                                                    q_text = q_elem.text.strip()
-                                                    if 'шт' in q_text:
-                                                        q_match = re.search(r'(\d+)', q_text)
-                                                        if q_match:
-                                                            min_price_quantity = int(q_match.group(1))
-                                                            print(f"[DEBUG] Armtek: найдено общее количество {min_price_quantity}")
+                                        for element in price_elements:
+                                            price_text = element.text.strip()
+                                            if price_text and '₽' in price_text:
+                                                # Извлекаем числовое значение цены
+                                                price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
+                                                if price_match:
+                                                    try:
+                                                        price_value = float(price_match.group(1).replace(' ', ''))
+                                                        prices.append(price_value)
+                                                        print(f"[DEBUG] Armtek: найдена цена {price_value}₽")
+                                                        
+                                                        # Ищем количество товара для этой цены
+                                                        # Ищем родительский контейнер предложения
+                                                        offer_container = element
+                                                        for _ in range(5):  # Поднимаемся по DOM дереву
+                                                            try:
+                                                                offer_container = offer_container.find_element(By.XPATH, '..')
+                                                                # Ищем элемент с количеством в том же контейнере
+                                                                quantity_elements = offer_container.find_elements(By.CSS_SELECTOR, 'p.font__body2, span[class*="quantity"], .quantity, [class*="count"]')
+                                                                for q_elem in quantity_elements:
+                                                                    q_text = q_elem.text.strip()
+                                                                    if 'шт' in q_text:
+                                                                        # Извлекаем число из текста типа ">20 шт" или "32 шт"
+                                                                        q_match = re.search(r'(\d+)', q_text)
+                                                                        if q_match:
+                                                                            quantity_value = int(q_match.group(1))
+                                                                            print(f"[DEBUG] Armtek: найдено количество {quantity_value} для цены {price_value}")
+                                                                            if min_price is None or price_value < min_price:
+                                                                                min_price = price_value
+                                                                                min_price_quantity = quantity_value
+                                                                            break
+                                                                if min_price_quantity is not None:
+                                                                    break
+                                                            except Exception:
+                                                                continue
+                                                        if min_price_quantity is not None:
                                                             break
-                                            except Exception as e:
-                                                print(f"[DEBUG] Armtek: ошибка поиска количества: {str(e)}")
+                                                        
+                                                    except ValueError:
+                                                        continue
                                         
-                                        break
-                                        
-                                except Exception as e:
-                                    print(f"[DEBUG] Armtek: ошибка поиска цен по селектору {selector}: {str(e)}")
-                                    continue
-                            
-                            if min_price:
-                                result['marketplace_price'] = min_price
-                                result['min_competitor_price'] = min_price  # На Armtek это одно и то же
-                                result['quantity_in_stock'] = min_price_quantity
-                                result['is_found'] = True
-                                print(f"[DEBUG] Armtek: итоговый результат - найдено: {min_price}₽, количество: {min_price_quantity}")
+                                        if prices and min_price is None:
+                                            min_price = min(prices)
+                                            print(f"[DEBUG] Armtek: минимальная цена найдена: {min_price}₽")
+                                            
+                                            # Если не нашли количество для минимальной цены, ищем его отдельно
+                                            if min_price_quantity is None:
+                                                try:
+                                                    # Ищем все элементы с количеством
+                                                    quantity_elements = driver.find_elements(By.CSS_SELECTOR, 'p.font__body2, span[class*="quantity"], .quantity, [class*="count"]')
+                                                    for q_elem in quantity_elements:
+                                                        q_text = q_elem.text.strip()
+                                                        if 'шт' in q_text:
+                                                            q_match = re.search(r'(\d+)', q_text)
+                                                            if q_match:
+                                                                min_price_quantity = int(q_match.group(1))
+                                                                print(f"[DEBUG] Armtek: найдено общее количество {min_price_quantity}")
+                                                                break
+                                                except Exception as e:
+                                                    print(f"[DEBUG] Armtek: ошибка поиска количества: {str(e)}")
+                                            
+                                            break
+                                            
+                                    except Exception as e:
+                                        print(f"[DEBUG] Armtek: ошибка поиска цен по селектору {selector}: {str(e)}")
+                                        continue
+                                
+                                if min_price:
+                                    result['marketplace_price'] = min_price
+                                    result['min_competitor_price'] = min_price  # На Armtek это одно и то же
+                                    result['quantity_in_stock'] = min_price_quantity
+                                    result['is_found'] = True
+                                    print(f"[DEBUG] Armtek: итоговый результат - найдено: {min_price}₽, количество: {min_price_quantity}")
+                                else:
+                                    print(f"[DEBUG] Armtek: цены не найдены")
                             else:
-                                print(f"[DEBUG] Armtek: цены не найдены")
+                                print(f"[DEBUG] Armtek: не удалось получить URL карточки товара")
+                        else:
+                            print(f"[DEBUG] Armtek: не найдена ссылка на карточку товара")
                                 
                     except Exception as e:
                         print(f"[DEBUG] Armtek: ошибка поиска карточки товара: {str(e)}")
