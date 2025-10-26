@@ -329,6 +329,8 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                         
                                         # Ищем цену в div с классом NonRetailAppraiseTR__priceWrapper
                                         price_divs = price_cell.find_all(['div', 'span'], class_=re.compile(r'.*NonRetailAppraiseTR__priceWrapper.*'))
+                                        print(f"[DEBUG] Найдено {len(price_divs)} элементов с классом NonRetailAppraiseTR__priceWrapper")
+                                        
                                         for price_div in price_divs:
                                             # Ищем span внутри div
                                             price_span = price_div.find('span')
@@ -339,11 +341,33 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                                 div_text = price_div.get_text(strip=True)
                                                 print(f"[DEBUG] Найден div с ценой: '{div_text}'")
                                             
-                                            price_match = re.search(r'(\d[\d\s]*)', div_text.replace('\xa0', ' '))
+                                            # Улучшенное извлечение цены - ищем точное совпадение с рублями
+                                            price_match = re.search(r'(\d[\d\s]*)\s*₽', div_text.replace('\xa0', ' '))
                                             if price_match:
                                                 price_val = float(price_match.group(1).replace(' ', ''))
                                                 print(f"[DEBUG] Найдена цена {price_val} в div NonRetailAppraiseTR__priceWrapper")
                                                 break
+                                            else:
+                                                # Если не нашли с рублями, пробуем без них
+                                                price_match = re.search(r'(\d[\d\s]*)', div_text.replace('\xa0', ' '))
+                                                if price_match:
+                                                    price_val = float(price_match.group(1).replace(' ', ''))
+                                                    print(f"[DEBUG] Найдена цена {price_val} в div NonRetailAppraiseTR__priceWrapper (без ₽)")
+                                                    break
+                                        
+                                        # Если не нашли в div, пробуем найти все span элементы в ячейке
+                                        if price_val is None:
+                                            all_spans = price_cell.find_all('span')
+                                            print(f"[DEBUG] Найдено {len(all_spans)} span элементов в ячейке цены")
+                                            for span in all_spans:
+                                                span_text = span.get_text(strip=True)
+                                                if '₽' in span_text:
+                                                    print(f"[DEBUG] Найден span с рублями: '{span_text}'")
+                                                    price_match = re.search(r'(\d[\d\s]*)\s*₽', span_text.replace('\xa0', ' '))
+                                                    if price_match:
+                                                        price_val = float(price_match.group(1).replace(' ', ''))
+                                                        print(f"[DEBUG] Найдена цена {price_val} в span с рублями")
+                                                        break
                                         
                                         # Если не нашли в div, ищем в тексте ячейки
                                         if price_val is None:
@@ -619,14 +643,40 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                         # Ищем цену в div с классом NonRetailAppraiseTR__priceWrapper
                         try:
                             price_divs = price_cell.find_elements(By.CSS_SELECTOR, 'div[class*="NonRetailAppraiseTR__priceWrapper"], span[class*="NonRetailAppraiseTR__priceWrapper"]')
+                            print(f"[DEBUG] Selenium: найдено {len(price_divs)} элементов с классом NonRetailAppraiseTR__priceWrapper")
+                            
                             for price_div in price_divs:
                                 div_text = price_div.text.strip()
-                                price_match = re.search(r'(\d[\d\s]*)', div_text.replace('\xa0', ' '))
+                                print(f"[DEBUG] Selenium: проверяем элемент: '{div_text}'")
+                                # Улучшенное извлечение цены - ищем точное совпадение с рублями
+                                price_match = re.search(r'(\d[\d\s]*)\s*₽', div_text.replace('\xa0', ' '))
                                 if price_match:
                                     price_val = float(price_match.group(1).replace(' ', ''))
                                     print(f"[DEBUG] Selenium: найдена цена {price_val} в div NonRetailAppraiseTR__priceWrapper")
                                     break
-                        except Exception:
+                                else:
+                                    # Если не нашли с рублями, пробуем без них
+                                    price_match = re.search(r'(\d[\d\s]*)', div_text.replace('\xa0', ' '))
+                                    if price_match:
+                                        price_val = float(price_match.group(1).replace(' ', ''))
+                                        print(f"[DEBUG] Selenium: найдена цена {price_val} в div NonRetailAppraiseTR__priceWrapper (без ₽)")
+                                        break
+                            
+                            # Если не нашли в div, пробуем найти все span элементы в ячейке
+                            if price_val is None:
+                                all_spans = price_cell.find_elements(By.TAG_NAME, 'span')
+                                print(f"[DEBUG] Selenium: найдено {len(all_spans)} span элементов в ячейке цены")
+                                for span in all_spans:
+                                    span_text = span.text.strip()
+                                    if '₽' in span_text:
+                                        print(f"[DEBUG] Selenium: найден span с рублями: '{span_text}'")
+                                        price_match = re.search(r'(\d[\d\s]*)\s*₽', span_text.replace('\xa0', ' '))
+                                        if price_match:
+                                            price_val = float(price_match.group(1).replace(' ', ''))
+                                            print(f"[DEBUG] Selenium: найдена цена {price_val} в span с рублями")
+                                            break
+                        except Exception as e:
+                            print(f"[DEBUG] Selenium: ошибка поиска цены в div: {str(e)}")
                             pass
                         
                         # Если не нашли в div, ищем в тексте ячейки
@@ -1142,6 +1192,10 @@ def create_result_excel(items: List[Dict], output_path: str) -> bool:
             print(f"[DEBUG]   - Количество в наличии: {item.get('quantity_in_stock')}")
             print(f"[DEBUG]   - Количество конкурента: {item.get('competitor_quantity')}")
             
+            # Исправляем условия для количества - теперь учитываем 0 как валидное значение
+            quantity_in_stock = item.get('quantity_in_stock')
+            competitor_quantity = item.get('competitor_quantity')
+            
             row = {
                 '№': i,
                 'Бренд': item['manufacturer'],
@@ -1151,8 +1205,8 @@ def create_result_excel(items: List[Dict], output_path: str) -> bool:
                 'источник': item.get('platform', ''),
                 'Цена Наша': f"{item['marketplace_price']:.0f} ₽" if item['marketplace_price'] else '',
                 'Минимальная цена конкурента': f"{item['min_competitor_price']:.0f} ₽" if item['min_competitor_price'] else '',
-                'Количество в наличии': f"{item['quantity_in_stock']} шт" if item.get('quantity_in_stock') else '',
-                'Количество конкурента': f"{item.get('competitor_quantity', '')} шт" if item.get('competitor_quantity') else ''
+                'Количество в наличии': f"{quantity_in_stock} шт" if quantity_in_stock is not None else '',
+                'Количество конкурента': f"{competitor_quantity} шт" if competitor_quantity is not None else ''
             }
             excel_data.append(row)
         
