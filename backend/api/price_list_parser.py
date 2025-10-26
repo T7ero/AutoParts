@@ -257,8 +257,35 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                 result['min_competitor_price'] = competitor_min
                                 break
                     
-                    # Ищем таблицу с предложениями
-                    tables = card_soup.find_all('table')
+                    # Ищем раздел "Запрошенный товар" и таблицу с предложениями только в этом разделе
+                    requested_section = None
+                    
+                    # Ищем заголовок "Запрошенный товар" или "Запрошенный номер"
+                    section_titles = card_soup.find_all('div', class_=re.compile(r'.*NonRetailAppraiseTable__sectionTitle.*'))
+                    for title_div in section_titles:
+                        title_text = title_div.get_text(strip=True)
+                        if 'Запрошенный товар' in title_text or 'Запрошенный номер' in title_text:
+                            print(f"[DEBUG] Найден раздел: {title_text}")
+                            # Ищем таблицу в этом разделе
+                            requested_section = title_div
+                            break
+                    
+                    if requested_section:
+                        # Ищем таблицу в разделе "Запрошенный товар"
+                        tables = requested_section.find_all_next('table', limit=1)
+                        if not tables:
+                            # Если таблица не найдена как следующий элемент, ищем в родительском контейнере
+                            parent = requested_section.parent
+                            while parent and not tables:
+                                tables = parent.find_all('table')
+                                if tables:
+                                    break
+                                parent = parent.parent
+                    else:
+                        # Если раздел не найден, ищем все таблицы (fallback)
+                        tables = card_soup.find_all('table')
+                        print(f"[DEBUG] Раздел 'Запрошенный товар' не найден, ищем во всех таблицах")
+                    
                     print(f"[DEBUG] Найдено таблиц: {len(tables)}")
                     
                     for table_idx, table in enumerate(tables):
@@ -863,12 +890,24 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
                             '.item-card a',
                             'a[class*="product"]',
                             'a[class*="item"]',
-                            'a[class*="card"]'
+                            'a[class*="card"]',
+                            'a[href*="armtek.ru"]',
+                            'a[href*="/catalog/"]',
+                            'a[href*="/search"]'
                         ]
                         
                         # Сначала попробуем найти все ссылки на странице
                         all_links = driver.find_elements(By.TAG_NAME, 'a')
                         print(f"[DEBUG] Armtek: всего ссылок на странице: {len(all_links)}")
+                        
+                        # Логируем первые несколько ссылок для отладки
+                        for i, link in enumerate(all_links[:5]):
+                            try:
+                                href = link.get_attribute('href')
+                                text = link.text.strip()
+                                print(f"[DEBUG] Armtek: ссылка {i+1}: href='{href}', text='{text[:50]}...'")
+                            except Exception:
+                                pass
                         
                         for selector in link_selectors:
                             try:
@@ -878,6 +917,19 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
                             except Exception as e:
                                 print(f"[DEBUG] Armtek: не найдена ссылка по селектору {selector}")
                                 continue
+                        
+                        # Если не нашли по селекторам, попробуем найти любую ссылку, содержащую артикул
+                        if not product_link:
+                            for link in all_links:
+                                try:
+                                    href = link.get_attribute('href')
+                                    text = link.text.strip()
+                                    if article in href or article in text:
+                                        product_link = link
+                                        print(f"[DEBUG] Armtek: найдена ссылка по артикулу: {href}")
+                                        break
+                                except Exception:
+                                    continue
                         
                         if product_link:
                             product_url = product_link.get_attribute('href')
