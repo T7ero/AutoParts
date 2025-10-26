@@ -580,12 +580,9 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                 print(f"[DEBUG] Selenium: установлена минимальная цена конкурента из таблицы: {result['min_competitor_price']}")
                 
         except Exception as e:
-            print(f"[DEBUG] Selenium: ошибка поиска таблицы: {str(e)}")
-                
-        except Exception as e:
             if not result['error_message']:
                 result['error_message'] = f'Selenium failed: {str(e)}'
-            print(f"[DEBUG] Ошибка Selenium: {str(e)}")
+            print(f"[DEBUG] Selenium: ошибка поиска таблицы: {str(e)}")
         finally:
             try:
                 if driver:
