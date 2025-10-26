@@ -367,6 +367,7 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                         sup_digits = re.sub(r'\D+', '', supplier_text)
                                         
                                         print(f"[DEBUG] Найден поставщик '{supplier_text}' ({sup_digits}) с ценой {price_val}")
+                                        print(f"[DEBUG] Наши коды поставщиков: {supplier_codes}")
                                         
                                         # Более точная проверка кода поставщика
                                         is_our_supplier = False
@@ -374,12 +375,16 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                             # Проверяем точное совпадение
                                             if sup_digits in supplier_codes:
                                                 is_our_supplier = True
+                                                print(f"[DEBUG] Точное совпадение найдено: {sup_digits}")
                                             else:
                                                 # Проверяем, содержит ли код поставщика наши коды как подстроку
                                                 for our_code in supplier_codes:
                                                     if our_code in sup_digits:
                                                         is_our_supplier = True
+                                                        print(f"[DEBUG] Подстрока найдена: {our_code} в {sup_digits}")
                                                         break
+                                        
+                                        print(f"[DEBUG] Это наш поставщик: {is_our_supplier}")
                                         
                                         if is_our_supplier:
                                             our_prices.append(price_val)
@@ -584,6 +589,7 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                         sup_digits = re.sub(r'\D+', '', supplier_text)
                         
                         print(f"[DEBUG] Selenium: найден поставщик '{supplier_text}' ({sup_digits}) с ценой {price_val}")
+                        print(f"[DEBUG] Selenium: наши коды поставщиков: {supplier_codes}")
                         
                         # Более точная проверка кода поставщика
                         is_our_supplier = False
@@ -591,12 +597,16 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                             # Проверяем точное совпадение
                             if sup_digits in supplier_codes:
                                 is_our_supplier = True
+                                print(f"[DEBUG] Selenium: точное совпадение найдено: {sup_digits}")
                             else:
                                 # Проверяем, содержит ли код поставщика наши коды как подстроку
                                 for our_code in supplier_codes:
                                     if our_code in sup_digits:
                                         is_our_supplier = True
+                                        print(f"[DEBUG] Selenium: подстрока найдена: {our_code} в {sup_digits}")
                                         break
+                        
+                        print(f"[DEBUG] Selenium: это наш поставщик: {is_our_supplier}")
                         
                         if is_our_supplier:
                             our_prices.append(price_val)
@@ -990,7 +1000,7 @@ def create_result_excel(items: List[Dict], output_path: str) -> bool:
                 'источник': item.get('platform', ''),
                 'Цена Наша': f"{item['marketplace_price']:.0f} ₽" if item['marketplace_price'] else '',
                 'Минимальная цена конкурента': f"{item['min_competitor_price']:.0f} ₽" if item['min_competitor_price'] else '',
-                'Количество в наличии': f"{item['quantity_in_stock']} шт" if item['quantity_in_stock'] else ''
+                'Количество в наличии': f"{item['quantity_in_stock']} шт" if item.get('quantity_in_stock') else ''
             }
             excel_data.append(row)
         
