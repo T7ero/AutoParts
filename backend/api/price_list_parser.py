@@ -1321,12 +1321,19 @@ def create_result_excel(items: List[Dict], output_path: str) -> bool:
             print(f"[DEBUG]   - Тип quantity_in_stock: {type(item.get('quantity_in_stock'))}")
             print(f"[DEBUG]   - Тип competitor_quantity: {type(item.get('competitor_quantity'))}")
             
-            # Исправляем условия для количества - теперь учитываем 0 как валидное значение
+            # Получаем значения количества
             quantity_in_stock = item.get('quantity_in_stock')
             competitor_quantity = item.get('competitor_quantity')
             
             print(f"[DEBUG]   - quantity_in_stock после get: {quantity_in_stock}")
             print(f"[DEBUG]   - competitor_quantity после get: {competitor_quantity}")
+            
+            # Форматируем количество для Excel
+            quantity_in_stock_str = f"{quantity_in_stock} шт" if quantity_in_stock is not None else ''
+            competitor_quantity_str = f"{competitor_quantity} шт" if competitor_quantity is not None else ''
+            
+            print(f"[DEBUG]   - quantity_in_stock_str: '{quantity_in_stock_str}'")
+            print(f"[DEBUG]   - competitor_quantity_str: '{competitor_quantity_str}'")
             
             row = {
                 '№': i,
@@ -1337,8 +1344,8 @@ def create_result_excel(items: List[Dict], output_path: str) -> bool:
                 'источник': item.get('platform', ''),
                 'Цена Наша': f"{item['marketplace_price']:.0f} ₽" if item['marketplace_price'] else '',
                 'Минимальная цена конкурента': f"{item['min_competitor_price']:.0f} ₽" if item['min_competitor_price'] else '',
-                'Количество в наличии': f"{quantity_in_stock} шт" if quantity_in_stock is not None else '',
-                'Количество конкурента': f"{competitor_quantity} шт" if competitor_quantity is not None else ''
+                'Количество в наличии': quantity_in_stock_str,
+                'Количество конкурента': competitor_quantity_str
             }
             excel_data.append(row)
         

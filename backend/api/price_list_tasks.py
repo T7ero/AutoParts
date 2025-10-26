@@ -117,6 +117,13 @@ def process_price_list_task(self, task_id: int):
                 # полю competitor_brand разрешим быть пустым строковым значением
                 item.competitor_brand = result.get('competitor_brand') or ''
                 item.error_message = result.get('error_message') or ''
+                
+                # Сохраняем количество товара
+                if 'quantity_in_stock' in result:
+                    item.quantity_in_stock = result['quantity_in_stock']
+                if 'competitor_quantity' in result:
+                    item.competitor_quantity = result['competitor_quantity']
+                
                 item.save()
                 
                 # Обновляем счетчик обработанных
@@ -171,7 +178,9 @@ def process_price_list_task(self, task_id: int):
                 'platform': task.get_platform_display(),
                 'marketplace_price': float(item.marketplace_price) if item.marketplace_price else None,
                 'min_competitor_price': float(item.min_competitor_price) if item.min_competitor_price else None,
-                'competitor_brand': item.competitor_brand
+                'competitor_brand': item.competitor_brand,
+                'quantity_in_stock': getattr(item, 'quantity_in_stock', None),
+                'competitor_quantity': getattr(item, 'competitor_quantity', None)
             })
         
         # Создаем файл результата

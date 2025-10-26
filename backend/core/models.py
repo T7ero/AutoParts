@@ -146,6 +146,10 @@ class PriceListItem(models.Model):
     competitor_brand = models.CharField(max_length=100, blank=True, verbose_name="Бренд конкурента с мин. ценой")
     error_message = models.TextField(blank=True, verbose_name="Сообщение об ошибке")
     
+    # Поля для количества товара
+    quantity_in_stock = models.IntegerField(null=True, blank=True, verbose_name="Количество в наличии")
+    competitor_quantity = models.IntegerField(null=True, blank=True, verbose_name="Количество конкурента")
+    
     # Дополнительные поля для совместимости с существующей БД
     armtek_found = models.BooleanField(default=False, verbose_name="Найдено на Armtek")
     autopiter_found = models.BooleanField(default=False, verbose_name="Найдено на Autopiter")
