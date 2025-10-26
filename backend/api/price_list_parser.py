@@ -180,12 +180,16 @@ def parse_price_list_file(file_path: str) -> List[Dict]:
 
 def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, competitor_brand_filter: str = None) -> Dict:
     """Проверяет наличие позиции на АвтоПитере и анализирует цены"""
+    print(f"[DEBUG] ===== НАЧАЛО check_autopiter_item =====")
+    print(f"[DEBUG] Входные параметры: supplier_code={supplier_code}, manufacturer={manufacturer}, article={article}")
+    
     result = {
         'is_found': False,
         'marketplace_price': None,
         'min_competitor_price': None,
         'competitor_brand': None,
         'quantity_in_stock': None,
+        'competitor_quantity': None,  # Добавляем это поле
         'error_message': ''
     }
     
@@ -331,6 +335,10 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                         price_divs = price_cell.find_all(['div', 'span'], class_=re.compile(r'.*NonRetailAppraiseTR__priceWrapper.*'))
                                         print(f"[DEBUG] Найдено {len(price_divs)} элементов с классом NonRetailAppraiseTR__priceWrapper")
                                         
+                                        # Логируем все найденные элементы для диагностики
+                                        for idx, div in enumerate(price_divs):
+                                            print(f"[DEBUG] Элемент {idx}: класс='{div.get('class')}', текст='{div.get_text(strip=True)}'")
+                                        
                                         for price_div in price_divs:
                                             # Ищем span внутри div
                                             price_span = price_div.find('span')
@@ -368,6 +376,24 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                                         price_val = float(price_match.group(1).replace(' ', ''))
                                                         print(f"[DEBUG] Найдена цена {price_val} в span с рублями")
                                                         break
+                                        
+                                        # Если все еще не нашли, ищем в тексте ячейки напрямую
+                                        if price_val is None:
+                                            # Ищем все числа с рублями в тексте ячейки
+                                            price_matches = re.findall(r'(\d[\d\s]*)\s*₽', price_text.replace('\xa0', ' '))
+                                            if price_matches:
+                                                # Берем первое найденное число
+                                                price_val = float(price_matches[0].replace(' ', ''))
+                                                print(f"[DEBUG] Найдена цена {price_val} в тексте ячейки (прямой поиск)")
+                                            else:
+                                                # Если не нашли с рублями, ищем просто числа
+                                                number_matches = re.findall(r'(\d[\d\s]+)', price_text.replace('\xa0', ' '))
+                                                if number_matches:
+                                                    # Берем самое большое число (скорее всего это цена)
+                                                    numbers = [float(match.replace(' ', '')) for match in number_matches]
+                                                    if numbers:
+                                                        price_val = max(numbers)
+                                                        print(f"[DEBUG] Найдена цена {price_val} в тексте ячейки (поиск чисел)")
                                         
                                         # Если не нашли в div, ищем в тексте ячейки
                                         if price_val is None:
@@ -499,6 +525,11 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                 result['quantity_in_stock'] = data['quantity']
                                 print(f"[DEBUG] Установлено количество от нашего поставщика: {result['quantity_in_stock']}")
                                 break
+                        
+                        # Если не нашли количество для минимальной цены, берем первое доступное
+                        if result['quantity_in_stock'] is None and our_data:
+                            result['quantity_in_stock'] = our_data[0]['quantity']
+                            print(f"[DEBUG] Установлено количество от первого нашего поставщика: {result['quantity_in_stock']}")
                     else:
                         print(f"[DEBUG] ❌ НАШИ ЦЕНЫ НЕ НАЙДЕНЫ! Наши коды поставщиков: {supplier_codes}")
                         print(f"[DEBUG] Возможно, нужно обновить коды поставщиков или наши поставщики не представлены на этой странице")
@@ -513,6 +544,15 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                             # Сохраняем количество для минимальной цены конкурента
                             result['competitor_quantity'] = min_competitor_offer['quantity']
                             print(f"[DEBUG] Установлена минимальная цена конкурента из таблицы: {result['min_competitor_price']}, количество: {result['competitor_quantity']}")
+                        else:
+                            # Если не нашли конкурентов, но есть данные, берем минимальную цену из всех данных
+                            if competitor_data:
+                                min_competitor_offer = min(competitor_data, key=lambda x: x['price'])
+                                result['min_competitor_price'] = min_competitor_offer['price']
+                                result['competitor_quantity'] = min_competitor_offer['quantity']
+                                print(f"[DEBUG] Установлена минимальная цена из всех данных: {result['min_competitor_price']}, количество: {result['competitor_quantity']}")
+                            else:
+                                print(f"[DEBUG] Нет данных конкурентов для установки минимальной цены")
                     
                     if result['min_competitor_price'] is None:
                         print(f"[DEBUG] Минимальная цена конкурента не найдена")
@@ -645,6 +685,15 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                             price_divs = price_cell.find_elements(By.CSS_SELECTOR, 'div[class*="NonRetailAppraiseTR__priceWrapper"], span[class*="NonRetailAppraiseTR__priceWrapper"]')
                             print(f"[DEBUG] Selenium: найдено {len(price_divs)} элементов с классом NonRetailAppraiseTR__priceWrapper")
                             
+                            # Логируем все найденные элементы для диагностики
+                            for idx, div in enumerate(price_divs):
+                                try:
+                                    class_attr = div.get_attribute('class')
+                                    text_content = div.text.strip()
+                                    print(f"[DEBUG] Selenium: элемент {idx}: класс='{class_attr}', текст='{text_content}'")
+                                except Exception as e:
+                                    print(f"[DEBUG] Selenium: ошибка получения атрибутов элемента {idx}: {str(e)}")
+                            
                             for price_div in price_divs:
                                 div_text = price_div.text.strip()
                                 print(f"[DEBUG] Selenium: проверяем элемент: '{div_text}'")
@@ -675,6 +724,24 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                             price_val = float(price_match.group(1).replace(' ', ''))
                                             print(f"[DEBUG] Selenium: найдена цена {price_val} в span с рублями")
                                             break
+                            
+                            # Если все еще не нашли, ищем в тексте ячейки напрямую
+                            if price_val is None:
+                                # Ищем все числа с рублями в тексте ячейки
+                                price_matches = re.findall(r'(\d[\d\s]*)\s*₽', price_text.replace('\xa0', ' '))
+                                if price_matches:
+                                    # Берем первое найденное число
+                                    price_val = float(price_matches[0].replace(' ', ''))
+                                    print(f"[DEBUG] Selenium: найдена цена {price_val} в тексте ячейки (прямой поиск)")
+                                else:
+                                    # Если не нашли с рублями, ищем просто числа
+                                    number_matches = re.findall(r'(\d[\d\s]+)', price_text.replace('\xa0', ' '))
+                                    if number_matches:
+                                        # Берем самое большое число (скорее всего это цена)
+                                        numbers = [float(match.replace(' ', '')) for match in number_matches]
+                                        if numbers:
+                                            price_val = max(numbers)
+                                            print(f"[DEBUG] Selenium: найдена цена {price_val} в тексте ячейки (поиск чисел)")
                         except Exception as e:
                             print(f"[DEBUG] Selenium: ошибка поиска цены в div: {str(e)}")
                             pass
@@ -706,6 +773,38 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                     
                     print(f"[DEBUG] Selenium: итоговая найденная цена: {price_val}")
                     
+                    # Извлекаем количество товара из ячейки с количеством
+                    quantity_val = None
+                    if len(cells) >= 6:  # Колонка с количеством обычно 5-я (индекс 5)
+                        quantity_cell = cells[5]  # Колонка "Наличие"
+                        quantity_text = quantity_cell.text.strip()
+                        print(f"[DEBUG] Selenium: проверяем колонку 5 (количество): '{quantity_text}'")
+                        
+                        # Ищем количество в div с классом NonRetailAppraiseTR__quantity
+                        try:
+                            quantity_divs = quantity_cell.find_elements(By.CSS_SELECTOR, 'div[class*="NonRetailAppraiseTR__quantity"], span[class*="NonRetailAppraiseTR__quantity"]')
+                            for quantity_div in quantity_divs:
+                                div_text = quantity_div.text.strip()
+                                print(f"[DEBUG] Selenium: найден div с количеством: '{div_text}'")
+                                
+                                # Извлекаем число из текста типа "32 шт" или ">20 шт"
+                                quantity_match = re.search(r'(\d+)', div_text)
+                                if quantity_match:
+                                    quantity_val = int(quantity_match.group(1))
+                                    print(f"[DEBUG] Selenium: найдено количество {quantity_val} в div NonRetailAppraiseTR__quantity")
+                                    break
+                            
+                            # Если не нашли в div, ищем в тексте ячейки
+                            if quantity_val is None:
+                                quantity_match = re.search(r'(\d+)', quantity_text)
+                                if quantity_match:
+                                    quantity_val = int(quantity_match.group(1))
+                                    print(f"[DEBUG] Selenium: найдено количество {quantity_val} в тексте ячейки")
+                        except Exception as e:
+                            print(f"[DEBUG] Selenium: ошибка поиска количества: {str(e)}")
+                    
+                    print(f"[DEBUG] Selenium: итоговое найденное количество: {quantity_val}")
+                    
                     if price_val is not None:
                         # Извлекаем цифры из кода поставщика
                         sup_digits = re.sub(r'\D+', '', supplier_text)
@@ -736,8 +835,20 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                         
                         if is_our_supplier:
                             our_prices.append(price_val)
+                            our_data.append({
+                                'price': price_val,
+                                'quantity': quantity_val,
+                                'supplier': sup_digits
+                            })
+                            print(f"[DEBUG] Selenium: добавлена наша цена {price_val} для поставщика {sup_digits}, количество: {quantity_val}")
                         else:
                             competitor_prices.append(price_val)
+                            competitor_data.append({
+                                'price': price_val,
+                                'quantity': quantity_val,
+                                'supplier': sup_digits
+                            })
+                            print(f"[DEBUG] Selenium: добавлена цена конкурента {price_val} для поставщика {sup_digits}, количество: {quantity_val}")
                             
                 except Exception as e:
                     print(f"[DEBUG] Selenium: ошибка парсинга строки {row_idx}: {str(e)}")
@@ -753,6 +864,15 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
             if result['min_competitor_price'] is None and competitor_prices:
                 result['min_competitor_price'] = min(competitor_prices)
                 print(f"[DEBUG] Selenium: установлена минимальная цена конкурента из таблицы: {result['min_competitor_price']}")
+            
+            # Устанавливаем количество для Selenium (если не установлено)
+            if result['quantity_in_stock'] is None and our_data:
+                result['quantity_in_stock'] = our_data[0]['quantity']
+                print(f"[DEBUG] Selenium: установлено количество от первого нашего поставщика: {result['quantity_in_stock']}")
+            
+            if result['competitor_quantity'] is None and competitor_data:
+                result['competitor_quantity'] = competitor_data[0]['quantity']
+                print(f"[DEBUG] Selenium: установлено количество от первого конкурента: {result['competitor_quantity']}")
                 
         except Exception as e:
             if not result['error_message']:
@@ -765,7 +885,11 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
             except Exception:
                 pass
     
+    print(f"[DEBUG] ===== КОНЕЦ check_autopiter_item =====")
     print(f"[DEBUG] Итоговый результат: наш={result['marketplace_price']}, конкурент={result['min_competitor_price']}, найдено={result['is_found']}")
+    print(f"[DEBUG] Количество в наличии: {result['quantity_in_stock']}")
+    print(f"[DEBUG] Количество конкурента: {result['competitor_quantity']}")
+    print(f"[DEBUG] Полный результат: {result}")
     return result
 
 def check_emex_item(supplier_code: str, manufacturer: str, article: str, competitor_brand_filter: str = None) -> Dict:
@@ -1180,6 +1304,9 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
 
 def create_result_excel(items: List[Dict], output_path: str) -> bool:
     """Создает Excel файл с результатами анализа"""
+    print(f"[DEBUG] ===== НАЧАЛО create_result_excel =====")
+    print(f"[DEBUG] Количество товаров для записи в Excel: {len(items)}")
+    
     try:
         # Подготавливаем данные для Excel
         excel_data = []
@@ -1191,10 +1318,15 @@ def create_result_excel(items: List[Dict], output_path: str) -> bool:
             print(f"[DEBUG]   - Цена конкурента: {item.get('min_competitor_price')}")
             print(f"[DEBUG]   - Количество в наличии: {item.get('quantity_in_stock')}")
             print(f"[DEBUG]   - Количество конкурента: {item.get('competitor_quantity')}")
+            print(f"[DEBUG]   - Тип quantity_in_stock: {type(item.get('quantity_in_stock'))}")
+            print(f"[DEBUG]   - Тип competitor_quantity: {type(item.get('competitor_quantity'))}")
             
             # Исправляем условия для количества - теперь учитываем 0 как валидное значение
             quantity_in_stock = item.get('quantity_in_stock')
             competitor_quantity = item.get('competitor_quantity')
+            
+            print(f"[DEBUG]   - quantity_in_stock после get: {quantity_in_stock}")
+            print(f"[DEBUG]   - competitor_quantity после get: {competitor_quantity}")
             
             row = {
                 '№': i,
@@ -1235,9 +1367,11 @@ def create_result_excel(items: List[Dict], output_path: str) -> bool:
                 elif status_cell.value == 'НЕТ':
                     status_cell.fill = red_fill
         
+        print(f"[DEBUG] ===== КОНЕЦ create_result_excel =====")
         log_debug(f"Файл результата создан: {output_path}")
         return True
         
     except Exception as e:
+        print(f"[DEBUG] ===== ОШИБКА create_result_excel =====")
         log_debug(f"Ошибка создания файла результата: {str(e)}")
         return False
