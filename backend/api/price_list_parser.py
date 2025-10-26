@@ -989,7 +989,8 @@ def create_result_excel(items: List[Dict], output_path: str) -> bool:
                 'наличие': 'выгружено' if item['is_found'] else 'НЕТ',
                 'источник': item.get('platform', ''),
                 'Цена Наша': f"{item['marketplace_price']:.0f} ₽" if item['marketplace_price'] else '',
-                'Минимальная цена конкурента': f"{item['min_competitor_price']:.0f} ₽" if item['min_competitor_price'] else ''
+                'Минимальная цена конкурента': f"{item['min_competitor_price']:.0f} ₽" if item['min_competitor_price'] else '',
+                'Количество в наличии': f"{item['quantity_in_stock']} шт" if item['quantity_in_stock'] else ''
             }
             excel_data.append(row)
         
