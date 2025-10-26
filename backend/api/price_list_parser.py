@@ -281,6 +281,7 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                 if tables:
                                     break
                                 parent = parent.parent
+                        print(f"[DEBUG] Ищем таблицу только в разделе 'Запрошенный товар'")
                     else:
                         # Если раздел не найден, ищем все таблицы (fallback)
                         tables = card_soup.find_all('table')
@@ -469,7 +470,9 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                         if competitor_offers:
                             min_competitor_offer = min(competitor_offers, key=lambda x: x['price'])
                             result['min_competitor_price'] = min_competitor_offer['price']
-                            print(f"[DEBUG] Установлена минимальная цена конкурента из таблицы: {result['min_competitor_price']}")
+                            # Сохраняем количество для минимальной цены конкурента
+                            result['competitor_quantity'] = min_competitor_offer['quantity']
+                            print(f"[DEBUG] Установлена минимальная цена конкурента из таблицы: {result['min_competitor_price']}, количество: {result['competitor_quantity']}")
                     
                     if result['min_competitor_price'] is None:
                         print(f"[DEBUG] Минимальная цена конкурента не найдена")
@@ -869,8 +872,8 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
                     
                     print(f"[DEBUG] Armtek: загружена поисковая страница для {article}")
                     
-                    # Ждем загрузки страницы
-                    time.sleep(5)
+                    # Ждем загрузки страницы с более длительной задержкой
+                    time.sleep(10)
                     
                     # Сохраняем HTML для отладки
                     page_html = driver.page_source
@@ -893,7 +896,10 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
                             'a[class*="card"]',
                             'a[href*="armtek.ru"]',
                             'a[href*="/catalog/"]',
-                            'a[href*="/search"]'
+                            'a[href*="/search"]',
+                            'a[href*="/detail/"]',
+                            'a[href*="/catalog/"]',
+                            'a[href*="/goods/"]'
                         ]
                         
                         # Сначала попробуем найти все ссылки на странице
@@ -901,7 +907,7 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
                         print(f"[DEBUG] Armtek: всего ссылок на странице: {len(all_links)}")
                         
                         # Логируем первые несколько ссылок для отладки
-                        for i, link in enumerate(all_links[:5]):
+                        for i, link in enumerate(all_links[:10]):
                             try:
                                 href = link.get_attribute('href')
                                 text = link.text.strip()
@@ -1122,7 +1128,8 @@ def create_result_excel(items: List[Dict], output_path: str) -> bool:
                 'источник': item.get('platform', ''),
                 'Цена Наша': f"{item['marketplace_price']:.0f} ₽" if item['marketplace_price'] else '',
                 'Минимальная цена конкурента': f"{item['min_competitor_price']:.0f} ₽" if item['min_competitor_price'] else '',
-                'Количество в наличии': f"{item['quantity_in_stock']} шт" if item.get('quantity_in_stock') else ''
+                'Количество в наличии': f"{item['quantity_in_stock']} шт" if item.get('quantity_in_stock') else '',
+                'Количество конкурента': f"{item.get('competitor_quantity', '')} шт" if item.get('competitor_quantity') else ''
             }
             excel_data.append(row)
         
