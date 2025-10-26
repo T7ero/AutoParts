@@ -195,6 +195,7 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
     try:
         supplier_codes = SUPPLIER_CODES['autopiter']
         our_prices = []  # Будем собирать все наши цены
+        our_data = []  # Будем собирать данные наших поставщиков (цена + количество)
         competitor_prices = []  # Будем собирать все цены конкурентов
         competitor_data = []  # Будем собирать данные конкурентов (цена + количество)
         
@@ -392,7 +393,12 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                         
                                         if is_our_supplier:
                                             our_prices.append(price_val)
-                                            print(f"[DEBUG] Добавлена наша цена {price_val} для поставщика {sup_digits}")
+                                            our_data.append({
+                                                'price': price_val,
+                                                'quantity': quantity_val,
+                                                'supplier': sup_digits
+                                            })
+                                            print(f"[DEBUG] Добавлена наша цена {price_val} для поставщика {sup_digits}, количество: {quantity_val}")
                                         else:
                                             competitor_prices.append(price_val)
                                             competitor_data.append({
@@ -418,18 +424,27 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                         result['marketplace_price'] = min(our_prices)
                         result['is_found'] = True
                         print(f"[DEBUG] Найдены наши цены: {our_prices}, минимальная: {result['marketplace_price']}")
+                        
+                        # Находим предложение нашего поставщика с минимальной ценой и устанавливаем количество
+                        for data in our_data:
+                            if data['price'] == result['marketplace_price']:
+                                result['quantity_in_stock'] = data['quantity']
+                                print(f"[DEBUG] Установлено количество от нашего поставщика: {result['quantity_in_stock']}")
+                                break
                     else:
                         print(f"[DEBUG] ❌ НАШИ ЦЕНЫ НЕ НАЙДЕНЫ! Наши коды поставщиков: {supplier_codes}")
                         print(f"[DEBUG] Возможно, нужно обновить коды поставщиков или наши поставщики не представлены на этой странице")
                     
-                    # Если нашли минимальную цену конкурента из таблицы, используем её (она более точная с количеством)
+                    # Если нашли минимальную цену конкурента из таблицы, используем её
                     if competitor_data:
-                        # Находим предложение с минимальной ценой
-                        min_competitor_offer = min(competitor_data, key=lambda x: x['price'])
-                        result['min_competitor_price'] = min_competitor_offer['price']
-                        result['quantity_in_stock'] = min_competitor_offer['quantity']
-                        print(f"[DEBUG] Установлена минимальная цена конкурента из таблицы: {result['min_competitor_price']}, количество: {result['quantity_in_stock']}")
-                    elif result['min_competitor_price'] is None:
+                        # Находим предложение конкурента с минимальной ценой
+                        competitor_offers = [d for d in competitor_data if d['supplier'] not in supplier_codes]
+                        if competitor_offers:
+                            min_competitor_offer = min(competitor_offers, key=lambda x: x['price'])
+                            result['min_competitor_price'] = min_competitor_offer['price']
+                            print(f"[DEBUG] Установлена минимальная цена конкурента из таблицы: {result['min_competitor_price']}")
+                    
+                    if result['min_competitor_price'] is None:
                         print(f"[DEBUG] Минимальная цена конкурента не найдена")
                     
     except Exception as e:
@@ -827,6 +842,14 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
                     
                     print(f"[DEBUG] Armtek: загружена поисковая страница для {article}")
                     
+                    # Ждем загрузки страницы
+                    time.sleep(5)
+                    
+                    # Сохраняем HTML для отладки
+                    page_html = driver.page_source
+                    print(f"[DEBUG] Armtek: длина HTML страницы: {len(page_html)} символов")
+                    print(f"[DEBUG] Armtek: заголовок страницы: {driver.title}")
+                    
                     # Ищем первую ссылку на карточку товара
                     try:
                         # Ждем загрузки результатов поиска с более широким набором селекторов
@@ -837,19 +860,23 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
                             'a[href*="/item/"]',
                             '.product-card a',
                             '.goods-item a',
-                            '.item-card a'
+                            '.item-card a',
+                            'a[class*="product"]',
+                            'a[class*="item"]',
+                            'a[class*="card"]'
                         ]
+                        
+                        # Сначала попробуем найти все ссылки на странице
+                        all_links = driver.find_elements(By.TAG_NAME, 'a')
+                        print(f"[DEBUG] Armtek: всего ссылок на странице: {len(all_links)}")
                         
                         for selector in link_selectors:
                             try:
-                                WebDriverWait(driver, 5).until(
-                                    EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                                )
                                 product_link = driver.find_element(By.CSS_SELECTOR, selector)
                                 print(f"[DEBUG] Armtek: найдена ссылка по селектору {selector}")
                                 break
                             except Exception as e:
-                                print(f"[DEBUG] Armtek: не найдена ссылка по селектору {selector}: {str(e)}")
+                                print(f"[DEBUG] Armtek: не найдена ссылка по селектору {selector}")
                                 continue
                         
                         if product_link:
