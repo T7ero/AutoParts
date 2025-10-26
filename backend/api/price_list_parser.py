@@ -330,7 +330,15 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                         # Ищем цену в div с классом NonRetailAppraiseTR__priceWrapper
                                         price_divs = price_cell.find_all(['div', 'span'], class_=re.compile(r'.*NonRetailAppraiseTR__priceWrapper.*'))
                                         for price_div in price_divs:
-                                            div_text = price_div.get_text(strip=True)
+                                            # Ищем span внутри div
+                                            price_span = price_div.find('span')
+                                            if price_span:
+                                                div_text = price_span.get_text(strip=True)
+                                                print(f"[DEBUG] Найден span с ценой: '{div_text}'")
+                                            else:
+                                                div_text = price_div.get_text(strip=True)
+                                                print(f"[DEBUG] Найден div с ценой: '{div_text}'")
+                                            
                                             price_match = re.search(r'(\d[\d\s]*)', div_text.replace('\xa0', ' '))
                                             if price_match:
                                                 price_val = float(price_match.group(1).replace(' ', ''))
@@ -374,7 +382,15 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                         # Ищем количество в div с классом NonRetailAppraiseTR__quantity
                                         quantity_divs = quantity_cell.find_all(['div', 'span'], class_=re.compile(r'.*NonRetailAppraiseTR__quantity.*'))
                                         for quantity_div in quantity_divs:
-                                            div_text = quantity_div.get_text(strip=True)
+                                            # Ищем span внутри div
+                                            quantity_span = quantity_div.find('span')
+                                            if quantity_span:
+                                                div_text = quantity_span.get_text(strip=True)
+                                                print(f"[DEBUG] Найден span с количеством: '{div_text}'")
+                                            else:
+                                                div_text = quantity_div.get_text(strip=True)
+                                                print(f"[DEBUG] Найден div с количеством: '{div_text}'")
+                                            
                                             # Извлекаем число из текста типа "32 шт" или ">20 шт"
                                             quantity_match = re.search(r'(\d+)', div_text)
                                             if quantity_match:
@@ -1119,6 +1135,13 @@ def create_result_excel(items: List[Dict], output_path: str) -> bool:
         excel_data = []
         
         for i, item in enumerate(items, 1):
+            # Логируем данные перед записью в Excel
+            print(f"[DEBUG] Записываем в Excel - товар {i}:")
+            print(f"[DEBUG]   - Цена наша: {item.get('marketplace_price')}")
+            print(f"[DEBUG]   - Цена конкурента: {item.get('min_competitor_price')}")
+            print(f"[DEBUG]   - Количество в наличии: {item.get('quantity_in_stock')}")
+            print(f"[DEBUG]   - Количество конкурента: {item.get('competitor_quantity')}")
+            
             row = {
                 '№': i,
                 'Бренд': item['manufacturer'],
