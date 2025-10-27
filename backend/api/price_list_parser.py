@@ -1069,6 +1069,7 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
         'min_competitor_price': None,
         'competitor_brand': None,
         'quantity_in_stock': None,
+        'competitor_quantity': None,
         'error_message': ''
     }
     
@@ -1136,63 +1137,81 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
                     
                     # Ищем первую ссылку на карточку товара
                     try:
-                        # Ждем загрузки результатов поиска с более широким набором селекторов
+                        # Ждем загрузки результатов поиска
                         product_link = None
-                        link_selectors = [
-                            'a[href*="/product/"]',
-                            'a[href*="/goods/"]',
-                            'a[href*="/item/"]',
-                            '.product-card a',
-                            '.goods-item a',
-                            '.item-card a',
-                            'a[class*="product"]',
-                            'a[class*="item"]',
-                            'a[class*="card"]',
-                            'a[href*="armtek.ru"]',
-                            'a[href*="/catalog/"]',
-                            'a[href*="/search"]',
-                            'a[href*="/detail/"]',
-                            'a[href*="/catalog/"]',
-                            'a[href*="/goods/"]'
-                        ]
                         
-                        # Сначала попробуем найти все ссылки на странице
-                        all_links = driver.find_elements(By.TAG_NAME, 'a')
-                        print(f"[DEBUG] Armtek: всего ссылок на странице: {len(all_links)}")
+                        # Сначала ищем элементы с классом font__headline6 (заголовки товаров)
+                        title_elements = driver.find_elements(By.CSS_SELECTOR, 'p.font__headline6, div.font__headline6, span.font__headline6, h1.font__headline6, h2.font__headline6, h3.font__headline6')
+                        print(f"[DEBUG] Armtek: найдено {len(title_elements)} элементов с классом font__headline6")
                         
-                        # Логируем первые несколько ссылок для отладки
-                        for i, link in enumerate(all_links[:10]):
+                        # Ищем элемент с текстом, содержащим артикул или бренд
+                        for elem in title_elements:
                             try:
-                                href = link.get_attribute('href')
-                                text = link.text.strip()
-                                print(f"[DEBUG] Armtek: ссылка {i+1}: href='{href}', text='{text[:50]}...'")
-                            except Exception:
-                                pass
-                        
-                        for selector in link_selectors:
-                            try:
-                                product_link = driver.find_element(By.CSS_SELECTOR, selector)
-                                print(f"[DEBUG] Armtek: найдена ссылка по селектору {selector}")
-                                break
+                                text = elem.text.strip()
+                                print(f"[DEBUG] Armtek: проверяем элемент: '{text[:100]}...'")
+                                
+                                # Проверяем, содержит ли текст артикул или название товара
+                                if article in text or manufacturer in text.upper():
+                                    print(f"[DEBUG] Armtek: найдено совпадение: '{text[:100]}...'")
+                                    
+                                    # Ищем родительский или дочерний элемент с href
+                                    try:
+                                        # Пробуем найти кликабельный элемент
+                                        if elem.tag_name.lower() in ['a', 'button']:
+                                            product_link = elem
+                                            break
+                                        
+                                        # Пробуем найти кликабельный родительский контейнер
+                                        parent_elem = elem.find_element(By.XPATH, './..')
+                                        if parent_elem:
+                                            href = parent_elem.get_attribute('href') or parent_elem.get_attribute('onclick')
+                                            if href:
+                                                product_link = parent_elem
+                                                print(f"[DEBUG] Armtek: найдена ссылка в родительском элементе: {href}")
+                                                break
+                                    except Exception:
+                                        pass
                             except Exception as e:
-                                print(f"[DEBUG] Armtek: не найдена ссылка по селектору {selector}")
+                                print(f"[DEBUG] Armtek: ошибка проверки элемента: {str(e)}")
                                 continue
                         
-                        # Если не нашли по селекторам, попробуем найти любую ссылку, содержащую артикул
+                        # Если не нашли, пробуем найти любые элементы с href, содержащим /product/
                         if not product_link:
+                            all_links = driver.find_elements(By.CSS_SELECTOR, '[href*="/product/"], a[href*="/product/"]')
+                            print(f"[DEBUG] Armtek: найдено {len(all_links)} элементов с /product/ в href")
+                            
                             for link in all_links:
                                 try:
                                     href = link.get_attribute('href')
                                     text = link.text.strip()
-                                    if article in href or article in text:
+                                    print(f"[DEBUG] Armtek: проверяем ссылку: href='{href}', text='{text[:50]}...'")
+                                    
+                                    # Проверяем, содержит ли href или text артикул
+                                    if article in href or article in text or manufacturer in text.upper():
                                         product_link = link
                                         print(f"[DEBUG] Armtek: найдена ссылка по артикулу: {href}")
                                         break
                                 except Exception:
                                     continue
                         
+                        # Если не нашли, пробуем кликнуть по первому найденному элементу с классом font__headline6
+                        if not product_link and title_elements:
+                            try:
+                                first_elem = title_elements[0]
+                                text = first_elem.text.strip()
+                                print(f"[DEBUG] Armtek: используем первый элемент font__headline6: '{text[:100]}...'")
+                                product_link = first_elem
+                            except Exception as e:
+                                print(f"[DEBUG] Armtek: ошибка использования первого элемента: {str(e)}")
+                        
                         if product_link:
-                            product_url = product_link.get_attribute('href')
+                            product_url = None
+                            
+                            try:
+                                # Пробуем получить href
+                                product_url = product_link.get_attribute('href')
+                            except Exception:
+                                pass
                             
                             if product_url:
                                 print(f"[DEBUG] Armtek: найдена ссылка на карточку: {product_url}")
@@ -1200,7 +1219,35 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
                                 # Переходим в карточку товара
                                 driver.get(product_url)
                                 print(f"[DEBUG] Armtek: перешли в карточку товара")
-                                
+                            else:
+                                # Если не нашли href, пробуем кликнуть по элементу
+                                print(f"[DEBUG] Armtek: не найден href, пробуем кликнуть по элементу")
+                                try:
+                                    # Пробуем кликнуть JavaScript-кликом
+                                    driver.execute_script("arguments[0].click();", product_link)
+                                    print(f"[DEBUG] Armtek: выполнен JavaScript-клик по элементу")
+                                    
+                                    # Ждем перехода на страницу продукта
+                                    time.sleep(3)
+                                    
+                                    # Проверяем, изменился ли URL
+                                    current_url = driver.current_url
+                                    print(f"[DEBUG] Armtek: текущий URL: {current_url}")
+                                    if '/product/' in current_url:
+                                        print(f"[DEBUG] Armtek: успешно перешли на страницу продукта")
+                                    else:
+                                        print(f"[DEBUG] Armtek: URL не содержит /product/, возможно не удалось перейти")
+                                except Exception as e:
+                                    print(f"[DEBUG] Armtek: ошибка клика по элементу: {str(e)}")
+                                    try:
+                                        # Пробуем обычный клик
+                                        product_link.click()
+                                        print(f"[DEBUG] Armtek: выполнен обычный клик")
+                                        time.sleep(3)
+                                    except Exception as e2:
+                                        print(f"[DEBUG] Armtek: ошибка обычного клика: {str(e2)}")
+                            
+                            if product_url or '/product/' in driver.current_url:
                                 # Ждем загрузки страницы
                                 time.sleep(3)
                                 
