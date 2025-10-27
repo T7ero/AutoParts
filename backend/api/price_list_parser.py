@@ -1128,28 +1128,70 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
                 result['competitor_brand'] = brand_text
                 print(f"[DEBUG] Armtek: товар найден, бренд совпадает")
                 
-                # Пытаемся получить цены
+                # Ищем таблицу "Предложения"
                 try:
-                    price_elements = driver.find_elements(By.CSS_SELECTOR, 'span[class*="price"], div[class*="price"]')
-                    prices = []
-                    for elem in price_elements:
-                        price_text = elem.text.strip()
-                        price_match = re.search(r'(\d[\d\s]*)\s*₽', price_text)
-                        if price_match:
-                            try:
-                                price_value = float(price_match.group(1).replace(' ', ''))
-                                if 100 <= price_value <= 100000:
-                                    prices.append(price_value)
-                            except ValueError:
-                                pass
+                    offers = []
                     
-                    if prices:
-                        min_price = min(prices)
-                        result['marketplace_price'] = min_price
-                        result['min_competitor_price'] = min_price
-                        print(f"[DEBUG] Armtek: найдена цена {min_price}₽")
+                    # Ищем заголовок "Предложения"
+                    headers = driver.find_elements(By.XPATH, "//p[contains(text(), 'Предложения')]")
+                    print(f"[DEBUG] Armtek: найдено {len(headers)} заголовков 'Предложения'")
+                    
+                    for header in headers:
+                        # Ищем таблицу предложений после заголовка
+                        # Пытаемся найти строки предложений
+                        offers_table = header.find_elements(By.XPATH, "./following-sibling::div | ./ancestor::div/following-sibling::*//div[contains(@class, 'suggestion-item')]")
+                        
+                        if not offers_table:
+                            # Альтернативный способ: найти родительский элемент и искать в нем
+                            parent = header.find_element(By.XPATH, "./ancestor::div[position()=1]")
+                            offers_rows = parent.find_elements(By.CSS_SELECTOR, 'div.suggestion-item, div[class*="suggestion"]')
+                            print(f"[DEBUG] Armtek: найдено {len(offers_rows)} строк предложений")
+                            
+                            for row in offers_rows:
+                                try:
+                                    # Ищем цену в строке
+                                    price_elem = row.find_element(By.CSS_SELECTOR, 'span.font__headline6.no-wrap, span[class*="price"]')
+                                    price_text = price_elem.text.strip()
+                                    price_match = re.search(r'(\d[\d\s]*)\s*₽', price_text)
+                                    
+                                    if price_match:
+                                        price_value = float(price_match.group(1).replace(' ', ''))
+                                        
+                                        # Ищем количество
+                                        quantity = None
+                                        try:
+                                            qty_elem = row.find_element(By.CSS_SELECTOR, 'p.font__body2')
+                                            qty_text = qty_elem.text.strip()
+                                            qty_match = re.search(r'(\d+)', qty_text)
+                                            if qty_match:
+                                                quantity = int(qty_match.group(1))
+                                        except:
+                                            pass
+                                        
+                                        if 100 <= price_value <= 100000:
+                                            offers.append({
+                                                'price': price_value,
+                                                'quantity': quantity
+                                            })
+                                            print(f"[DEBUG] Armtek: найдено предложение - цена: {price_value}₽, количество: {quantity}")
+                                except Exception as e:
+                                    continue
+                    
+                    if offers:
+                        # Сортируем по цене и берем минимальную
+                        offers.sort(key=lambda x: x['price'])
+                        best_offer = offers[0]
+                        
+                        result['marketplace_price'] = best_offer['price']
+                        result['min_competitor_price'] = best_offer['price']
+                        result['competitor_quantity'] = best_offer['quantity']
+                        
+                        print(f"[DEBUG] Armtek: выбрано лучшее предложение - цена: {best_offer['price']}₽, количество: {best_offer['quantity']}")
+                    
                 except Exception as e:
                     print(f"[DEBUG] Armtek: ошибка извлечения цены: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
             else:
                 print(f"[DEBUG] Armtek: бренд не совпадает - ожидали '{manufacturer}', нашли '{brand_text}'")
         
