@@ -21,3 +21,4 @@ class Migration(migrations.Migration):
             field=models.IntegerField(blank=True, null=True, verbose_name='Количество конкурента'),
         ),
     ]
+

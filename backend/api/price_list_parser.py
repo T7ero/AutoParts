@@ -263,6 +263,7 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                     
                     # Ищем раздел "Запрошенный товар" и таблицу с предложениями только в этом разделе
                     requested_section = None
+                    use_requested_section_only = False
                     
                     # Ищем заголовок "Запрошенный товар" или "Запрошенный номер"
                     section_titles = card_soup.find_all('div', class_=re.compile(r'.*NonRetailAppraiseTable__sectionTitle.*'))
@@ -286,15 +287,24 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                     break
                                 parent = parent.parent
                         print(f"[DEBUG] Ищем таблицу только в разделе 'Запрошенный товар'")
+                        
+                        # Если нашли раздел "Запрошенный товар", используем только его данные
+                        # Иначе парсим все таблицы
+                        use_requested_section_only = True
                     else:
                         # Если раздел не найден, ищем все таблицы (fallback)
                         tables = card_soup.find_all('table')
                         print(f"[DEBUG] Раздел 'Запрошенный товар' не найден, ищем во всех таблицах")
                     
                     print(f"[DEBUG] Найдено таблиц: {len(tables)}")
+                    print(f"[DEBUG] use_requested_section_only: {use_requested_section_only}")
                     
                     for table_idx, table in enumerate(tables):
                         print(f"[DEBUG] Анализируем таблицу {table_idx + 1}")
+                        # Если используем только раздел "Запрошенный товар", не обрабатываем другие таблицы
+                        if use_requested_section_only and table_idx > 0:
+                            print(f"[DEBUG] Пропускаем таблицу {table_idx + 1}, так как используем только раздел 'Запрошенный товар'")
+                            break
                         
                         # Ищем все строки в таблице
                         rows = table.find_all('tr')
