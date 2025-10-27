@@ -261,50 +261,53 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                 result['min_competitor_price'] = competitor_min
                                 break
                     
-                    # Ищем раздел "Запрошенный товар" и таблицу с предложениями только в этом разделе
+                    # Ищем раздел "Запрошенный номер" и таблицу с предложениями только в этом разделе
                     requested_section = None
-                    use_requested_section_only = False
+                    tables = []
                     
-                    # Ищем заголовок "Запрошенный товар" или "Запрошенный номер"
+                    # Ищем заголовок "Запрошенный номер" (он же "Запрошенный товар")
                     section_titles = card_soup.find_all('div', class_=re.compile(r'.*NonRetailAppraiseTable__sectionTitle.*'))
                     for title_div in section_titles:
                         title_text = title_div.get_text(strip=True)
-                        if 'Запрошенный товар' in title_text or 'Запрошенный номер' in title_text:
-                            print(f"[DEBUG] Найден раздел: {title_text}")
-                            # Ищем таблицу в этом разделе
+                        print(f"[DEBUG] Проверяем раздел: '{title_text}'")
+                        if 'Запрошенный' in title_text:
+                            print(f"[DEBUG] Найден раздел 'Запрошенный': {title_text}")
                             requested_section = title_div
                             break
                     
                     if requested_section:
-                        # Ищем таблицу в разделе "Запрошенный товар"
-                        tables = requested_section.find_all_next('table', limit=1)
-                        if not tables:
-                            # Если таблица не найдена как следующий элемент, ищем в родительском контейнере
-                            parent = requested_section.parent
-                            while parent and not tables:
-                                tables = parent.find_all('table')
-                                if tables:
-                                    break
-                                parent = parent.parent
-                        print(f"[DEBUG] Ищем таблицу только в разделе 'Запрошенный товар'")
+                        # Ищем таблицу ТОЛЬКО в разделе "Запрошенный"
+                        # Метод 1: Ищем следующий элемент таблицы после заголовка
+                        next_elem = requested_section.next_sibling
+                        while next_elem:
+                            if next_elem.name == 'table':
+                                tables = [next_elem]
+                                print(f"[DEBUG] Найдена таблица сразу после заголовка")
+                                break
+                            next_elem = next_elem.next_sibling
                         
-                        # Если нашли раздел "Запрошенный товар", используем только его данные
-                        # Иначе парсим все таблицы
-                        use_requested_section_only = True
+                        # Метод 2: Если не нашли, ищем в родительском контейнере
+                        if not tables:
+                            section_container = requested_section.find_parent('div', class_=re.compile(r'.*NonRetailAppraiseTable__wrapper.*'))
+                            if not section_container:
+                                section_container = requested_section.find_parent('div', class_=re.compile(r'.*NonRetailAppraiseTable.*'))
+                            
+                            if section_container:
+                                tables = section_container.find_all('table', limit=1)
+                                print(f"[DEBUG] Найдено таблиц в контейнере раздела 'Запрошенный': {len(tables)}")
+                        
+                        # Метод 3: Если все еще не нашли, используем find_next с ограничением
+                        if not tables:
+                            tables = requested_section.find_all_next('table', limit=1)
+                            print(f"[DEBUG] Найдена следующая таблица после заголовка: {len(tables)}")
                     else:
-                        # Если раздел не найден, ищем все таблицы (fallback)
+                        print(f"[DEBUG] Раздел 'Запрошенный' не найден, парсим все таблицы")
                         tables = card_soup.find_all('table')
-                        print(f"[DEBUG] Раздел 'Запрошенный товар' не найден, ищем во всех таблицах")
                     
                     print(f"[DEBUG] Найдено таблиц: {len(tables)}")
-                    print(f"[DEBUG] use_requested_section_only: {use_requested_section_only}")
                     
                     for table_idx, table in enumerate(tables):
                         print(f"[DEBUG] Анализируем таблицу {table_idx + 1}")
-                        # Если используем только раздел "Запрошенный товар", не обрабатываем другие таблицы
-                        if use_requested_section_only and table_idx > 0:
-                            print(f"[DEBUG] Пропускаем таблицу {table_idx + 1}, так как используем только раздел 'Запрошенный товар'")
-                            break
                         
                         # Ищем все строки в таблице
                         rows = table.find_all('tr')
