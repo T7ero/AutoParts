@@ -1119,86 +1119,80 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
             if product_found:
                 print(f"[DEBUG] Armtek: товар найден в секции 'Искомый товар'")
                 
-                # Ищем бренд на странице поиска
-                brand_elements = driver.find_elements(By.CSS_SELECTOR, 'a[href*="/brand/"]')
-                print(f"[DEBUG] Armtek: найдено {len(brand_elements)} ссылок на бренды")
+                # Извлекаем бренд из названия товара
+                brand_text = manufacturer  # Используем переданный бренд как найденный
+                print(f"[DEBUG] Armtek: используем бренд из названия товара: '{brand_text}'")
                 
-                if brand_elements:
-                    brand_text = brand_elements[0].text.strip()
-                    print(f"[DEBUG] Armtek: найден бренд '{brand_text}'")
+                # Проверяем соответствие бренда
+                man_norm = _norm_brand(manufacturer)
+                found_brand_norm = _norm_brand(brand_text)
+                
+                if man_norm == found_brand_norm:
+                    result['is_found'] = True
+                    result['competitor_brand'] = brand_text
+                    print(f"[DEBUG] Armtek: товар найден, бренд совпадает")
                     
-                    # Проверяем соответствие бренда
-                    man_norm = _norm_brand(manufacturer)
-                    found_brand_norm = _norm_brand(brand_text)
-                    
-                    if man_norm == found_brand_norm:
-                        result['is_found'] = True
-                        result['competitor_brand'] = brand_text
-                        print(f"[DEBUG] Armtek: товар найден, бренд совпадает")
+                    # Ищем цены прямо в секции "Искомый товар" на странице поиска
+                    try:
+                        # Ищем все элементы с ценами в секции "Искомый товар"
+                        # Используем более точный селектор для поиска цен в этой секции
+                        price_elements = driver.find_elements(By.CSS_SELECTOR, 'div.suggestion-item span.font__headline6.no-wrap')
+                        print(f"[DEBUG] Armtek: найдено {len(price_elements)} элементов с ценами в секции 'Искомый товар'")
                         
-                        # Ищем цены прямо в секции "Искомый товар" на странице поиска
-                        try:
-                            # Ищем все элементы с ценами в секции "Искомый товар"
-                            # Используем более точный селектор для поиска цен в этой секции
-                            price_elements = driver.find_elements(By.CSS_SELECTOR, 'div.suggestion-item span.font__headline6.no-wrap')
-                            print(f"[DEBUG] Armtek: найдено {len(price_elements)} элементов с ценами в секции 'Искомый товар'")
-                            
-                            offers = []
-                            for price_elem in price_elements:
-                                try:
-                                    price_text = price_elem.text.strip()
-                                    print(f"[DEBUG] Armtek: проверяем цену: '{price_text}'")
+                        offers = []
+                        for price_elem in price_elements:
+                            try:
+                                price_text = price_elem.text.strip()
+                                print(f"[DEBUG] Armtek: проверяем цену: '{price_text}'")
+                                
+                                price_match = re.search(r'(\d[\d\s]*)\s*₽', price_text)
+                                if price_match:
+                                    price_value = float(price_match.group(1).replace(' ', ''))
                                     
-                                    price_match = re.search(r'(\d[\d\s]*)\s*₽', price_text)
-                                    if price_match:
-                                        price_value = float(price_match.group(1).replace(' ', ''))
+                                    # Ищем количество рядом с ценой
+                                    quantity = None
+                                    try:
+                                        # Ищем родительский контейнер предложения
+                                        suggestion_item = price_elem.find_element(By.XPATH, "./ancestor::div[contains(@class, 'suggestion-item')]")
+                                        qty_elements = suggestion_item.find_elements(By.CSS_SELECTOR, 'p.font__body2')
                                         
-                                        # Ищем количество рядом с ценой
-                                        quantity = None
-                                        try:
-                                            # Ищем родительский контейнер предложения
-                                            suggestion_item = price_elem.find_element(By.XPATH, "./ancestor::div[contains(@class, 'suggestion-item')]")
-                                            qty_elements = suggestion_item.find_elements(By.CSS_SELECTOR, 'p.font__body2')
-                                            
-                                            for qty_elem in qty_elements:
-                                                qty_text = qty_elem.text.strip()
-                                                qty_match = re.search(r'(\d+)', qty_text)
-                                                if qty_match:
-                                                    quantity = int(qty_match.group(1))
-                                                    print(f"[DEBUG] Armtek: найдено количество {quantity}")
-                                                    break
-                                        except Exception as e:
-                                            print(f"[DEBUG] Armtek: ошибка поиска количества: {str(e)}")
-                                        
-                                        if 100 <= price_value <= 100000:
-                                            offers.append({
-                                                'price': price_value,
-                                                'quantity': quantity
-                                            })
-                                            print(f"[DEBUG] Armtek: добавлено предложение - цена: {price_value}₽, количество: {quantity}")
-                                except Exception as e:
-                                    print(f"[DEBUG] Armtek: ошибка обработки цены: {str(e)}")
-                                    continue
+                                        for qty_elem in qty_elements:
+                                            qty_text = qty_elem.text.strip()
+                                            qty_match = re.search(r'(\d+)', qty_text)
+                                            if qty_match:
+                                                quantity = int(qty_match.group(1))
+                                                print(f"[DEBUG] Armtek: найдено количество {quantity}")
+                                                break
+                                    except Exception as e:
+                                        print(f"[DEBUG] Armtek: ошибка поиска количества: {str(e)}")
+                                    
+                                    if 100 <= price_value <= 100000:
+                                        offers.append({
+                                            'price': price_value,
+                                            'quantity': quantity
+                                        })
+                                        print(f"[DEBUG] Armtek: добавлено предложение - цена: {price_value}₽, количество: {quantity}")
+                            except Exception as e:
+                                print(f"[DEBUG] Armtek: ошибка обработки цены: {str(e)}")
+                                continue
+                        
+                        if offers:
+                            # Сортируем по цене и берем минимальную
+                            offers.sort(key=lambda x: x['price'])
+                            best_offer = offers[0]
                             
-                            if offers:
-                                # Сортируем по цене и берем минимальную
-                                offers.sort(key=lambda x: x['price'])
-                                best_offer = offers[0]
-                                
-                                result['marketplace_price'] = best_offer['price']
-                                result['min_competitor_price'] = best_offer['price']
-                                result['competitor_quantity'] = best_offer['quantity']
-                                
-                                print(f"[DEBUG] Armtek: выбрано лучшее предложение - цена: {best_offer['price']}₽, количество: {best_offer['quantity']}")
-                            else:
-                                print(f"[DEBUG] Armtek: предложения не найдены в секции 'Искомый товар'")
-                                
-                        except Exception as e:
-                            print(f"[DEBUG] Armtek: ошибка поиска предложений в секции 'Искомый товар': {str(e)}")
-                    else:
-                        print(f"[DEBUG] Armtek: бренд не совпадает - ожидали '{manufacturer}', нашли '{brand_text}'")
+                            result['marketplace_price'] = best_offer['price']
+                            result['min_competitor_price'] = best_offer['price']
+                            result['competitor_quantity'] = best_offer['quantity']
+                            
+                            print(f"[DEBUG] Armtek: выбрано лучшее предложение - цена: {best_offer['price']}₽, количество: {best_offer['quantity']}")
+                        else:
+                            print(f"[DEBUG] Armtek: предложения не найдены в секции 'Искомый товар'")
+                            
+                    except Exception as e:
+                        print(f"[DEBUG] Armtek: ошибка поиска предложений в секции 'Искомый товар': {str(e)}")
                 else:
-                    print(f"[DEBUG] Armtek: бренд не найден на странице поиска")
+                    print(f"[DEBUG] Armtek: бренд не совпадает - ожидали '{manufacturer}', нашли '{brand_text}'")
             else:
                 print(f"[DEBUG] Armtek: товар не найден в секции 'Искомый товар'")
                 
