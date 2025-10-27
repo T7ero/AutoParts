@@ -57,6 +57,12 @@ def process_price_list_task(self, task_id: int):
         
         log(f"Найдено {len(items_data)} позиций для анализа")
         
+        # Удаляем старые записи для этой задачи (если была повторная загрузка)
+        old_items_count = PriceListItem.objects.filter(task=task).count()
+        if old_items_count > 0:
+            log(f"Удаляем {old_items_count} старых записей для этой задачи")
+            PriceListItem.objects.filter(task=task).delete()
+        
         # Создаем записи в базе данных
         db_items = []
         for item_data in items_data:
