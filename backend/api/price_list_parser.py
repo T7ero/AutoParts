@@ -277,29 +277,80 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                     
                     if requested_section:
                         # Ищем таблицу ТОЛЬКО в разделе "Запрошенный"
-                        # Метод 1: Ищем следующий элемент таблицы после заголовка
-                        next_elem = requested_section.next_sibling
-                        while next_elem:
-                            if next_elem.name == 'table':
-                                tables = [next_elem]
-                                print(f"[DEBUG] Найдена таблица сразу после заголовка")
-                                break
-                            next_elem = next_elem.next_sibling
+                        # Поднимаемся до контейнера таблицы
+                        section_container = requested_section.find_parent('div', class_=re.compile(r'.*NonRetailAppraiseTable.*'))
                         
-                        # Метод 2: Если не нашли, ищем в родительском контейнере
-                        if not tables:
-                            section_container = requested_section.find_parent('div', class_=re.compile(r'.*NonRetailAppraiseTable__wrapper.*'))
-                            if not section_container:
-                                section_container = requested_section.find_parent('div', class_=re.compile(r'.*NonRetailAppraiseTable.*'))
+                        if section_container:
+                            # Ищем следующую таблицу после заголовка внутри этого контейнера
+                            print(f"[DEBUG] Ищем таблицу в контейнере")
                             
-                            if section_container:
-                                tables = section_container.find_all('table', limit=1)
-                                print(f"[DEBUG] Найдено таблиц в контейнере раздела 'Запрошенный': {len(tables)}")
+                            # Ищем первого sibling после заголовка, который является таблицей
+                            current = requested_section
+                            for _ in range(20):  # Максимум 20 итераций
+                                current = current.next_sibling if hasattr(current, 'next_sibling') else None
+                                if current is None:
+                                    break
+                                
+                                # Проверяем, что мы все еще в пределах нашего контейнера
+                                if section_container != current.find_parent():
+                                    break
+                                
+                                # Проверяем, не встретили ли следующий заголовок
+                                if current.name == 'div' and 'sectionTitle' in str(current.get('class', [])):
+                                    print(f"[DEBUG] Достигнут следующий раздел, прекращаем поиск")
+                                    break
+                                
+                                # Проверяем, является ли элемент таблицей
+                                if current.name == 'table':
+                                    tables = [current]
+                                    print(f"[DEBUG] Найдена таблица в разделе 'Запрошенный'")
+                                    break
+                            
+                            # Если не нашли таблицу как sibling, ищем в дочерних элементах
+                            if not tables:
+                                print(f"[DEBUG] Ищем таблицу в дочерних элементах раздела")
+                                for child in section_container.children:
+                                    if hasattr(child, 'name') and child.name == 'table':
+                                        tables = [child]
+                                        print(f"[DEBUG] Найдена таблица в дочерних элементах")
+                                        break
+                        else:
+                            print(f"[DEBUG] Контейнер раздела не найден")
                         
-                        # Метод 3: Если все еще не нашли, используем find_next с ограничением
+                        # Если все еще не нашли, берем первую таблицу после заголовка
                         if not tables:
-                            tables = requested_section.find_all_next('table', limit=1)
-                            print(f"[DEBUG] Найдена следующая таблица после заголовка: {len(tables)}")
+                            print(f"[DEBUG] Fallback: используем find_next для поиска таблицы")
+                            found_tables = requested_section.find_all_next('table', limit=2)
+                            if found_tables:
+                                # Берем первую таблицу, которая не является дочерним элементом следующего раздела
+                                for table in found_tables:
+                                    # Проверяем, нет ли перед таблицей следующего заголовка
+                                    prev_elements = []
+                                    current = table.previous_sibling
+                                    for _ in range(10):
+                                        if current is None:
+                                            break
+                                        if hasattr(current, 'name'):
+                                            prev_elements.append(current)
+                                            if current.name == 'div' and 'sectionTitle' in str(current.get('class', [])):
+                                                # Нашли заголовок раздела после нашей таблицы, это не наша таблица
+                                                print(f"[DEBUG] Пропускаем таблицу, она не в разделе 'Запрошенный'")
+                                                break
+                                        current = current.previous_sibling
+                                    
+                                    # Если не нашли следующий заголовок, это наша таблица
+                                    if not any('sectionTitle' in str(elem.get('class', [])) for elem in prev_elements if hasattr(elem, 'get')):
+                                        tables = [table]
+                                        print(f"[DEBUG] Найдена таблица после fallback")
+                                        break
+                                    
+                                    if tables:
+                                        break
+                            
+                            if not tables and found_tables:
+                                # Если все fallback не сработали, берем первую таблицу
+                                tables = [found_tables[0]]
+                                print(f"[DEBUG] Fallback: берем первую найденную таблицу")
                     else:
                         print(f"[DEBUG] Раздел 'Запрошенный' не найден, парсим все таблицы")
                         tables = card_soup.find_all('table')
