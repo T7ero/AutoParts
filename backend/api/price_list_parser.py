@@ -1102,13 +1102,24 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
             target_section = driver.find_element(By.XPATH, "//p[contains(text(), 'Искомый товар')]")
             print(f"[DEBUG] Armtek: найдена секция 'Искомый товар'")
             
-            # Ищем карточку товара в этой секции
-            product_card = target_section.find_element(By.XPATH, "./following-sibling::div//p[contains(@class, 'font__headline6')]")
-            product_title = product_card.text.strip()
-            print(f"[DEBUG] Armtek: найдена карточка товара: '{product_title}'")
+            # Ищем карточку товара в этой секции - используем более простой подход
+            product_cards = driver.find_elements(By.CSS_SELECTOR, 'p.font__headline6')
+            print(f"[DEBUG] Armtek: найдено {len(product_cards)} карточек товаров")
             
-            # Проверяем, что это наш товар
-            if article.lower() in product_title.lower() and manufacturer.lower() in product_title.lower():
+            product_card = None
+            product_title = ""
+            
+            for card in product_cards:
+                title = card.text.strip()
+                print(f"[DEBUG] Armtek: проверяем карточку: '{title}'")
+                if article.lower() in title.lower() and manufacturer.lower() in title.lower():
+                    product_card = card
+                    product_title = title
+                    print(f"[DEBUG] Armtek: найдена подходящая карточка: '{product_title}'")
+                    break
+            
+            # Проверяем, что мы нашли подходящую карточку
+            if product_card:
                 print(f"[DEBUG] Armtek: товар найден в секции 'Искомый товар'")
                 
                 # Кликаем на карточку товара
