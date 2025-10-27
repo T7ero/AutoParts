@@ -1122,13 +1122,50 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
             if product_card:
                 print(f"[DEBUG] Armtek: товар найден в секции 'Искомый товар'")
                 
-                # Кликаем на карточку товара
-                product_card.click()
-                time.sleep(3)
+                # Пытаемся кликнуть на карточку товара разными способами
+                try:
+                    # Способ 1: обычный клик
+                    product_card.click()
+                    time.sleep(2)
+                except Exception as e:
+                    print(f"[DEBUG] Armtek: обычный клик не сработал: {str(e)}")
+                    try:
+                        # Способ 2: JavaScript клик
+                        driver.execute_script("arguments[0].click();", product_card)
+                        time.sleep(2)
+                    except Exception as e2:
+                        print(f"[DEBUG] Armtek: JavaScript клик не сработал: {str(e2)}")
+                        try:
+                            # Способ 3: ищем родительскую ссылку
+                            parent_link = product_card.find_element(By.XPATH, "./ancestor::a")
+                            parent_link.click()
+                            time.sleep(2)
+                        except Exception as e3:
+                            print(f"[DEBUG] Armtek: клик по родительской ссылке не сработал: {str(e3)}")
                 
                 # Проверяем, что мы перешли на страницу товара
                 current_url = driver.current_url
                 print(f"[DEBUG] Armtek: текущий URL: {current_url}")
+                
+                # Если клик не сработал, попробуем найти ссылку на товар напрямую
+                if "/product/" not in current_url:
+                    print(f"[DEBUG] Armtek: клик не сработал, ищем ссылку на товар напрямую")
+                    try:
+                        # Ищем ссылки на товары
+                        product_links = driver.find_elements(By.CSS_SELECTOR, 'a[href*="/product/"]')
+                        print(f"[DEBUG] Armtek: найдено {len(product_links)} ссылок на товары")
+                        
+                        for link in product_links:
+                            href = link.get_attribute('href')
+                            if article.lower() in href.lower():
+                                print(f"[DEBUG] Armtek: найдена подходящая ссылка: {href}")
+                                driver.get(href)
+                                time.sleep(3)
+                                current_url = driver.current_url
+                                print(f"[DEBUG] Armtek: перешли по ссылке, текущий URL: {current_url}")
+                                break
+                    except Exception as e4:
+                        print(f"[DEBUG] Armtek: ошибка поиска ссылки на товар: {str(e4)}")
                 
                 if "/product/" in current_url:
                     # Ищем бренд на странице товара
