@@ -1135,14 +1135,53 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
                     print(f"[DEBUG] Armtek: длина HTML страницы: {len(page_html)} символов")
                     print(f"[DEBUG] Armtek: заголовок страницы: {driver.title}")
                     
+                    # Сохраняем HTML для анализа
+                    try:
+                        with open('/tmp/armtek_debug.html', 'w', encoding='utf-8') as f:
+                            f.write(page_html)
+                        print(f"[DEBUG] HTML сохранен в /tmp/armtek_debug.html")
+                    except Exception as e:
+                        print(f"[DEBUG] Ошибка сохранения HTML: {str(e)}")
+                    
                     # Ищем первую ссылку на карточку товара
                     try:
                         # Ждем загрузки результатов поиска
                         product_link = None
                         
-                        # Сначала ищем элементы с классом font__headline6 (заголовки товаров)
-                        title_elements = driver.find_elements(By.CSS_SELECTOR, 'p.font__headline6, div.font__headline6, span.font__headline6, h1.font__headline6, h2.font__headline6, h3.font__headline6')
-                        print(f"[DEBUG] Armtek: найдено {len(title_elements)} элементов с классом font__headline6")
+                        # Пробуем найти любые ссылки на товары
+                        all_clickable = driver.find_elements(By.CSS_SELECTOR, '*')
+                        print(f"[DEBUG] Armtek: найдено {len(all_clickable)} всех элементов")
+                        
+                        # Пробуем найти элементы с классом font__headline6 и другими вариантами
+                        title_elements = []
+                        selectors_to_try = [
+                            'p.font__headline6',
+                            'div.font__headline6',
+                            'span.font__headline6',
+                            'h1.font__headline6',
+                            'h2.font__headline6',
+                            'h3.font__headline6',
+                            '[class*="headline"]',
+                            '[class*="product"]',
+                            'a[href*="/product/"]',
+                            'a[href*="/goods/"]',
+                            '.product-link',
+                            '.goods-link'
+                        ]
+                        
+                        for selector in selectors_to_try:
+                            try:
+                                found = driver.find_elements(By.CSS_SELECTOR, selector)
+                                if found:
+                                    print(f"[DEBUG] Armtek: найдено {len(found)} элементов по селектору {selector}")
+                                    title_elements.extend(found)
+                                    if selector not in ['[class*="headline"]', '[class*="product"]']:
+                                        break
+                            except Exception as e:
+                                print(f"[DEBUG] Armtek: ошибка поиска по селектору {selector}: {str(e)}")
+                                continue
+                        
+                        print(f"[DEBUG] Armtek: итого найдено {len(title_elements)} элементов")
                         
                         # Ищем элемент с текстом, содержащим артикул или бренд
                         for elem in title_elements:
