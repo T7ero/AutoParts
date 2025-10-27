@@ -22,7 +22,7 @@ from typing import List, Dict, Optional, Tuple, Set
 from selenium.common.exceptions import TimeoutException
 import gc
 from decimal import Decimal
-from .autopiter_parser import get_next_proxy, make_request, get_brands_by_artikul, get_brands_by_artikul_emex, get_brands_by_artikul_armtek
+from .autopiter_parser import get_next_proxy, make_request, get_brands_by_artikul, get_brands_by_artikul_emex, get_brands_by_artikul_armtek, _create_chrome_driver_robust
 
 # Настройки для парсинга прайс-листа
 TIMEOUT = 15  # Увеличиваем таймаут
@@ -1073,381 +1073,101 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
         'error_message': ''
     }
     
-    # Увеличенная задержка перед запросом, чтобы избежать rate limit
-    time.sleep(random.uniform(5.0, 10.0))
+    driver = None
+    temp_dir = None
     
     try:
-        # Сначала проверяем бренды через основной Selenium-парсер
-        man_ok = False
-        try:
-            brands = get_brands_by_artikul_armtek(article) or []
+        print(f"[DEBUG] Armtek: начинаем поиск товара {manufacturer} {article}")
+        
+        # Создаем драйвер для парсинга
+        temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_{uuid.uuid4().hex[:8]}_")
+        driver = _create_chrome_driver_robust(temp_dir, proxy=None)
+        
+        if not driver:
+            print(f"[DEBUG] Armtek: не удалось создать драйвер")
+            result['error_message'] = "Не удалось создать драйвер для парсинга"
+            return result
+        
+        # Переходим на страницу поиска
+        search_url = f"https://armtek.ru/search?text={quote(article)}"
+        print(f"[DEBUG] Armtek: загружаем страницу поиска {search_url}")
+        driver.get(search_url)
+        
+        # Ждем загрузки страницы
+        time.sleep(3)
+        
+        # Ищем первую карточку товара
+        product_links = driver.find_elements(By.CSS_SELECTOR, 'a[href*="/product/"]')
+        print(f"[DEBUG] Armtek: найдено {len(product_links)} ссылок на карточки товаров")
+        
+        if not product_links:
+            print(f"[DEBUG] Armtek: карточки товаров не найдены для артикула {article}")
+            return result
+        
+        # Переходим в первую карточку товара
+        first_product_url = product_links[0].get_attribute('href')
+        print(f"[DEBUG] Armtek: переходим в карточку {first_product_url}")
+        driver.get(first_product_url)
+        time.sleep(2)
+        
+        # Ищем ссылку на бренд в карточке товара
+        brand_link = driver.find_elements(By.CSS_SELECTOR, 'a[href*="/brand/"]')
+        print(f"[DEBUG] Armtek: найдено {len(brand_link)} ссылок на бренды")
+        
+        if brand_link:
+            brand_text = brand_link[0].text.strip()
+            brand_href = brand_link[0].get_attribute('href')
+            print(f"[DEBUG] Armtek: найден бренд '{brand_text}' из ссылки {brand_href}")
+            
+            # Проверяем соответствие бренда
             man_norm = _norm_brand(manufacturer)
-            for b in brands:
-                if _norm_brand(b) == man_norm:
-                    man_ok = True
-                    result['competitor_brand'] = b
-                    break
-        except Exception as e:
-            print(f"[DEBUG] Ошибка получения брендов Armtek: {str(e)}")
-        
-        # Если нашли бренды, переходим к поиску минимальной цены
-        if man_ok:
-            try:
-                # Ищем минимальную цену через Selenium
-                driver = None
+            found_brand_norm = _norm_brand(brand_text)
+            
+            if man_norm == found_brand_norm:
+                result['is_found'] = True
+                result['competitor_brand'] = brand_text
+                print(f"[DEBUG] Armtek: товар найден, бренд совпадает")
+                
+                # Пытаемся получить цены
                 try:
-                    options = Options()
-                    options.add_argument('--headless=new')
-                    options.add_argument('--no-sandbox')
-                    options.add_argument('--disable-dev-shm-usage')
-                    options.add_argument('--disable-gpu')
-                    options.add_argument('--disable-extensions')
-                    options.add_argument('--disable-logging')
-                    options.add_argument('--log-level=3')
-                    options.add_argument('--silent')
-                    options.add_argument('--disable-web-security')
-                    options.add_argument('--disable-features=VizDisplayCompositor')
-                    options.add_argument('--remote-debugging-port=9223')
-                    
-                    # Добавляем прокси для Selenium, если доступен
-                    proxy_dict = get_next_proxy()
-                    if proxy_dict:
-                        proxy_url = proxy_dict.get('http', '')
-                        if proxy_url.startswith('http://'):
-                            proxy_host = proxy_url[7:]  # Убираем 'http://'
-                            options.add_argument(f'--proxy-server=http://{proxy_host}')
-                    
-                    driver = webdriver.Chrome(options=options)
-                    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-                    driver.implicitly_wait(3)
-                    
-                    # Переходим на поисковую страницу
-                    search_url = f"https://armtek.ru/search?text={quote(str(article))}"
-                    driver.get(search_url)
-                    
-                    print(f"[DEBUG] Armtek: загружена поисковая страница для {article}")
-                    
-                    # Ждем загрузки страницы с более длительной задержкой
-                    time.sleep(10)
-                    
-                    # Сохраняем HTML для отладки
-                    page_html = driver.page_source
-                    print(f"[DEBUG] Armtek: длина HTML страницы: {len(page_html)} символов")
-                    print(f"[DEBUG] Armtek: заголовок страницы: {driver.title}")
-                    
-                    # Сохраняем HTML для анализа
-                    try:
-                        with open('/tmp/armtek_debug.html', 'w', encoding='utf-8') as f:
-                            f.write(page_html)
-                        print(f"[DEBUG] HTML сохранен в /tmp/armtek_debug.html")
-                    except Exception as e:
-                        print(f"[DEBUG] Ошибка сохранения HTML: {str(e)}")
-                    
-                    # Ищем первую ссылку на карточку товара
-                    try:
-                        # Ждем загрузки результатов поиска
-                        product_link = None
-                        
-                        # Пробуем найти любые ссылки на товары
-                        all_clickable = driver.find_elements(By.CSS_SELECTOR, '*')
-                        print(f"[DEBUG] Armtek: найдено {len(all_clickable)} всех элементов")
-                        
-                        # Пробуем найти элементы с классом font__headline6 и другими вариантами
-                        title_elements = []
-                        selectors_to_try = [
-                            'p.font__headline6',
-                            'div.font__headline6',
-                            'span.font__headline6',
-                            'h1.font__headline6',
-                            'h2.font__headline6',
-                            'h3.font__headline6',
-                            '[class*="headline"]',
-                            '[class*="product"]',
-                            'a[href*="/product/"]',
-                            'a[href*="/goods/"]',
-                            '.product-link',
-                            '.goods-link'
-                        ]
-                        
-                        for selector in selectors_to_try:
-                            try:
-                                found = driver.find_elements(By.CSS_SELECTOR, selector)
-                                if found:
-                                    print(f"[DEBUG] Armtek: найдено {len(found)} элементов по селектору {selector}")
-                                    title_elements.extend(found)
-                                    if selector not in ['[class*="headline"]', '[class*="product"]']:
-                                        break
-                            except Exception as e:
-                                print(f"[DEBUG] Armtek: ошибка поиска по селектору {selector}: {str(e)}")
-                                continue
-                        
-                        print(f"[DEBUG] Armtek: итого найдено {len(title_elements)} элементов")
-                        
-                        # Ищем элемент с текстом, содержащим артикул или бренд
-                        for elem in title_elements:
-                            try:
-                                text = elem.text.strip()
-                                print(f"[DEBUG] Armtek: проверяем элемент: '{text[:100]}...'")
-                                
-                                # Проверяем, содержит ли текст артикул или название товара
-                                if article in text or manufacturer in text.upper():
-                                    print(f"[DEBUG] Armtek: найдено совпадение: '{text[:100]}...'")
-                                    
-                                    # Ищем родительский или дочерний элемент с href
-                                    try:
-                                        # Пробуем найти кликабельный элемент
-                                        if elem.tag_name.lower() in ['a', 'button']:
-                                            product_link = elem
-                                            break
-                                        
-                                        # Пробуем найти кликабельный родительский контейнер
-                                        parent_elem = elem.find_element(By.XPATH, './..')
-                                        if parent_elem:
-                                            href = parent_elem.get_attribute('href') or parent_elem.get_attribute('onclick')
-                                            if href:
-                                                product_link = parent_elem
-                                                print(f"[DEBUG] Armtek: найдена ссылка в родительском элементе: {href}")
-                                                break
-                                    except Exception:
-                                        pass
-                            except Exception as e:
-                                print(f"[DEBUG] Armtek: ошибка проверки элемента: {str(e)}")
-                                continue
-                        
-                        # Если не нашли, пробуем найти любые элементы с href, содержащим /product/
-                        if not product_link:
-                            all_links = driver.find_elements(By.CSS_SELECTOR, '[href*="/product/"], a[href*="/product/"]')
-                            print(f"[DEBUG] Armtek: найдено {len(all_links)} элементов с /product/ в href")
-                            
-                            for link in all_links:
-                                try:
-                                    href = link.get_attribute('href')
-                                    text = link.text.strip()
-                                    print(f"[DEBUG] Armtek: проверяем ссылку: href='{href}', text='{text[:50]}...'")
-                                    
-                                    # Проверяем, содержит ли href или text артикул
-                                    if article in href or article in text or manufacturer in text.upper():
-                                        product_link = link
-                                        print(f"[DEBUG] Armtek: найдена ссылка по артикулу: {href}")
-                                        break
-                                except Exception:
-                                    continue
-                        
-                        # Если не нашли, пробуем кликнуть по первому найденному элементу с классом font__headline6
-                        if not product_link and title_elements:
-                            try:
-                                first_elem = title_elements[0]
-                                text = first_elem.text.strip()
-                                print(f"[DEBUG] Armtek: используем первый элемент font__headline6: '{text[:100]}...'")
-                                product_link = first_elem
-                            except Exception as e:
-                                print(f"[DEBUG] Armtek: ошибка использования первого элемента: {str(e)}")
-                        
-                        if product_link:
-                            product_url = None
-                            
-                            try:
-                                # Пробуем получить href
-                                product_url = product_link.get_attribute('href')
-                            except Exception:
-                                pass
-                            
-                            if product_url:
-                                print(f"[DEBUG] Armtek: найдена ссылка на карточку: {product_url}")
-                                
-                                # Переходим в карточку товара
-                                driver.get(product_url)
-                                print(f"[DEBUG] Armtek: перешли в карточку товара")
-                            else:
-                                # Если не нашли href, пробуем кликнуть по элементу
-                                print(f"[DEBUG] Armtek: не найден href, пробуем кликнуть по элементу")
-                                try:
-                                    # Пробуем кликнуть JavaScript-кликом
-                                    driver.execute_script("arguments[0].click();", product_link)
-                                    print(f"[DEBUG] Armtek: выполнен JavaScript-клик по элементу")
-                                    
-                                    # Ждем перехода на страницу продукта
-                                    time.sleep(3)
-                                    
-                                    # Проверяем, изменился ли URL
-                                    current_url = driver.current_url
-                                    print(f"[DEBUG] Armtek: текущий URL: {current_url}")
-                                    if '/product/' in current_url:
-                                        print(f"[DEBUG] Armtek: успешно перешли на страницу продукта")
-                                    else:
-                                        print(f"[DEBUG] Armtek: URL не содержит /product/, возможно не удалось перейти")
-                                except Exception as e:
-                                    print(f"[DEBUG] Armtek: ошибка клика по элементу: {str(e)}")
-                                    try:
-                                        # Пробуем обычный клик
-                                        product_link.click()
-                                        print(f"[DEBUG] Armtek: выполнен обычный клик")
-                                        time.sleep(3)
-                                    except Exception as e2:
-                                        print(f"[DEBUG] Armtek: ошибка обычного клика: {str(e2)}")
-                            
-                            if product_url or '/product/' in driver.current_url:
-                                # Ждем загрузки страницы
-                                time.sleep(3)
-                                
-                                # Ищем минимальную цену среди всех предложений
-                                min_price = None
-                                min_price_quantity = None
-                                
-                                # Селекторы для поиска цен
-                                price_selectors = [
-                                    'span.font__headline6.no-wrap',
-                                    'span.font__headline6',
-                                    '.card__price span',
-                                    '[class*="price"] span',
-                                    '.font__headline6',
-                                    'span[class*="price"]',
-                                    '.price span',
-                                    '.cost span',
-                                    'span[class*="cost"]'
-                                ]
-                                
-                                for selector in price_selectors:
-                                    try:
-                                        price_elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                                        prices = []
-                                        
-                                        for element in price_elements:
-                                            price_text = element.text.strip()
-                                            if price_text and '₽' in price_text:
-                                                # Извлекаем числовое значение цены
-                                                price_match = re.search(r'(\d[\d\s]*)', price_text.replace('\xa0', ' '))
-                                                if price_match:
-                                                    try:
-                                                        price_value = float(price_match.group(1).replace(' ', ''))
-                                                        prices.append(price_value)
-                                                        print(f"[DEBUG] Armtek: найдена цена {price_value}₽")
-                                                        
-                                                        # Ищем количество товара для этой цены
-                                                        # Ищем родительский контейнер предложения
-                                                        offer_container = element
-                                                        for _ in range(5):  # Поднимаемся по DOM дереву
-                                                            try:
-                                                                offer_container = offer_container.find_element(By.XPATH, '..')
-                                                                # Ищем элемент с количеством в том же контейнере
-                                                                quantity_elements = offer_container.find_elements(By.CSS_SELECTOR, 'p.font__body2, span[class*="quantity"], .quantity, [class*="count"]')
-                                                                for q_elem in quantity_elements:
-                                                                    q_text = q_elem.text.strip()
-                                                                    if 'шт' in q_text:
-                                                                        # Извлекаем число из текста типа ">20 шт" или "32 шт"
-                                                                        q_match = re.search(r'(\d+)', q_text)
-                                                                        if q_match:
-                                                                            quantity_value = int(q_match.group(1))
-                                                                            print(f"[DEBUG] Armtek: найдено количество {quantity_value} для цены {price_value}")
-                                                                            if min_price is None or price_value < min_price:
-                                                                                min_price = price_value
-                                                                                min_price_quantity = quantity_value
-                                                                            break
-                                                                if min_price_quantity is not None:
-                                                                    break
-                                                            except Exception:
-                                                                continue
-                                                        if min_price_quantity is not None:
-                                                            break
-                                                        
-                                                    except ValueError:
-                                                        continue
-                                        
-                                        if prices and min_price is None:
-                                            min_price = min(prices)
-                                            print(f"[DEBUG] Armtek: минимальная цена найдена: {min_price}₽")
-                                            
-                                            # Если не нашли количество для минимальной цены, ищем его отдельно
-                                            if min_price_quantity is None:
-                                                try:
-                                                    # Ищем все элементы с количеством
-                                                    quantity_elements = driver.find_elements(By.CSS_SELECTOR, 'p.font__body2, span[class*="quantity"], .quantity, [class*="count"]')
-                                                    for q_elem in quantity_elements:
-                                                        q_text = q_elem.text.strip()
-                                                        if 'шт' in q_text:
-                                                            q_match = re.search(r'(\d+)', q_text)
-                                                            if q_match:
-                                                                min_price_quantity = int(q_match.group(1))
-                                                                print(f"[DEBUG] Armtek: найдено общее количество {min_price_quantity}")
-                                                                break
-                                                except Exception as e:
-                                                    print(f"[DEBUG] Armtek: ошибка поиска количества: {str(e)}")
-                                            
-                                            break
-                                            
-                                    except Exception as e:
-                                        print(f"[DEBUG] Armtek: ошибка поиска цен по селектору {selector}: {str(e)}")
-                                        continue
-                                
-                                if min_price:
-                                    result['marketplace_price'] = min_price
-                                    result['min_competitor_price'] = min_price  # На Armtek это одно и то же
-                                    result['quantity_in_stock'] = min_price_quantity
-                                    result['is_found'] = True
-                                    print(f"[DEBUG] Armtek: итоговый результат - найдено: {min_price}₽, количество: {min_price_quantity}")
-                                else:
-                                    print(f"[DEBUG] Armtek: цены не найдены")
-                            else:
-                                print(f"[DEBUG] Armtek: не удалось получить URL карточки товара")
-                        else:
-                            print(f"[DEBUG] Armtek: не найдена ссылка на карточку товара")
-                                
-                    except Exception as e:
-                        print(f"[DEBUG] Armtek: ошибка поиска карточки товара: {str(e)}")
-                        
-                except Exception as e:
-                    print(f"[DEBUG] Armtek: ошибка Selenium: {str(e)}")
-                    
-                finally:
-                    try:
-                        if driver:
-                            driver.quit()
-                    except Exception:
-                        pass
-                        
-            except Exception as e:
-                print(f"[DEBUG] Armtek: ошибка поиска минимальной цены: {str(e)}")
-        
-        # Если Selenium не сработал, пробуем HTTP запрос
-        if not result['is_found']:
-            try:
-                search_url = f"https://armtek.ru/search?text={quote(str(article))}"
-                resp = make_request(search_url, timeout=TIMEOUT, max_retries=MAX_HTTP_RETRIES)
-                if resp and resp.status_code == 200:
-                    soup = BeautifulSoup(resp.text, 'html.parser')
-                    
-                    # Ищем цены в HTML
-                    price_patterns = [
-                        r'(\d[\d\s]*)\s*₽',
-                        r'от\s*(\d[\d\s]*)\s*₽'
-                    ]
-                    
-                    text = soup.get_text(' ', strip=True)
+                    price_elements = driver.find_elements(By.CSS_SELECTOR, 'span[class*="price"], div[class*="price"]')
                     prices = []
-                    
-                    for pattern in price_patterns:
-                        matches = re.findall(pattern, text)
-                        for match in matches:
+                    for elem in price_elements:
+                        price_text = elem.text.strip()
+                        price_match = re.search(r'(\d[\d\s]*)\s*₽', price_text)
+                        if price_match:
                             try:
-                                price_value = float(match.replace(' ', ''))
-                                if 100 <= price_value <= 1000000:  # Разумный диапазон цен
+                                price_value = float(price_match.group(1).replace(' ', ''))
+                                if 100 <= price_value <= 100000:
                                     prices.append(price_value)
                             except ValueError:
-                                continue
+                                pass
                     
                     if prices:
                         min_price = min(prices)
                         result['marketplace_price'] = min_price
                         result['min_competitor_price'] = min_price
-                        result['is_found'] = True
-                        print(f"[DEBUG] Armtek HTTP: найдена минимальная цена: {min_price}₽")
-                        
-            except Exception as e:
-                print(f"[DEBUG] Armtek: ошибка HTTP парсинга: {str(e)}")
+                        print(f"[DEBUG] Armtek: найдена цена {min_price}₽")
+                except Exception as e:
+                    print(f"[DEBUG] Armtek: ошибка извлечения цены: {str(e)}")
+            else:
+                print(f"[DEBUG] Armtek: бренд не совпадает - ожидали '{manufacturer}', нашли '{brand_text}'")
         
     except Exception as e:
         result['error_message'] = f"Ошибка парсинга Армтек: {str(e)}"
         print(f"[DEBUG] Armtek: общая ошибка: {str(e)}")
+    
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except Exception:
+                pass
     
     print(f"[DEBUG] Armtek: итоговый результат - найдено: {result['is_found']}, цена: {result['marketplace_price']}₽")
     return result
