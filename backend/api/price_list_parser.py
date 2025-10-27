@@ -1128,54 +1128,50 @@ def check_armtek_item(supplier_code: str, manufacturer: str, article: str, compe
                 result['competitor_brand'] = brand_text
                 print(f"[DEBUG] Armtek: товар найден, бренд совпадает")
                 
-                # Ищем таблицу "Предложения"
+                # Ищем цены на странице товара
                 try:
                     offers = []
                     
-                    # Ищем заголовок "Предложения"
-                    headers = driver.find_elements(By.XPATH, "//p[contains(text(), 'Предложения')]")
-                    print(f"[DEBUG] Armtek: найдено {len(headers)} заголовков 'Предложения'")
+                    # Ищем все элементы с ценами на странице
+                    price_elements = driver.find_elements(By.CSS_SELECTOR, 'span.font__headline6.no-wrap, span[class*="price"], div[class*="price"]')
+                    print(f"[DEBUG] Armtek: найдено {len(price_elements)} элементов с ценами")
                     
-                    for header in headers:
-                        # Ищем таблицу предложений после заголовка
-                        # Пытаемся найти строки предложений
-                        offers_table = header.find_elements(By.XPATH, "./following-sibling::div | ./ancestor::div/following-sibling::*//div[contains(@class, 'suggestion-item')]")
-                        
-                        if not offers_table:
-                            # Альтернативный способ: найти родительский элемент и искать в нем
-                            parent = header.find_element(By.XPATH, "./ancestor::div[position()=1]")
-                            offers_rows = parent.find_elements(By.CSS_SELECTOR, 'div.suggestion-item, div[class*="suggestion"]')
-                            print(f"[DEBUG] Armtek: найдено {len(offers_rows)} строк предложений")
+                    for price_elem in price_elements:
+                        try:
+                            price_text = price_elem.text.strip()
+                            print(f"[DEBUG] Armtek: проверяем элемент с текстом: '{price_text}'")
                             
-                            for row in offers_rows:
+                            price_match = re.search(r'(\d[\d\s]*)\s*₽', price_text)
+                            if price_match:
+                                price_value = float(price_match.group(1).replace(' ', ''))
+                                print(f"[DEBUG] Armtek: найдена цена {price_value}₽")
+                                
+                                # Ищем количество рядом с ценой
+                                quantity = None
                                 try:
-                                    # Ищем цену в строке
-                                    price_elem = row.find_element(By.CSS_SELECTOR, 'span.font__headline6.no-wrap, span[class*="price"]')
-                                    price_text = price_elem.text.strip()
-                                    price_match = re.search(r'(\d[\d\s]*)\s*₽', price_text)
+                                    # Ищем родительский элемент и ищем количество в нем
+                                    parent = price_elem.find_element(By.XPATH, "./ancestor::div[1]")
+                                    qty_elements = parent.find_elements(By.CSS_SELECTOR, 'p.font__body2, span.font__body2')
                                     
-                                    if price_match:
-                                        price_value = float(price_match.group(1).replace(' ', ''))
-                                        
-                                        # Ищем количество
-                                        quantity = None
-                                        try:
-                                            qty_elem = row.find_element(By.CSS_SELECTOR, 'p.font__body2')
-                                            qty_text = qty_elem.text.strip()
-                                            qty_match = re.search(r'(\d+)', qty_text)
-                                            if qty_match:
-                                                quantity = int(qty_match.group(1))
-                                        except:
-                                            pass
-                                        
-                                        if 100 <= price_value <= 100000:
-                                            offers.append({
-                                                'price': price_value,
-                                                'quantity': quantity
-                                            })
-                                            print(f"[DEBUG] Armtek: найдено предложение - цена: {price_value}₽, количество: {quantity}")
+                                    for qty_elem in qty_elements:
+                                        qty_text = qty_elem.text.strip()
+                                        qty_match = re.search(r'(\d+)', qty_text)
+                                        if qty_match:
+                                            quantity = int(qty_match.group(1))
+                                            print(f"[DEBUG] Armtek: найдено количество {quantity}")
+                                            break
                                 except Exception as e:
-                                    continue
+                                    print(f"[DEBUG] Armtek: ошибка поиска количества: {str(e)}")
+                                
+                                if 100 <= price_value <= 100000:
+                                    offers.append({
+                                        'price': price_value,
+                                        'quantity': quantity
+                                    })
+                                    print(f"[DEBUG] Armtek: добавлено предложение - цена: {price_value}₽, количество: {quantity}")
+                        except Exception as e:
+                            print(f"[DEBUG] Armtek: ошибка обработки элемента цены: {str(e)}")
+                            continue
                     
                     if offers:
                         # Сортируем по цене и берем минимальную
