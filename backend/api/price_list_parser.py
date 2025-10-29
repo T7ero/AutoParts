@@ -1055,7 +1055,18 @@ def check_emex_item(supplier_code: str, manufacturer: str, article: str, competi
                                 if mqty:
                                     qty_val = int(mqty.group(1))
                             except Exception:
-                                pass
+                                # Fallback: ищем quantityInfo внутри той же секции, ближайший к текущей цене
+                                try:
+                                    base_sec = p.find_element(By.XPATH, "ancestor::*[.//h2[contains(., 'Искомый товар') or @data-testid='Offers:test:originalsTableTitle']][1]")
+                                    qty_candidates = base_sec.find_elements(By.CSS_SELECTOR, "[data-testid='Offers:text:quantityInfo']")
+                                    if qty_candidates:
+                                        # берем первый как наиболее вероятный (в списке DOM-узлов секции порядок сохранен)
+                                        qty_text = qty_candidates[0].text.strip()
+                                        mqty = re.search(r"(\d+)", qty_text)
+                                        if mqty:
+                                            qty_val = int(mqty.group(1))
+                                except Exception:
+                                    qty_val = None
 
                             if 50 <= price_val <= 200000:
                                 offers.append({'price': price_val, 'quantity': qty_val})
@@ -1067,7 +1078,16 @@ def check_emex_item(supplier_code: str, manufacturer: str, article: str, competi
                     # Сбор кодов поставщиков по звездочкам ТОЛЬКО в пределах секции
                     supplier_codes_found: Set[str] = set()
                     try:
-                        stars = section_header.find_elements(By.CSS_SELECTOR, "[data-testid='Offers:text:ratingInfo']")
+                        # Ищем все звезды и фильтруем по принадлежности той же секции "Искомый товар"
+                        stars_all = driver.find_elements(By.CSS_SELECTOR, "[data-testid='Offers:text:ratingInfo']")
+                        stars = []
+                        for st in stars_all:
+                            try:
+                                sec_candidates = st.find_elements(By.XPATH, "ancestor::*[.//h2[contains(., 'Искомый товар') or @data-testid='Offers:test:originalsTableTitle']]")
+                                if len(sec_candidates) > 0:
+                                    stars.append(st)
+                            except Exception:
+                                continue
                         print(f"[DEBUG] Emex Selenium: звезд найдено в секции: {len(stars)}")
                         for idx, star in enumerate(stars[:40]):
                             try:
