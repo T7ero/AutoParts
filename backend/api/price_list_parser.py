@@ -1015,8 +1015,14 @@ def check_emex_item(supplier_code: str, manufacturer: str, article: str, competi
 
                 offers: List[Dict] = []
                 if section_header:
+                    # Определяем корневой контейнер секции
+                    try:
+                        section_root = section_header.find_element(By.XPATH, "ancestor::div[1]")
+                    except Exception:
+                        section_root = section_header
+
                     # Ищем строки предложений ТОЛЬКО внутри секции "Искомый товар"
-                    price_nodes = driver.find_elements(By.CSS_SELECTOR, "[data-testid='Offers:text:priceInfo']")
+                    price_nodes = section_root.find_elements(By.CSS_SELECTOR, "[data-testid='Offers:text:priceInfo']")
                     print(f"[DEBUG] Emex Selenium: найдено ценовых узлов: {len(price_nodes)}")
                     for p in price_nodes:
                         try:
@@ -1078,16 +1084,8 @@ def check_emex_item(supplier_code: str, manufacturer: str, article: str, competi
                     # Сбор кодов поставщиков по звездочкам ТОЛЬКО в пределах секции
                     supplier_codes_found: Set[str] = set()
                     try:
-                        # Ищем все звезды и фильтруем по принадлежности той же секции "Искомый товар"
-                        stars_all = driver.find_elements(By.CSS_SELECTOR, "[data-testid='Offers:text:ratingInfo']")
-                        stars = []
-                        for st in stars_all:
-                            try:
-                                sec_candidates = st.find_elements(By.XPATH, "ancestor::*[.//h2[contains(., 'Искомый товар') or @data-testid='Offers:test:originalsTableTitle']]")
-                                if len(sec_candidates) > 0:
-                                    stars.append(st)
-                            except Exception:
-                                continue
+                        # Звезды только внутри контейнера секции
+                        stars = section_root.find_elements(By.CSS_SELECTOR, "[data-testid='Offers:text:ratingInfo']")
                         print(f"[DEBUG] Emex Selenium: звезд найдено в секции: {len(stars)}")
                         for idx, star in enumerate(stars[:40]):
                             try:
