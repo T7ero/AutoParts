@@ -1015,18 +1015,32 @@ def check_emex_item(supplier_code: str, manufacturer: str, article: str, competi
 
                 offers: List[Dict] = []
                 if section_header:
-                    # Ищем строки предложений в пределах секции: берем все пары priceInfo/quantityInfo и связываем по общему родителю
+                    # Ищем строки предложений ТОЛЬКО внутри секции "Искомый товар"
                     price_nodes = driver.find_elements(By.CSS_SELECTOR, "[data-testid='Offers:text:priceInfo']")
                     print(f"[DEBUG] Emex Selenium: найдено ценовых узлов: {len(price_nodes)}")
                     for p in price_nodes:
                         try:
-                            container = p
-                            # поднимаемся к ближайшему контейнеру предложения
-                            for _ in range(6):
-                                parent = container.find_element(By.XPATH, './..')
-                                if parent is None:
-                                    break
-                                container = parent
+                            # фильтр: цена должна находиться внутри контейнера, где в предках есть заголовок "Искомый товар"
+                            in_section = False
+                            try:
+                                sec_candidates = p.find_elements(By.XPATH, "ancestor::*[.//h2[contains(., 'Искомый товар') or @data-testid='Offers:test:originalsTableTitle']]")
+                                in_section = len(sec_candidates) > 0
+                            except Exception:
+                                in_section = False
+                            if not in_section:
+                                continue
+
+                            # ближайший общий контейнер строки: содержит и цену, и количество
+                            try:
+                                container = p.find_element(By.XPATH, "ancestor::*[.//*[@data-testid='Offers:text:priceInfo'] and .//*[@data-testid='Offers:text:quantityInfo']][1]")
+                            except Exception:
+                                container = p
+                                for _ in range(8):
+                                    try:
+                                        container = container.find_element(By.XPATH, './..')
+                                    except Exception:
+                                        break
+
                             price_text = p.text.strip()
                             m = re.search(r"(\d[\d\s]*)", price_text.replace('\xa0',' '))
                             if not m:
@@ -1044,32 +1058,29 @@ def check_emex_item(supplier_code: str, manufacturer: str, article: str, competi
                                 pass
 
                             if 50 <= price_val <= 200000:
-                                offers.append({ 'price': price_val, 'quantity': qty_val })
+                                offers.append({'price': price_val, 'quantity': qty_val})
                                 print(f"[DEBUG] Emex Selenium: оффер цена={price_val}, qty={qty_val}")
                         except Exception as e:
                             print(f"[DEBUG] Emex Selenium: ошибка разбора оффера: {str(e)}")
                             continue
 
-                    # Сбор кодов поставщиков по звездочкам
+                    # Сбор кодов поставщиков по звездочкам ТОЛЬКО в пределах секции
                     supplier_codes_found: Set[str] = set()
                     try:
-                        stars = driver.find_elements(By.CSS_SELECTOR, "[data-testid='Offers:text:ratingInfo']")
-                        print(f"[DEBUG] Emex Selenium: звезд найдено: {len(stars)}")
-                        for idx, star in enumerate(stars[:20]):
+                        stars = section_header.find_elements(By.CSS_SELECTOR, "[data-testid='Offers:text:ratingInfo']")
+                        print(f"[DEBUG] Emex Selenium: звезд найдено в секции: {len(stars)}")
+                        for idx, star in enumerate(stars[:40]):
                             try:
                                 driver.execute_script("arguments[0].click();", star)
-                                # ждем появления попапа с кодом
                                 code_el = WebDriverWait(driver, 5).until(
                                     EC.presence_of_element_located((By.CSS_SELECTOR, 'div.sc-9641247d-8.hWwuoa'))
                                 )
                                 code_text = code_el.text.strip()
-                                # Код поставщика — первые непробельные буквы/цифры до пробела
                                 mm = re.match(r"([A-Z0-9]+)", code_text.replace('Ё','E').upper())
                                 if mm:
                                     supplier_codes_found.add(mm.group(1))
-                                # закрываем попап кликом в фон
                                 driver.execute_script('document.body.click();')
-                                time.sleep(0.2)
+                                time.sleep(0.15)
                             except Exception:
                                 continue
                     except Exception:
