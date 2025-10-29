@@ -780,22 +780,22 @@ def process_parsing_task(self, task_id):
                             df_autopiter = pd.DataFrame(results_autopiter)
                             autopiter_file = f'media/results/autopiter_results_{task.id}.xlsx'
                             df_autopiter.to_excel(autopiter_file, index=False, engine='openpyxl')
-                            # task.result_files = task.result_files or {}
-                            # task.result_files['autopiter'] = autopiter_file
+                            task.result_files = task.result_files or {}
+                            task.result_files['autopiter'] = autopiter_file
                         if results_armtek:
                             results_armtek = dedupe_rows(results_armtek)
                             df_armtek = pd.DataFrame(results_armtek)
                             armtek_file = f'media/results/armtek_results_{task.id}.xlsx'
                             df_armtek.to_excel(armtek_file, index=False, engine='openpyxl')
-                            # task.result_files = task.result_files or {}
-                            # task.result_files['armtek'] = armtek_file
+                            task.result_files = task.result_files or {}
+                            task.result_files['armtek'] = armtek_file
                         if results_emex:
                             results_emex = dedupe_rows(results_emex)
                             df_emex = pd.DataFrame(results_emex)
                             emex_file = f'media/results/emex_results_{task.id}.xlsx'
                             df_emex.to_excel(emex_file, index=False, engine='openpyxl')
-                            # task.result_files = task.result_files or {}
-                            # task.result_files['emex'] = emex_file
+                            task.result_files = task.result_files or {}
+                            task.result_files['emex'] = emex_file
                         task.save()
                         log("Чекпоинт: промежуточные файлы результатов сохранены")
                     except Exception as e:
@@ -833,8 +833,8 @@ def process_parsing_task(self, task_id):
                     # Пробуем без engine
                     df_autopiter.to_excel(autopiter_file, index=False)
                     log(f"Создан файл Autopiter (без engine): {autopiter_file}")
-                # task.result_files = task.result_files or {}
-                # task.result_files['autopiter'] = autopiter_file
+                task.result_files = task.result_files or {}
+                task.result_files['autopiter'] = autopiter_file
                 log(f"Файл Autopiter добавлен в result_files: {autopiter_file}")
             
             if results_armtek:
@@ -850,8 +850,8 @@ def process_parsing_task(self, task_id):
                     # Пробуем без engine
                     df_armtek.to_excel(armtek_file, index=False)
                     log(f"Создан файл Armtek (без engine): {armtek_file}")
-                # task.result_files = task.result_files or {}
-                # task.result_files['armtek'] = armtek_file
+                task.result_files = task.result_files or {}
+                task.result_files['armtek'] = armtek_file
                 log(f"Файл Armtek добавлен в result_files: {armtek_file}")
             
             if results_emex:
@@ -867,8 +867,8 @@ def process_parsing_task(self, task_id):
                     # Пробуем без engine
                     df_emex.to_excel(emex_file, index=False)
                     log(f"Создан файл Emex (без engine): {emex_file}")
-                # task.result_files = task.result_files or {}
-                # task.result_files['emex'] = emex_file
+                task.result_files = task.result_files or {}
+                task.result_files['emex'] = emex_file
                 log(f"Файл Emex добавлен в result_files: {emex_file}")
         except Exception as e:
             log(f"Критическая ошибка при создании Excel файлов: {str(e)}")

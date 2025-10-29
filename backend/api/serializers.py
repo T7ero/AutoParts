@@ -16,8 +16,8 @@ class ParsingTaskSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = ParsingTask
-        fields = ['id', 'user', 'file', 'file_name', 'status', 'result_file', 'created_at', 'error_message']
-        read_only_fields = ['user', 'status', 'result_file', 'error_message']
+        fields = ['id', 'user', 'file', 'file_name', 'status', 'result_file', 'result_files', 'created_at', 'error_message']
+        read_only_fields = ['user', 'status', 'result_file', 'result_files', 'error_message']
     
     def get_file_name(self, obj):
         """Получить название файла"""

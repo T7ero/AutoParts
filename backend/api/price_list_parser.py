@@ -1054,7 +1054,12 @@ def check_emex_item(supplier_code: str, manufacturer: str, article: str, competi
             result['marketplace_price'] = offer_price
             result['is_found'] = True
         else:
-            result['is_found'] = bool(man_ok)
+            # Товар считается найденным только если есть цена
+            # Не устанавливаем is_found = True только на основе бренда
+            result['is_found'] = False
+            # Но сохраняем информацию о бренде, если он найден
+            if man_ok:
+                print(f"[DEBUG] Emex: бренд найден, но цена не найдена")
 
     except Exception as e:
         result['error_message'] = f"Ошибка парсинга Emex: {str(e)}"
