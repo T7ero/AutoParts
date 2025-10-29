@@ -973,6 +973,156 @@ def check_emex_item(supplier_code: str, manufacturer: str, article: str, competi
     }
 
     try:
+        # ------ Selenium-first flow per new Emex requirements ------
+        try:
+            temp_dir = tempfile.mkdtemp(prefix=f"chrome_emex_{uuid.uuid4().hex[:8]}_")
+            driver = _create_chrome_driver_robust(temp_dir, proxy=None)
+        except Exception:
+            driver = None
+            temp_dir = None
+
+        if driver:
+            try:
+                products_url = f"https://emex.ru/products/{quote(article)}"
+                print(f"[DEBUG] Emex Selenium: открываем {products_url}")
+                driver.get(products_url)
+                WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, '#__next')))
+
+                # Кликаем "Все предложения"
+                try:
+                    all_offers_btn = WebDriverWait(driver, 6).until(
+                        EC.presence_of_element_located((By.XPATH, "//span[contains(text(),'Все предложения')]"))
+                    )
+                    clickable = all_offers_btn
+                    try:
+                        clickable = all_offers_btn.find_element(By.XPATH, './ancestor::a')
+                    except Exception:
+                        pass
+                    driver.execute_script("arguments[0].click();", clickable)
+                    time.sleep(2)
+                except Exception as e:
+                    print(f"[DEBUG] Emex Selenium: кнопка 'Все предложения' не найдена: {str(e)}")
+
+                # Ждем блок "Искомый товар"
+                section_header = None
+                try:
+                    section_header = WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((By.XPATH, "//h2[contains(text(),'Искомый товар') or @data-testid='Offers:test:originalsTableTitle']"))
+                    )
+                    print("[DEBUG] Emex Selenium: секция 'Искомый товар' найдена")
+                except Exception:
+                    print("[DEBUG] Emex Selenium: секция 'Искомый товар' не найдена")
+
+                offers: List[Dict] = []
+                if section_header:
+                    # Ищем строки предложений в пределах секции: берем все пары priceInfo/quantityInfo и связываем по общему родителю
+                    price_nodes = driver.find_elements(By.CSS_SELECTOR, "[data-testid='Offers:text:priceInfo']")
+                    print(f"[DEBUG] Emex Selenium: найдено ценовых узлов: {len(price_nodes)}")
+                    for p in price_nodes:
+                        try:
+                            container = p
+                            # поднимаемся к ближайшему контейнеру предложения
+                            for _ in range(6):
+                                parent = container.find_element(By.XPATH, './..')
+                                if parent is None:
+                                    break
+                                container = parent
+                            price_text = p.text.strip()
+                            m = re.search(r"(\d[\d\s]*)", price_text.replace('\xa0',' '))
+                            if not m:
+                                continue
+                            price_val = float(m.group(1).replace(' ', ''))
+
+                            qty_val = None
+                            try:
+                                qty_el = container.find_element(By.CSS_SELECTOR, "[data-testid='Offers:text:quantityInfo']")
+                                qty_text = qty_el.text.strip()
+                                mqty = re.search(r"(\d+)", qty_text)
+                                if mqty:
+                                    qty_val = int(mqty.group(1))
+                            except Exception:
+                                pass
+
+                            if 50 <= price_val <= 200000:
+                                offers.append({ 'price': price_val, 'quantity': qty_val })
+                                print(f"[DEBUG] Emex Selenium: оффер цена={price_val}, qty={qty_val}")
+                        except Exception as e:
+                            print(f"[DEBUG] Emex Selenium: ошибка разбора оффера: {str(e)}")
+                            continue
+
+                    # Сбор кодов поставщиков по звездочкам
+                    supplier_codes_found: Set[str] = set()
+                    try:
+                        stars = driver.find_elements(By.CSS_SELECTOR, "[data-testid='Offers:text:ratingInfo']")
+                        print(f"[DEBUG] Emex Selenium: звезд найдено: {len(stars)}")
+                        for idx, star in enumerate(stars[:20]):
+                            try:
+                                driver.execute_script("arguments[0].click();", star)
+                                # ждем появления попапа с кодом
+                                code_el = WebDriverWait(driver, 5).until(
+                                    EC.presence_of_element_located((By.CSS_SELECTOR, 'div.sc-9641247d-8.hWwuoa'))
+                                )
+                                code_text = code_el.text.strip()
+                                # Код поставщика — первые непробельные буквы/цифры до пробела
+                                mm = re.match(r"([A-Z0-9]+)", code_text.replace('Ё','E').upper())
+                                if mm:
+                                    supplier_codes_found.add(mm.group(1))
+                                # закрываем попап кликом в фон
+                                driver.execute_script('document.body.click();')
+                                time.sleep(0.2)
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+
+                    # Определяем, является ли какое-то предложение нашим
+                    our_codes_upper = set(c.upper() for c in SUPPLIER_CODES.get('emex', []))
+                    if supplier_code:
+                        our_codes_upper.add(str(supplier_code).upper())
+
+                    is_our_present = bool(our_codes_upper.intersection(supplier_codes_found))
+
+                    if offers:
+                        offers.sort(key=lambda x: x['price'])
+                        best = offers[0]
+                        result['marketplace_price'] = best['price']
+                        result['quantity_in_stock'] = best['quantity']
+                        result['is_found'] = True
+                        print(f"[DEBUG] Emex Selenium: min price={best['price']}, qty={best['quantity']}")
+
+                    # Если это наш поставщик найден — оставим как есть; иначе можно трактовать как конкурентную цену
+                    if not is_our_present and offers:
+                        result['min_competitor_price'] = result['marketplace_price']
+                        result['competitor_quantity'] = result['quantity_in_stock']
+
+                # Завершаем работу драйвера
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                if temp_dir and os.path.exists(temp_dir):
+                    try:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    except Exception:
+                        pass
+
+                # Если Selenium успешно нашел цену — выходим без HTTP
+                if result['is_found'] and result['marketplace_price'] is not None:
+                    return result
+
+            except Exception as e:
+                print(f"[DEBUG] Emex Selenium: ошибка сценария: {str(e)}")
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                if temp_dir and os.path.exists(temp_dir):
+                    try:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    except Exception:
+                        pass
+
+        # ------ HTTP fallback (старый путь) ------
         # Проверяем наличие брендов через основной Emex-парсер (помогает понять релевантность)
         man_ok = False
         try:
