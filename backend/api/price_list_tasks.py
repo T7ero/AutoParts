@@ -1,5 +1,6 @@
 from celery import shared_task
 from django.utils import timezone
+from django.db import IntegrityError
 from datetime import datetime
 import pandas as pd
 import os
@@ -63,21 +64,73 @@ def process_price_list_task(self, task_id: int):
             log(f"Удаляем {old_items_count} старых записей для этой задачи")
             PriceListItem.objects.filter(task=task).delete()
         
-        # Создаем записи в базе данных
-        db_items = []
+        # Дедуплицируем данные из файла (на случай дубликатов в самом файле)
+        # Используем комбинацию (manufacturer, article) как ключ
+        seen_items = {}
+        unique_items_data = []
+        duplicates_count = 0
         for item_data in items_data:
-            db_item = PriceListItem.objects.create(
-                task=task,
-                supplier_code=item_data['supplier_code'],
-                manufacturer=item_data['manufacturer'],
-                article=item_data['article'],
-                nomenclature=item_data['nomenclature'],
-                quantity=item_data['quantity'],
-                our_price=Decimal(str(item_data['our_price'])) if item_data['our_price'] else None
-            )
-            db_items.append(db_item)
+            key = (str(item_data.get('manufacturer', '')).strip(), str(item_data.get('article', '')).strip())
+            if key not in seen_items:
+                seen_items[key] = item_data
+                unique_items_data.append(item_data)
+            else:
+                duplicates_count += 1
+                # Если новая запись имеет более полные данные (например, есть цена), обновляем
+                old_item = seen_items[key]
+                if item_data.get('our_price') and not old_item.get('our_price'):
+                    seen_items[key] = item_data
+                    # Заменяем в списке
+                    idx = unique_items_data.index(old_item)
+                    unique_items_data[idx] = item_data
         
-        log(f"Создано {len(db_items)} записей в базе данных")
+        if duplicates_count > 0:
+            log(f"Найдено и удалено {duplicates_count} дубликатов из файла")
+        
+        # Создаем записи в базе данных с защитой от дубликатов
+        db_items = []
+        created_count = 0
+        updated_count = 0
+        for item_data in unique_items_data:
+            try:
+                db_item, created = PriceListItem.objects.get_or_create(
+                    task=task,
+                    manufacturer=item_data['manufacturer'],
+                    article=item_data['article'],
+                    defaults={
+                        'supplier_code': item_data.get('supplier_code', ''),
+                        'nomenclature': item_data.get('nomenclature', ''),
+                        'quantity': item_data.get('quantity', 0),
+                        'our_price': Decimal(str(item_data['our_price'])) if item_data.get('our_price') else None
+                    }
+                )
+                if not created:
+                    # Если запись уже существует, обновляем поля
+                    db_item.supplier_code = item_data.get('supplier_code', '') or db_item.supplier_code
+                    db_item.nomenclature = item_data.get('nomenclature', '') or db_item.nomenclature
+                    if item_data.get('quantity'):
+                        db_item.quantity = item_data['quantity']
+                    if item_data.get('our_price'):
+                        db_item.our_price = Decimal(str(item_data['our_price']))
+                    db_item.save()
+                    updated_count += 1
+                else:
+                    created_count += 1
+                db_items.append(db_item)
+            except IntegrityError as e:
+                # Дополнительная защита на случай гонки условий
+                log(f"Предупреждение: попытка создать дубликат {item_data.get('manufacturer')} {item_data.get('article')}: {str(e)}")
+                try:
+                    db_item = PriceListItem.objects.get(
+                        task=task,
+                        manufacturer=item_data['manufacturer'],
+                        article=item_data['article']
+                    )
+                    db_items.append(db_item)
+                except PriceListItem.DoesNotExist:
+                    log(f"Ошибка: не удалось найти или создать запись для {item_data.get('manufacturer')} {item_data.get('article')}")
+        
+        log(f"Создано {created_count} новых записей, обновлено {updated_count} существующих. Всего записей в базе: {len(db_items)}")
         
         # Функция для анализа одной позиции
         def analyze_item(item: PriceListItem) -> Dict:

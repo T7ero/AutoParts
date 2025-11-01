@@ -149,6 +149,42 @@ def normalize_brand_for_compare(brand: str) -> str:
     b = re.sub(r"[^0-9A-ZА-ЯЁ]+", "", b)
     return b
 
+def normalize_brand_display(brand: str) -> str:
+    """Приводит бренд к однообразному человеко-читаемому виду для вывода.
+    - Обрезает пробелы
+    - Унифицирует разделители (" / " → "-" для некоторых синонимов)
+    - Приводит регистр для известных аббревиатур и брендов
+    """
+    if not brand:
+        return ""
+    b = str(brand).strip()
+    # унифицируем множественные пробелы
+    b = re.sub(r"\s+", " ", b)
+    # типовые синонимы/формы
+    map_exact = {
+        'hyundai / kia': 'Hyundai-Kia',
+        'hyundai/kia': 'Hyundai-Kia',
+        'hyundai- kia': 'Hyundai-Kia',
+        'trw/lucas': 'TRW/Lucas',
+        'ohno': 'OHNO',
+        'rbi': 'RBI',
+        'nso': 'NSO',
+        'pm': 'PM',
+        'gparts': 'GParts',
+        'gsp': 'GSP',
+        'prc': 'PRC',
+    }
+    low = b.lower()
+    if low in map_exact:
+        return map_exact[low]
+    # Ставим Title Case для длинных брендов, но сохраняем аббревиатуры
+    if len(b) <= 4 and b.upper() == b:
+        return b  # уже аббревиатура
+    # если это слова через дефис или слэш — приводим каждую часть к Title
+    parts = re.split(r"([\-/])", b)
+    for i in range(0, len(parts), 2):
+        parts[i] = parts[i].strip().title()
+    return ''.join(parts).strip()
 def dedupe_rows(rows: list) -> list:
     """Удаляет дубли по ключу (Бренд № 2, Артикул № 2, Источник),
     причем Артикул № 2 разбивается на составные части и нормализуется,
@@ -244,6 +280,16 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
     }
     
     filtered = []
+    # Часто встречающиеся "мусорные" токены, которые были не покрыты ранее
+    extra_garbage_exact = {
+        'запчасть', 'component', 'autocomponent', 'автодеталь', 'автокомпонент', 'автокомпонент плюс'
+    }
+    # Слова-числительные, утекающие как бренды из Emex
+    ru_number_words = {
+        'НУЛЬ','ОДИН','ДВА','ТРИ','ЧЕТЫРЕ','ПЯТЬ','ШЕСТЬ','СЕМЬ','ВОСЕМЬ','ДЕВЯТЬ','ДЕСЯТЬ',
+        'ОДИННАДЦАТЬ','ДВЕНАДЦАТЬ','ТРИНАДЦАТЬ','ЧЕТЫРНАДЦАТЬ','ПЯТНАДЦАТЬ','ШЕСТНАДЦАТЬ',
+        'СЕМНАДЦАТЬ','ВОСЕМНАДЦАТЬ','ДЕВЯТНАДЦАТЬ','ДВАДЦАТЬ'
+    }
     # Словарь для объединения составных брендов
     compound_brands = {
         'auto': 'AUTO-COMFORT',
@@ -277,13 +323,16 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
         
         # Проверяем, что бренд не является мусором
         if (brand_clean and 
-            len(brand_clean) > 2 and 
+            len(brand_clean) > 1 and 
             brand_lower not in garbage_words and
+            brand_lower not in extra_garbage_exact and
             not any(char.isdigit() for char in brand_clean) and
+            brand_clean.upper() not in ru_number_words and
             not brand_clean.startswith('...') and
             not brand_clean.endswith('...') and
             not any(garbage in brand_lower for garbage in garbage_words)):
-            filtered.append(brand_clean)
+            # Нормализуем отображение
+            filtered.append(normalize_brand_display(brand_clean))
     
     return filtered
 
