@@ -26,6 +26,7 @@ def process_price_list_task(self, task_id: int):
         # Получаем задачу
         task = PriceListTask.objects.get(id=task_id)
         task.status = 'processing'
+        task.processed_items = 0  # Сбрасываем счетчик обработанных элементов
         task.save()
         
         def log(msg):
@@ -53,10 +54,7 @@ def process_price_list_task(self, task_id: int):
             task.save()
             return
         
-        task.total_items = len(items_data)
-        task.save()
-        
-        log(f"Найдено {len(items_data)} позиций для анализа")
+        log(f"Найдено {len(items_data)} позиций в файле")
         
         # Удаляем старые записи для этой задачи (если была повторная загрузка)
         old_items_count = PriceListItem.objects.filter(task=task).count()
@@ -130,7 +128,11 @@ def process_price_list_task(self, task_id: int):
                 except PriceListItem.DoesNotExist:
                     log(f"Ошибка: не удалось найти или создать запись для {item_data.get('manufacturer')} {item_data.get('article')}")
         
-        log(f"Создано {created_count} новых записей, обновлено {updated_count} существующих. Всего записей в базе: {len(db_items)}")
+        # Обновляем total_items на реальное количество уникальных элементов для обработки
+        task.total_items = len(db_items)
+        task.save()
+        
+        log(f"Создано {created_count} новых записей, обновлено {updated_count} существующих. Всего уникальных позиций для обработки: {len(db_items)}")
         
         # Функция для анализа одной позиции
         def analyze_item(item: PriceListItem) -> Dict:
@@ -212,16 +214,37 @@ def process_price_list_task(self, task_id: int):
         # Параллельная обработка позиций
         max_workers = 1  # Устанавливаем в 1 для устранения 429 Rate Limit ошибок
         
+        # Защита от повторной обработки: создаем множество обработанных ID
+        processed_item_ids = set()
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Запускаем анализ всех позиций
-            futures = {executor.submit(analyze_item, item): item for item in db_items}
+            futures = {executor.submit(analyze_item, item): item.id for item in db_items}
             
             # Обрабатываем результаты по мере завершения
             for future in concurrent.futures.as_completed(futures, timeout=82800):  # 23 часа таймаут
+                item_id = None
                 try:
+                    item_id = futures[future]
+                    # Проверяем, не обработан ли уже этот элемент (защита от дубликатов)
+                    if item_id in processed_item_ids:
+                        log(f"Предупреждение: элемент {item_id} уже обработан, пропускаем")
+                        continue
+                    
+                    # Помечаем элемент как обработанный до получения результата
+                    processed_item_ids.add(item_id)
+                    
                     result = future.result(timeout=300)  # 5 минут на позицию
+                    
+                    # Проверяем, все ли элементы обработаны
+                    if len(processed_item_ids) >= len(db_items):
+                        log(f"Все {len(db_items)} элементов обработаны, завершаем обработку")
+                        break
+                        
                 except Exception as e:
-                    log(f"Ошибка получения результата: {str(e)}")
+                    item_id_str = str(item_id) if item_id is not None else 'unknown'
+                    log(f"Ошибка получения результата для элемента {item_id_str}: {str(e)}")
+                    # Элемент уже помечен как обработанный, продолжаем
         
         # Создаем файл результата
         log("Создаем файл результата...")
