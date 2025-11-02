@@ -653,41 +653,90 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
             driver.implicitly_wait(3)
             driver.get(product_url)
             
+            # Ждем загрузки страницы
+            time.sleep(2)
+            
             # Переходим в первую карточку товара из списка
             try:
-                link_el = WebDriverWait(driver, 6).until(
+                link_el = WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, 'a[href*="/goods/"][href*="/id"]'))
                 )
                 href = link_el.get_attribute('href')
                 if href:
+                    print(f"[DEBUG] Selenium: переходим на страницу товара: {href}")
                     driver.get(href)
-            except Exception:
+                    # Ждем загрузки страницы товара
+                    time.sleep(3)
+            except Exception as e:
+                print(f"[DEBUG] Selenium: ошибка перехода на страницу товара: {str(e)}")
                 pass
             
-            # Ждем загрузки таблицы - пробуем разные селекторы
+            # Ждем загрузки таблицы - пробуем разные селекторы с увеличенным временем ожидания
             table = None
             table_selectors = [
+                # Сначала пробуем наиболее специфичные селекторы
+                "div[class*='NonRetailAppraiseTable__table']",
+                "table[class*='NonRetailAppraiseTable']",
+                "div[class*='NonRetailAppraiseTable'] table",
+                "div[class*='NonRetailAppraiseTable__tableWrapper'] table",
+                # Затем более общие
                 "table",
-                "div[class*='Table__table']",
                 "div[class*='AppraiseTable']",
                 "div[class*='NonRetailAppraiseTable']",
-                ".AppraiseTable",
-                ".NonRetailAppraiseTable"
+                "div[class*='Table__table']",
+                ".NonRetailAppraiseTable table",
+                ".AppraiseTable"
             ]
+            
+            print(f"[DEBUG] Selenium: начинаем поиск таблицы на URL: {driver.current_url}")
             
             for selector in table_selectors:
                 try:
-                    table = WebDriverWait(driver, 5).until(
+                    print(f"[DEBUG] Selenium: пробуем селектор '{selector}' с ожиданием 15 секунд")
+                    table = WebDriverWait(driver, 15).until(
                         EC.presence_of_element_located((By.CSS_SELECTOR, selector))
                     )
-                    print(f"[DEBUG] Selenium: таблица найдена по селектору '{selector}'")
+                    print(f"[DEBUG] Selenium: ✅ таблица найдена по селектору '{selector}'")
+                    # Дополнительная проверка - убеждаемся, что таблица видима
+                    if table.is_displayed():
+                        print(f"[DEBUG] Selenium: таблица видима")
                     break
                 except Exception as e:
-                    print(f"[DEBUG] Selenium: не найдена таблица по селектору '{selector}': {str(e)}")
+                    print(f"[DEBUG] Selenium: ❌ не найдена таблица по селектору '{selector}': {str(e)}")
                     continue
             
             if not table:
-                print(f"[DEBUG] Selenium: таблица не найдена ни по одному селектору")
+                # Последняя попытка - ищем любую таблицу на странице
+                try:
+                    print(f"[DEBUG] Selenium: последняя попытка - ищем любую таблицу на странице")
+                    all_tables = driver.find_elements(By.TAG_NAME, "table")
+                    print(f"[DEBUG] Selenium: найдено таблиц на странице: {len(all_tables)}")
+                    if all_tables:
+                        # Пробуем найти таблицу с содержимым
+                        for tbl in all_tables:
+                            rows = tbl.find_elements(By.TAG_NAME, "tr")
+                            if len(rows) > 1:  # Есть строки кроме заголовка
+                                table = tbl
+                                print(f"[DEBUG] Selenium: ✅ найдена таблица с {len(rows)} строками")
+                                break
+                except Exception as e:
+                    print(f"[DEBUG] Selenium: ошибка при поиске любых таблиц: {str(e)}")
+            
+            if not table:
+                # Сохраняем скриншот и HTML для отладки
+                try:
+                    screenshot_path = f"/tmp/autopiter_selenium_debug_{int(time.time())}.png"
+                    driver.save_screenshot(screenshot_path)
+                    print(f"[DEBUG] Selenium: сохранен скриншот: {screenshot_path}")
+                    
+                    html_path = f"/tmp/autopiter_selenium_debug_{int(time.time())}.html"
+                    with open(html_path, 'w', encoding='utf-8') as f:
+                        f.write(driver.page_source)
+                    print(f"[DEBUG] Selenium: сохранен HTML: {html_path}")
+                except Exception as e:
+                    print(f"[DEBUG] Selenium: ошибка сохранения отладочной информации: {str(e)}")
+                
+                print(f"[DEBUG] Selenium: ❌ таблица не найдена ни по одному селектору")
                 raise Exception("Таблица не найдена")
             
             # Ищем минимальную цену конкурента
@@ -718,20 +767,78 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                         continue
             
             # Парсим таблицу с предложениями
+            # Пробуем найти строки разными способами
+            rows = []
+            
+            # Сначала пробуем найти строки через tr
             rows = table.find_elements(By.TAG_NAME, "tr")
-            print(f"[DEBUG] Selenium: найдено строк в таблице: {len(rows)}")
+            print(f"[DEBUG] Selenium: найдено <tr> строк в таблице: {len(rows)}")
+            
+            # Если не нашли через tr, пробуем через div с классом строки
+            if len(rows) <= 1:  # Только заголовок или ничего
+                try:
+                    rows = table.find_elements(By.CSS_SELECTOR, "tr[class*='NonRetailAppraiseTR'], div[class*='NonRetailAppraiseTR__tr']")
+                    print(f"[DEBUG] Selenium: найдено строк через CSS селектор: {len(rows)}")
+                except Exception as e:
+                    print(f"[DEBUG] Selenium: ошибка поиска строк через CSS: {str(e)}")
+            
+            # Если все еще не нашли, пробуем найти строки в tbody
+            if len(rows) <= 1:
+                try:
+                    tbody = table.find_element(By.TAG_NAME, "tbody")
+                    rows = tbody.find_elements(By.TAG_NAME, "tr")
+                    print(f"[DEBUG] Selenium: найдено строк в tbody: {len(rows)}")
+                except Exception:
+                    pass
+            
+            print(f"[DEBUG] Selenium: итоговое количество строк для обработки: {len(rows)}")
             
             for row_idx, row in enumerate(rows):
                 try:
                     if row_idx == 0:  # Пропускаем заголовок
                         continue
                         
+                    # Пробуем найти ячейки разными способами
                     cells = row.find_elements(By.TAG_NAME, "td")
                     if len(cells) < 8:
+                        # Если не нашли через td, пробуем через CSS селекторы
+                        try:
+                            cells = row.find_elements(By.CSS_SELECTOR, "td, div[class*='NonRetailAppraiseTR__']")
+                        except Exception:
+                            pass
+                    
+                    if len(cells) < 8:
+                        print(f"[DEBUG] Selenium: строка {row_idx} содержит только {len(cells)} ячеек, пропускаем")
                         continue
                         
-                    # Получаем текст из ячеек
-                    supplier_text = cells[1].text.strip()  # Поставщик
+                    # Получаем код поставщика из ячейки - пробуем разные способы
+                    supplier_text = None
+                    supplier_cell = cells[1] if len(cells) > 1 else None
+                    
+                    if supplier_cell:
+                        # Сначала пробуем найти span с классом, содержащим NonRetailAppraiseTR_secondary или NonRetailAppraiseTR_priceId
+                        try:
+                            supplier_spans = supplier_cell.find_elements(By.CSS_SELECTOR, 
+                                'span[class*="NonRetailAppraiseTR__secondary"], '
+                                'span[class*="NonRetailAppraiseTR_secondary"], '
+                                'div[class*="NonRetailAppraiseTR__priceId"], '
+                                'div[class*="NonRetailAppraiseTR_priceId"]')
+                            if supplier_spans:
+                                supplier_text = supplier_spans[0].text.strip()
+                                print(f"[DEBUG] Selenium: код поставщика найден в span/div: '{supplier_text}'")
+                        except Exception as e:
+                            print(f"[DEBUG] Selenium: ошибка поиска кода поставщика в span/div: {str(e)}")
+                        
+                        # Если не нашли в span/div, берем текст ячейки напрямую
+                        if not supplier_text:
+                            supplier_text = supplier_cell.text.strip()
+                            print(f"[DEBUG] Selenium: код поставщика из текста ячейки: '{supplier_text}'")
+                    
+                    if not supplier_text:
+                        print(f"[DEBUG] Selenium: не удалось извлечь код поставщика из строки {row_idx}")
+                        continue
+                    
+                    supplier_text = supplier_text.strip()
                     
                     # Ищем цену в правильной ячейке - пробуем несколько вариантов
                     price_val = None
