@@ -25,6 +25,20 @@ def process_price_list_task(self, task_id: int):
     try:
         # Получаем задачу
         task = PriceListTask.objects.get(id=task_id)
+        # Если задача уже завершена и есть файл результата, выходим (защита от повторного запуска)
+        try:
+            if task.status == 'completed' and task.result_file:
+                return {
+                    'status': 'completed',
+                    'task_id': task_id,
+                    'processed_items': task.processed_items,
+                    'found_items': task.found_items,
+                    'not_found_items': task.not_found_items,
+                    'result_file': task.result_file.name if task.result_file else None
+                }
+        except Exception:
+            pass
+
         task.status = 'processing'
         task.processed_items = 0  # Сбрасываем счетчик обработанных элементов
         task.save()

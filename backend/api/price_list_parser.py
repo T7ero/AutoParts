@@ -656,20 +656,36 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
             # Ждем загрузки страницы
             time.sleep(2)
             
-            # Переходим в первую карточку товара из списка
+            # Переходим в карточку товара, стараясь выбрать нужного производителя
             try:
-                link_el = WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, 'a[href*="/goods/"][href*="/id"]'))
+                # Собираем все карточки
+                links = WebDriverWait(driver, 10).until(
+                    EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'a[href*="/goods/"][href*="/id"]'))
                 )
-                href = link_el.get_attribute('href')
-                if href:
-                    print(f"[DEBUG] Selenium: переходим на страницу товара: {href}")
-                    driver.get(href)
-                    # Ждем загрузки страницы товара
+                candidate_href = None
+                manufacturer_lc = (manufacturer or '').strip().lower()
+                # 1) Пытаемся выбрать ссылку, где в href есть нужный производитель (например, /isuzu/)
+                for a in links:
+                    try:
+                        href = a.get_attribute('href') or ''
+                        text = (a.text or '').strip().lower()
+                        if manufacturer_lc and (f"/{manufacturer_lc}/" in href.lower() or manufacturer_lc in text):
+                            candidate_href = href
+                            break
+                    except Exception:
+                        continue
+                # 2) Если не нашли по производителю, берем вторую ссылку, если первая не содержит предложений
+                if not candidate_href and links:
+                    # предпочтем не первую ссылку, т.к. часто первая — бренд без наличия
+                    hrefs = [l.get_attribute('href') or '' for l in links]
+                    candidate_href = hrefs[1] if len(hrefs) > 1 else hrefs[0]
+                if candidate_href:
+                    print(f"[DEBUG] Selenium: переходим на страницу товара (подобрано по производителю): {candidate_href}")
+                    driver.get(candidate_href)
                     time.sleep(3)
             except Exception as e:
-                print(f"[DEBUG] Selenium: ошибка перехода на страницу товара: {str(e)}")
-                pass
+                print(f"[DEBUG] Selenium: ошибка выбора карточки товара: {str(e)}")
+                # не фейлимся, продолжим пытаться найти таблицу на текущем URL
             
             # Ждем загрузки таблицы - пробуем разные селекторы с увеличенным временем ожидания
             table = None
