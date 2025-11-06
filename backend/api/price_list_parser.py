@@ -221,10 +221,37 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
         if resp and resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
             
-            # Ищем ссылку на карточку товара
-            card_link = soup.find('a', href=re.compile(r'/goods/.*/id\d+'))
-            if card_link:
+            # Ищем ВСЕ ссылки на карточки товара на странице поиска
+            all_card_links = soup.find_all('a', href=re.compile(r'/goods/.*/id\d+'))
+            print(f"[DEBUG] HTTP: найдено {len(all_card_links)} карточек товара на странице поиска")
+            
+            # Если не нашли карточки, пробуем альтернативный селектор
+            if not all_card_links:
+                all_card_links = soup.find_all('a', href=re.compile(r'/goods/.*/.*/id\d+'))
+                print(f"[DEBUG] HTTP: найдено {len(all_card_links)} карточек товара (альтернативный селектор)")
+            
+            # Убираем дубликаты по href
+            unique_card_links = []
+            seen_hrefs = set()
+            for link in all_card_links:
+                href = link.get('href', '')
+                if href and href not in seen_hrefs:
+                    seen_hrefs.add(href)
+                    unique_card_links.append(link)
+            
+            print(f"[DEBUG] HTTP: уникальных карточек товара: {len(unique_card_links)}")
+            
+            # Проверяем карточки последовательно, пока не найдем наших поставщиков
+            max_cards_to_check = min(5, len(unique_card_links)) if unique_card_links else 0
+            our_suppliers_found_http = False
+            
+            for card_idx, card_link in enumerate(unique_card_links[:max_cards_to_check]):
+                if our_suppliers_found_http:
+                    break
+                    
                 card_url = 'https://autopiter.ru' + card_link['href']
+                print(f"[DEBUG] HTTP: проверяем карточку {card_idx + 1}/{max_cards_to_check}: {card_url}")
+                
                 # Парсим карточку товара с тем же прокси
                 card_resp = make_request(card_url, proxy=proxy_str, timeout=TIMEOUT, max_retries=MAX_HTTP_RETRIES)
                 if card_resp and card_resp.status_code == 200:
@@ -570,56 +597,66 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                                 print(f"[DEBUG] Ошибка парсинга строки {row_idx}: {str(e)}")
                                 continue
                     
-                    # Обрабатываем найденные цены
-                    print(f"[DEBUG] === ИТОГОВАЯ СТАТИСТИКА ===")
-                    print(f"[DEBUG] Найдено наших поставщиков: {len(our_prices)}")
-                    print(f"[DEBUG] Найдено конкурентов: {len(competitor_prices)}")
-                    print(f"[DEBUG] Наши коды: {supplier_codes}")
-                    print(f"[DEBUG] =========================")
-                    
+                    # Проверяем, нашли ли мы наших поставщиков в этой карточке
                     if our_prices:
-                        # Берем минимальную цену среди наших поставщиков
-                        result['marketplace_price'] = min(our_prices)
-                        result['is_found'] = True
-                        print(f"[DEBUG] Найдены наши цены: {our_prices}, минимальная: {result['marketplace_price']}")
-                        
-                        # Находим предложение нашего поставщика с минимальной ценой и устанавливаем количество
-                        for data in our_data:
-                            if data['price'] == result['marketplace_price']:
-                                result['quantity_in_stock'] = data['quantity']
-                                print(f"[DEBUG] Установлено количество от нашего поставщика: {result['quantity_in_stock']}")
-                                break
-                        
-                        # Если не нашли количество для минимальной цены, берем первое доступное
-                        if result['quantity_in_stock'] is None and our_data:
-                            result['quantity_in_stock'] = our_data[0]['quantity']
-                            print(f"[DEBUG] Установлено количество от первого нашего поставщика: {result['quantity_in_stock']}")
-                    else:
-                        print(f"[DEBUG] ❌ НАШИ ЦЕНЫ НЕ НАЙДЕНЫ! Наши коды поставщиков: {supplier_codes}")
-                        print(f"[DEBUG] Возможно, нужно обновить коды поставщиков или наши поставщики не представлены на этой странице")
-                    
-                    # Если нашли минимальную цену конкурента из таблицы, используем её
+                        our_suppliers_found_http = True
+                        print(f"[DEBUG] HTTP: ✅ в карточке {card_idx + 1} найдены наши поставщики! Цены: {our_prices}")
+                        break  # Прерываем цикл по таблицам
+                
+                # Если нашли наших поставщиков, прерываем цикл по карточкам
+                if our_suppliers_found_http:
+                    break
+            
+            # Обрабатываем найденные цены после проверки всех карточек
+            print(f"[DEBUG] === ИТОГОВАЯ СТАТИСТИКА ===")
+            print(f"[DEBUG] Найдено наших поставщиков: {len(our_prices)}")
+            print(f"[DEBUG] Найдено конкурентов: {len(competitor_prices)}")
+            print(f"[DEBUG] Наши коды: {supplier_codes}")
+            print(f"[DEBUG] =========================")
+            
+            if our_prices:
+                # Берем минимальную цену среди наших поставщиков
+                result['marketplace_price'] = min(our_prices)
+                result['is_found'] = True
+                print(f"[DEBUG] Найдены наши цены: {our_prices}, минимальная: {result['marketplace_price']}")
+                
+                # Находим предложение нашего поставщика с минимальной ценой и устанавливаем количество
+                for data in our_data:
+                    if data['price'] == result['marketplace_price']:
+                        result['quantity_in_stock'] = data['quantity']
+                        print(f"[DEBUG] Установлено количество от нашего поставщика: {result['quantity_in_stock']}")
+                        break
+                
+                # Если не нашли количество для минимальной цены, берем первое доступное
+                if result['quantity_in_stock'] is None and our_data:
+                    result['quantity_in_stock'] = our_data[0]['quantity']
+                    print(f"[DEBUG] Установлено количество от первого нашего поставщика: {result['quantity_in_stock']}")
+            else:
+                print(f"[DEBUG] ❌ НАШИ ЦЕНЫ НЕ НАЙДЕНЫ! Наши коды поставщиков: {supplier_codes}")
+                print(f"[DEBUG] Возможно, нужно обновить коды поставщиков или наши поставщики не представлены на этой странице")
+            
+            # Если нашли минимальную цену конкурента из таблицы, используем её
+            if competitor_data:
+                # Находим предложение конкурента с минимальной ценой
+                competitor_offers = [d for d in competitor_data if d['supplier'] not in supplier_codes]
+                if competitor_offers:
+                    min_competitor_offer = min(competitor_offers, key=lambda x: x['price'])
+                    result['min_competitor_price'] = min_competitor_offer['price']
+                    # Сохраняем количество для минимальной цены конкурента
+                    result['competitor_quantity'] = min_competitor_offer['quantity']
+                    print(f"[DEBUG] Установлена минимальная цена конкурента из таблицы: {result['min_competitor_price']}, количество: {result['competitor_quantity']}")
+                else:
+                    # Если не нашли конкурентов, но есть данные, берем минимальную цену из всех данных
                     if competitor_data:
-                        # Находим предложение конкурента с минимальной ценой
-                        competitor_offers = [d for d in competitor_data if d['supplier'] not in supplier_codes]
-                        if competitor_offers:
-                            min_competitor_offer = min(competitor_offers, key=lambda x: x['price'])
-                            result['min_competitor_price'] = min_competitor_offer['price']
-                            # Сохраняем количество для минимальной цены конкурента
-                            result['competitor_quantity'] = min_competitor_offer['quantity']
-                            print(f"[DEBUG] Установлена минимальная цена конкурента из таблицы: {result['min_competitor_price']}, количество: {result['competitor_quantity']}")
-                        else:
-                            # Если не нашли конкурентов, но есть данные, берем минимальную цену из всех данных
-                            if competitor_data:
-                                min_competitor_offer = min(competitor_data, key=lambda x: x['price'])
-                                result['min_competitor_price'] = min_competitor_offer['price']
-                                result['competitor_quantity'] = min_competitor_offer['quantity']
-                                print(f"[DEBUG] Установлена минимальная цена из всех данных: {result['min_competitor_price']}, количество: {result['competitor_quantity']}")
-                            else:
-                                print(f"[DEBUG] Нет данных конкурентов для установки минимальной цены")
-                    
-                    if result['min_competitor_price'] is None:
-                        print(f"[DEBUG] Минимальная цена конкурента не найдена")
+                        min_competitor_offer = min(competitor_data, key=lambda x: x['price'])
+                        result['min_competitor_price'] = min_competitor_offer['price']
+                        result['competitor_quantity'] = min_competitor_offer['quantity']
+                        print(f"[DEBUG] Установлена минимальная цена из всех данных: {result['min_competitor_price']}, количество: {result['competitor_quantity']}")
+                    else:
+                        print(f"[DEBUG] Нет данных конкурентов для установки минимальной цены")
+            
+            if result['min_competitor_price'] is None:
+                print(f"[DEBUG] Минимальная цена конкурента не найдена")
                     
     except Exception as e:
         result['error_message'] = f'HTTP parsing failed: {str(e)}'
@@ -689,23 +726,63 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
             
             # Собираем все доступные карточки для проверки
             all_product_links = []
+            
+            # Сначала пробуем найти карточки на текущей странице
             try:
-                links = driver.find_elements(By.CSS_SELECTOR, 'a[href*="/goods/"][href*="/id"]')
-                all_product_links = [l.get_attribute('href') or '' for l in links if l.get_attribute('href')]
-                print(f"[DEBUG] Selenium: найдено {len(all_product_links)} карточек товара для проверки")
+                # Пробуем разные селекторы для поиска карточек
+                selectors = [
+                    'a[href*="/goods/"][href*="/id"]',
+                    'a[href*="/goods/"]',
+                    'a[href^="/goods/"]',
+                    'a[href*="goods"][href*="id"]'
+                ]
+                
+                for selector in selectors:
+                    try:
+                        links = driver.find_elements(By.CSS_SELECTOR, selector)
+                        if links:
+                            all_product_links = [l.get_attribute('href') or '' for l in links if l.get_attribute('href') and '/id' in (l.get_attribute('href') or '')]
+                            if all_product_links:
+                                print(f"[DEBUG] Selenium: найдено {len(all_product_links)} карточек товара по селектору '{selector}'")
+                                break
+                    except Exception as e:
+                        print(f"[DEBUG] Selenium: ошибка с селектором '{selector}': {str(e)}")
+                        continue
             except Exception as e:
                 print(f"[DEBUG] Selenium: ошибка сбора карточек: {str(e)}")
             
             # Если не нашли карточки на текущей странице, возвращаемся на страницу поиска
             if not all_product_links:
                 try:
+                    print(f"[DEBUG] Selenium: возвращаемся на страницу поиска для сбора карточек")
                     driver.get(product_url)
-                    time.sleep(2)
-                    links = WebDriverWait(driver, 10).until(
-                        EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'a[href*="/goods/"][href*="/id"]'))
-                    )
-                    all_product_links = [l.get_attribute('href') or '' for l in links if l.get_attribute('href')]
-                    print(f"[DEBUG] Selenium: найдено {len(all_product_links)} карточек на странице поиска")
+                    time.sleep(3)  # Увеличиваем время ожидания
+                    
+                    # Пробуем разные селекторы с ожиданием
+                    for selector in selectors:
+                        try:
+                            links = WebDriverWait(driver, 15).until(
+                                EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector))
+                            )
+                            if links:
+                                all_product_links = [l.get_attribute('href') or '' for l in links if l.get_attribute('href') and '/id' in (l.get_attribute('href') or '')]
+                                if all_product_links:
+                                    print(f"[DEBUG] Selenium: найдено {len(all_product_links)} карточек на странице поиска по селектору '{selector}'")
+                                    break
+                        except Exception as e:
+                            print(f"[DEBUG] Selenium: ошибка с селектором '{selector}' на странице поиска: {str(e)}")
+                            continue
+                    
+                    # Убираем дубликаты
+                    if all_product_links:
+                        unique_links = []
+                        seen = set()
+                        for link in all_product_links:
+                            if link and link not in seen:
+                                seen.add(link)
+                                unique_links.append(link)
+                        all_product_links = unique_links
+                        print(f"[DEBUG] Selenium: уникальных карточек: {len(all_product_links)}")
                 except Exception as e:
                     print(f"[DEBUG] Selenium: ошибка получения карточек со страницы поиска: {str(e)}")
             
