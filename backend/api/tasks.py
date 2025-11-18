@@ -303,6 +303,9 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
     }
     
     filtered = []
+    brand_whitelist_tokens = {
+        'jac', 'faw', 'автокомпонент', 'autocomponent'
+    }
     # Часто встречающиеся "мусорные" токены, которые были не покрыты ранее
     extra_garbage_exact = {
         'запчасть', 'component', 'autocomponent', 'автодеталь', 'автокомпонент', 'автокомпонент плюс'
@@ -335,6 +338,15 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
             continue
             
         brand_lower = brand_clean.lower()
+
+        whitelist_match = False
+        for token in brand_whitelist_tokens:
+            if brand_lower == token or brand_lower.startswith(f"{token} "):
+                filtered.append(normalize_brand_display(brand_clean))
+                whitelist_match = True
+                break
+        if whitelist_match:
+            continue
         
         # Проверяем, является ли это частью составного бренда
         if brand_lower in compound_brands:
