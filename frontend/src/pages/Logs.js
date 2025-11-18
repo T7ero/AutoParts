@@ -4,25 +4,37 @@ import axios from 'axios';
 function Logs() {
   const [logs, setLogs] = useState({});
   const [tasks, setTasks] = useState([]);
+  const [priceListTasks, setPriceListTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedTask, setSelectedTask] = useState(null);
+  const [selectedTaskType, setSelectedTaskType] = useState(null); // 'parsing' or 'price_list'
   const [autoScroll, setAutoScroll] = useState(true);
   const logsEndRef = useRef(null);
 
   useEffect(() => {
     fetchTasks();
-    const interval = setInterval(fetchTasks, 5000); // Обновляем каждые 5 секунд
+    fetchPriceListTasks();
+    const interval = setInterval(() => {
+      fetchTasks();
+      fetchPriceListTasks();
+    }, 5000); // Обновляем каждые 5 секунд
     return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
-    if (selectedTask) {
-      fetchTaskLogs(selectedTask);
-      const interval = setInterval(() => fetchTaskLogs(selectedTask), 2000); // Обновляем логи каждые 2 секунды
-      return () => clearInterval(interval);
+    if (selectedTask && selectedTaskType) {
+      if (selectedTaskType === 'parsing') {
+        fetchTaskLogs(selectedTask);
+        const interval = setInterval(() => fetchTaskLogs(selectedTask), 2000);
+        return () => clearInterval(interval);
+      } else if (selectedTaskType === 'price_list') {
+        fetchPriceListTaskLogs(selectedTask);
+        const interval = setInterval(() => fetchPriceListTaskLogs(selectedTask), 2000);
+        return () => clearInterval(interval);
+      }
     }
-  }, [selectedTask]);
+  }, [selectedTask, selectedTaskType]);
 
   useEffect(() => {
     if (autoScroll && logsEndRef.current) {
@@ -40,8 +52,25 @@ function Logs() {
       setTasks(response.data);
       setLoading(false);
     } catch (err) {
-      setError('Ошибка при загрузке задач');
-      setLoading(false);
+      console.error('Ошибка при загрузке задач парсинга:', err);
+      // Не устанавливаем ошибку, если это первая загрузка
+      if (tasks.length === 0) {
+        setError('Ошибка при загрузке задач');
+        setLoading(false);
+      }
+    }
+  };
+
+  const fetchPriceListTasks = async () => {
+    try {
+      const response = await axios.get('/api/price-list-tasks/', {
+        headers: {
+          'Authorization': `Token ${localStorage.getItem('token')}`
+        }
+      });
+      setPriceListTasks(response.data);
+    } catch (err) {
+      console.error('Ошибка при загрузке задач анализа прайс-листа:', err);
     }
   };
 
@@ -54,23 +83,46 @@ function Logs() {
       });
       setLogs(prev => ({
         ...prev,
-        [taskId]: response.data.logs || []
+        [`parsing_${taskId}`]: response.data.logs || []
       }));
     } catch (err) {
       console.error('Ошибка при загрузке логов:', err);
     }
   };
 
-  const handleTaskSelect = (taskId) => {
+  const fetchPriceListTaskLogs = async (taskId) => {
+    try {
+      const response = await axios.get(`/api/price-list-tasks/${taskId}/logs/`, {
+        headers: {
+          'Authorization': `Token ${localStorage.getItem('token')}`
+        }
+      });
+      setLogs(prev => ({
+        ...prev,
+        [`price_list_${taskId}`]: response.data.logs || []
+      }));
+    } catch (err) {
+      console.error('Ошибка при загрузке логов задачи анализа прайс-листа:', err);
+    }
+  };
+
+  const handleTaskSelect = (taskId, taskType) => {
     setSelectedTask(taskId);
-    if (!logs[taskId]) {
-      fetchTaskLogs(taskId);
+    setSelectedTaskType(taskType);
+    const logKey = `${taskType}_${taskId}`;
+    if (!logs[logKey]) {
+      if (taskType === 'parsing') {
+        fetchTaskLogs(taskId);
+      } else if (taskType === 'price_list') {
+        fetchPriceListTaskLogs(taskId);
+      }
     }
   };
 
   const clearLogs = () => {
     setLogs({});
     setSelectedTask(null);
+    setSelectedTaskType(null);
   };
 
   const formatTimestamp = (timestamp) => {
@@ -146,50 +198,112 @@ function Logs() {
           <div className="w-1/3 border-r border-gray-200 dark:border-gray-700 overflow-y-auto">
             <div className="p-4">
               <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Задачи</h3>
-              {tasks.length === 0 ? (
-                <p className="text-gray-500 dark:text-gray-400">Нет доступных задач</p>
-              ) : (
-                <div className="space-y-2">
-                  {tasks.map((task) => (
-                    <div
-                      key={task.id}
-                      onClick={() => handleTaskSelect(task.id)}
-                      className={`p-3 rounded-lg cursor-pointer transition-colors ${
-                        selectedTask === task.id
-                          ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-600 border'
-                          : 'bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600'
-                      }`}
-                    >
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <h4 className="font-medium text-gray-900 dark:text-white">
-                            Задача #{task.id}
-                          </h4>
-                          <p className="text-sm text-gray-600 dark:text-gray-300">
-                            {task.file_name || 'Без названия'}
-                          </p>
-                          <p className="text-xs text-gray-500 dark:text-gray-400">
-                            {formatTimestamp(task.created_at)}
-                          </p>
-                        </div>
-                        <span className={`text-xs px-2 py-1 rounded-full ${getStatusColor(task.status)}`}>
-                          {getStatusText(task.status)}
-                        </span>
-                      </div>
-                      {task.progress !== undefined && (
-                        <div className="mt-2">
-                          <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2">
-                            <div
-                              className="bg-blue-600 dark:bg-blue-400 h-2 rounded-full transition-all duration-300"
-                              style={{ width: `${task.progress}%` }}
-                            ></div>
+              
+              {/* Задачи анализа прайс-листа */}
+              {priceListTasks.length > 0 && (
+                <div className="mb-4">
+                  <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Анализ прайс-листа</h4>
+                  <div className="space-y-2">
+                    {priceListTasks.map((task) => (
+                      <div
+                        key={`price_list_${task.id}`}
+                        onClick={() => handleTaskSelect(task.id, 'price_list')}
+                        className={`p-3 rounded-lg cursor-pointer transition-colors ${
+                          selectedTask === task.id && selectedTaskType === 'price_list'
+                            ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-600 border'
+                            : 'bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600'
+                        }`}
+                      >
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <h4 className="font-medium text-gray-900 dark:text-white">
+                              Прайс-лист #{task.id}
+                            </h4>
+                            <p className="text-sm text-gray-600 dark:text-gray-300">
+                              {task.platform || 'Не указано'}
+                            </p>
+                            <p className="text-xs text-gray-500 dark:text-gray-400">
+                              {formatTimestamp(task.created_at)}
+                            </p>
+                            {task.total_items > 0 && (
+                              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                {task.processed_items}/{task.total_items} позиций
+                              </p>
+                            )}
                           </div>
-                          <span className="text-xs text-gray-600 dark:text-gray-400">{task.progress}%</span>
+                          <span className={`text-xs px-2 py-1 rounded-full ${getStatusColor(task.status)}`}>
+                            {getStatusText(task.status)}
+                          </span>
                         </div>
-                      )}
-                    </div>
-                  ))}
+                        {task.total_items > 0 && (
+                          <div className="mt-2">
+                            <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2">
+                              <div
+                                className="bg-blue-600 dark:bg-blue-400 h-2 rounded-full transition-all duration-300"
+                                style={{ width: `${(task.processed_items / task.total_items) * 100}%` }}
+                              ></div>
+                            </div>
+                            <span className="text-xs text-gray-600 dark:text-gray-400">
+                              {Math.round((task.processed_items / task.total_items) * 100)}%
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
+              )}
+              
+              {/* Задачи парсинга брендов */}
+              {tasks.length > 0 && (
+                <div>
+                  <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Парсинг брендов</h4>
+                  <div className="space-y-2">
+                    {tasks.map((task) => (
+                      <div
+                        key={`parsing_${task.id}`}
+                        onClick={() => handleTaskSelect(task.id, 'parsing')}
+                        className={`p-3 rounded-lg cursor-pointer transition-colors ${
+                          selectedTask === task.id && selectedTaskType === 'parsing'
+                            ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-600 border'
+                            : 'bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600'
+                        }`}
+                      >
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <h4 className="font-medium text-gray-900 dark:text-white">
+                              Задача #{task.id}
+                            </h4>
+                            <p className="text-sm text-gray-600 dark:text-gray-300">
+                              {task.file_name || 'Без названия'}
+                            </p>
+                            <p className="text-xs text-gray-500 dark:text-gray-400">
+                              {formatTimestamp(task.created_at)}
+                            </p>
+                          </div>
+                          <span className={`text-xs px-2 py-1 rounded-full ${getStatusColor(task.status)}`}>
+                            {getStatusText(task.status)}
+                          </span>
+                        </div>
+                        {task.progress !== undefined && (
+                          <div className="mt-2">
+                            <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2">
+                              <div
+                                className="bg-blue-600 dark:bg-blue-400 h-2 rounded-full transition-all duration-300"
+                                style={{ width: `${task.progress}%` }}
+                              ></div>
+                            </div>
+                            <span className="text-xs text-gray-600 dark:text-gray-400">{task.progress}%</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {tasks.length === 0 && priceListTasks.length === 0 && (
+                <p className="text-gray-500 dark:text-gray-400">Нет доступных задач</p>
               )}
             </div>
           </div>
@@ -200,16 +314,16 @@ function Logs() {
               <div className="h-full flex flex-col">
                 <div className="flex justify-between items-center mb-4">
                   <h3 className="text-lg font-medium text-gray-900 dark:text-white">
-                    Логи задачи #{selectedTask}
+                    {selectedTaskType === 'price_list' ? 'Логи анализа прайс-листа' : 'Логи задачи'} #{selectedTask}
                   </h3>
                   <span className="text-sm text-gray-500 dark:text-gray-400">
-                    {logs[selectedTask]?.length || 0} записей
+                    {logs[`${selectedTaskType}_${selectedTask}`]?.length || 0} записей
                   </span>
                 </div>
                 
                 <div className="flex-1 bg-gray-900 text-green-400 p-4 rounded-lg overflow-y-auto font-mono text-sm">
-                  {logs[selectedTask] && logs[selectedTask].length > 0 ? (
-                    logs[selectedTask].map((log, index) => (
+                  {logs[`${selectedTaskType}_${selectedTask}`] && logs[`${selectedTaskType}_${selectedTask}`].length > 0 ? (
+                    logs[`${selectedTaskType}_${selectedTask}`].map((log, index) => (
                       <div key={index} className="mb-1">
                         <span className="text-gray-400">[{formatTimestamp(log.timestamp)}]</span>
                         <span className="ml-2">{log.message}</span>

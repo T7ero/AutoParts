@@ -21,6 +21,7 @@ urlpatterns = [
     path('price-list-tasks/create/', price_list_views.create_price_list_task, name='create_price_list_task'),
     path('price-list-tasks/<int:task_id>/', price_list_views.get_price_list_task_details, name='get_price_list_task_details'),
     path('price-list-tasks/<int:task_id>/items/', price_list_views.get_price_list_items, name='get_price_list_items'),
+    path('price-list-tasks/<int:task_id>/logs/', price_list_views.get_price_list_task_logs, name='get_price_list_task_logs'),
     path('price-list-tasks/<int:task_id>/download/', price_list_views.download_price_list_result, name='download_price_list_result'),
     path('price-list-tasks/<int:task_id>/delete/', price_list_views.delete_price_list_task, name='delete_price_list_task'),
 ] 

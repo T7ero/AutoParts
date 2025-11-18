@@ -230,3 +230,94 @@ def delete_price_list_task(request, task_id):
         
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_price_list_task_logs(request, task_id):
+    """Получает логи задачи анализа прайс-листа"""
+    try:
+        task = get_object_or_404(PriceListTask, id=task_id, user=request.user)
+        
+        # Получаем логи из Celery result backend
+        from celery.result import AsyncResult
+        celery_result = AsyncResult(str(task_id))
+        
+        logs = []
+        
+        # Добавляем базовую информацию о задаче
+        logs.append({
+            'timestamp': task.created_at.isoformat(),
+            'message': f"Задача анализа прайс-листа #{task_id} создана. Платформа: {task.get_platform_display()}, Файл: {task.file.name if task.file else 'Не указан'}"
+        })
+        
+        # Добавляем информацию о статусе
+        if task.status == 'pending':
+            logs.append({
+                'timestamp': task.created_at.isoformat(),
+                'message': "Задача поставлена в очередь на выполнение"
+            })
+        elif task.status == 'processing':
+            logs.append({
+                'timestamp': task.created_at.isoformat(),
+                'message': f"Задача в процессе выполнения. Обработано: {task.processed_items}/{task.total_items}"
+            })
+        elif task.status == 'completed':
+            logs.append({
+                'timestamp': task.created_at.isoformat(),
+                'message': f"Задача завершена успешно. Обработано: {task.processed_items}/{task.total_items}"
+            })
+        elif task.status == 'failed':
+            logs.append({
+                'timestamp': task.created_at.isoformat(),
+                'message': f"Задача завершена с ошибкой"
+            })
+        
+        # Пытаемся получить дополнительную информацию из Celery
+        if celery_result.info:
+            if isinstance(celery_result.info, dict):
+                # Добавляем информацию о результатах
+                if 'status' in celery_result.info:
+                    logs.append({
+                        'timestamp': task.created_at.isoformat(),
+                        'message': f"Статус: {celery_result.info['status']}"
+                    })
+                if 'processed_items' in celery_result.info:
+                    logs.append({
+                        'timestamp': task.created_at.isoformat(),
+                        'message': f"Обработано позиций: {celery_result.info['processed_items']}"
+                    })
+                if 'found_items' in celery_result.info:
+                    logs.append({
+                        'timestamp': task.created_at.isoformat(),
+                        'message': f"Найдено позиций: {celery_result.info['found_items']}"
+                    })
+                if 'not_found_items' in celery_result.info:
+                    logs.append({
+                        'timestamp': task.created_at.isoformat(),
+                        'message': f"Не найдено позиций: {celery_result.info['not_found_items']}"
+                    })
+                if 'error' in celery_result.info:
+                    logs.append({
+                        'timestamp': task.created_at.isoformat(),
+                        'message': f"Ошибка: {celery_result.info['error']}"
+                    })
+        
+        # Сортируем логи по времени
+        logs = sorted(logs, key=lambda x: x.get('timestamp', ''))
+        
+        return Response({
+            'task_id': task_id,
+            'status': task.status,
+            'logs': logs,
+            'created_at': task.created_at.isoformat(),
+            'updated_at': task.created_at.isoformat(),
+            'file_name': task.file.name if task.file else None,
+            'platform': task.get_platform_display(),
+            'total_items': task.total_items,
+            'processed_items': task.processed_items
+        })
+        
+    except PriceListTask.DoesNotExist:
+        return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
