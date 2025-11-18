@@ -10,7 +10,7 @@ from rest_framework.authtoken.views import ObtainAuthToken
 from django.contrib.auth import authenticate
 from core.models import ParsingTask
 from .serializers import ParsingTaskSerializer
-from .tasks import process_parsing_task
+from .tasks import process_parsing_task, mark_parsing_task_cancelled
 from .autopiter_parser import load_proxies_from_file, get_next_proxy
 import json
 import os
@@ -143,6 +143,7 @@ def delete_task(request, task_id):
     """Удалить задачу"""
     try:
         task = ParsingTask.objects.get(id=task_id)
+        mark_parsing_task_cancelled(task_id)
         task.delete()
         return Response({'message': 'Задача удалена'}, status=status.HTTP_200_OK)
     except ParsingTask.DoesNotExist:
@@ -152,6 +153,8 @@ def delete_task(request, task_id):
 def clear_all_tasks(request):
     """Очистить все задачи и сбросить счетчик ID"""
     try:
+        for task in ParsingTask.objects.all().only('id'):
+            mark_parsing_task_cancelled(task.id)
         # Удаляем все задачи
         ParsingTask.objects.all().delete()
         

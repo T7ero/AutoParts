@@ -22,13 +22,35 @@ import threading
 import queue
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 from celery.utils.log import get_task_logger
 from datetime import datetime
 # Кэш для ускорения работы парсера
 PARSER_CACHE = {}
 CACHE_EXPIRATION = 3600  # 1 час
 NEGATIVE_CACHE_EXPIRATION = 1800  # 30 минут для пустых результатов
+
+CANCELLED_PARSING_TASKS: Set[int] = set()
+CANCELLED_TASKS_LOCK = threading.Lock()
+
+
+class TaskCancelledException(Exception):
+    """Специальное исключение для остановки задачи по запросу пользователя"""
+
+
+def mark_parsing_task_cancelled(task_id: int) -> None:
+    with CANCELLED_TASKS_LOCK:
+        CANCELLED_PARSING_TASKS.add(int(task_id))
+
+
+def clear_parsing_task_cancelled(task_id: int) -> None:
+    with CANCELLED_TASKS_LOCK:
+        CANCELLED_PARSING_TASKS.discard(int(task_id))
+
+
+def is_parsing_task_cancelled(task_id: int) -> bool:
+    with CANCELLED_TASKS_LOCK:
+        return int(task_id) in CANCELLED_PARSING_TASKS
 
 def get_cache_key(artikul: str, source: str) -> str:
     """Создает ключ кэша для артикула и источника"""
@@ -380,9 +402,20 @@ def process_parsing_task(self, task_id):
         log_debug(f"Task {task_id} не найдена")
         return None
     
+    def ensure_not_cancelled():
+        if is_parsing_task_cancelled(task_id):
+            raise TaskCancelledException()
+
+    def update_task_fields(**kwargs):
+        ensure_not_cancelled()
+        updated = ParsingTask.objects.filter(id=task_id).update(**kwargs)
+        if updated == 0:
+            raise TaskCancelledException()
+        for key, value in kwargs.items():
+            setattr(task, key, value)
+
     # Отмечаем задачу как выполняющуюся
-    task.status = 'in_progress'
-    task.save()
+    update_task_fields(status='in_progress')
     
     log_messages = []
     logger = get_task_logger(__name__)
@@ -631,7 +664,7 @@ def process_parsing_task(self, task_id):
                 current_log = f"[{datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Обрабатываем строку {index + 1}: {len(numbers_to_parse)} артикулов"
                 print(f"[DEBUG] {current_log}")
                 
-                task.save()
+                update_task_fields(status='in_progress')
                 ws_send()
                 
                 # Обрабатываем каждый артикул отдельно для создания отдельных строк
@@ -793,7 +826,8 @@ def process_parsing_task(self, task_id):
                                 })
                             # промежуточный лог (без сохранения в БД)
                             print(f"[DEBUG] {log_messages[-1] if log_messages else 'Обработка артикула'}")
-                            task.save(); ws_send()
+                            ensure_not_cancelled()
+                            ws_send()
                     
                     except Exception as e:
                         log(f"Ошибка при обработке артикула {current_number} в строке {index + 1}: {str(e)}")
@@ -806,7 +840,7 @@ def process_parsing_task(self, task_id):
                 if (index + 1) % 3 == 0 or index == total_rows - 1:
                     # task.log = '\n'.join(log_messages[-100:])  # Поле отсутствует в модели
                     task.status = 'in_progress'
-                    task.save()
+                    update_task_fields(status='in_progress')
                     ws_send()
                     
                     # Принудительная очистка памяти
@@ -846,7 +880,7 @@ def process_parsing_task(self, task_id):
                             df_emex.to_excel(emex_file, index=False, engine='openpyxl')
                             task.result_files = task.result_files or {}
                             task.result_files['emex'] = emex_file
-                        task.save()
+                        update_task_fields(result_files=task.result_files)
                         log("Чекпоинт: промежуточные файлы результатов сохранены")
                     except Exception as e:
                         log(f"Ошибка чекпоинта сохранения файлов: {str(e)}")
@@ -858,7 +892,7 @@ def process_parsing_task(self, task_id):
                 # Логирование ошибки (без сохранения в БД)
                 error_log = f"[{datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Ошибка обработки строки {index + 1}: {str(e)}"
                 print(f"[DEBUG] {error_log}")
-                task.save()
+                ensure_not_cancelled()
                 continue
         
         completion_log = f"[{datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Обработка завершена. Обработано строк: {task._processed_rows} из {total_rows}"
@@ -866,7 +900,7 @@ def process_parsing_task(self, task_id):
         
         # Логирование завершения (без сохранения в БД)
         print(f"[DEBUG] {completion_log}")
-        task.save()
+        ensure_not_cancelled()
         
         # Создаем результаты с улучшенной обработкой ошибок
         try:
@@ -924,8 +958,7 @@ def process_parsing_task(self, task_id):
             log(f"Критическая ошибка при создании Excel файлов: {str(e)}")
         
         # Принудительно сохраняем task с файлами
-        task.status = 'completed'
-        task.save()
+        update_task_fields(status='completed', result_files=task.result_files)
         log(f"Task завершен. Result files: созданы файлы результатов")
         ws_send()
         
@@ -945,11 +978,25 @@ def process_parsing_task(self, task_id):
             'message': 'Task completed successfully'
         }
         
+    except TaskCancelledException:
+        log(f"Task {task_id} отменена пользователем")
+        cleanup_chrome_processes()
+        cleanup_driver_pool()
+        return {
+            'status': 'cancelled',
+            'task_id': task_id,
+            'message': 'Task was cancelled'
+        }
     except Exception as e:
         task.status = 'error'
         task.error_message = str(e)
-        task.save()
+        try:
+            update_task_fields(status='error', error_message=str(e))
+        except TaskCancelledException:
+            pass
         ws_send()
         cleanup_chrome_processes()
         cleanup_driver_pool()
         raise 
+    finally:
+        clear_parsing_task_cancelled(task_id)

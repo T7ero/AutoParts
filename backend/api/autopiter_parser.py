@@ -440,6 +440,33 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
     
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
+        brand_exclude_tokens = [
+            'сверла', 'свечи', 'автошина', 'заклепка', 'игла',
+            'лейка', 'лента', 'помпа', 'поплавок', 'ремень',
+            'фильтр', 'хомут', 'шина', 'щетка', 'кольцо',
+            'комплект', 'костюм', 'стартер', 'шайба', 'деталь',
+            'накладка', 'тормозная', 'задняя', 'колесо',
+            'производители', 'часто ищут', 'рекомендуем', 'сверла техмаш',
+            'тестовый', 'клиента', 'без артикула', 'оригинальная',
+            'дизель', 'дизеля', 'дизельный'
+        ]
+
+        def register_brand(value: Optional[str], source: str = '') -> None:
+            brand = (value or '').strip()
+            if not brand or len(brand) <= 1 or len(brand) >= 50:
+                return
+            brand_lower = brand.lower()
+            if brand_lower.isdigit():
+                return
+            if any(exclude in brand_lower for exclude in brand_exclude_tokens):
+                return
+            if brand_lower.startswith('12643') or brand_lower.startswith('d-'):
+                return
+            if any(char.isdigit() for char in brand[:3]):
+                return
+            brands.add(brand)
+            if source:
+                log_debug(f"Autopiter: найден бренд '{brand}' ({source}) для {artikul}")
         
         # Используем ТОЧНЫЙ селектор из DevTools пользователя
         # #main-content > div > div > div.Table__table____693a7dea7e60fe92 > div > div.IndividualTableRow__infoColumn___b7ecc9b28c9245b4 > span > span > span > span
@@ -469,26 +496,7 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                 # Используем точный селектор: span > span > span > span
                 brand_spans = info_column.select('span > span > span > span')
                 for span in brand_spans:
-                    brand = span.get_text(strip=True)
-                    if brand and len(brand) > 1 and not brand.isdigit():
-                        # Дополнительная проверка - исключаем мусор и данные из "Часто ищут"
-                        if (len(brand) < 50 and 
-                                                            not any(exclude in brand.lower() for exclude in [
-                                    'сверла', 'свечи', 'автошина', 'заклепка', 'игла', 
-                                    'лейка', 'лента', 'помпа', 'поплавок', 'ремень', 
-                                    'фильтр', 'хомут', 'шина', 'щетка', 'кольцо',
-                                    'комплект', 'костюм', 'стартер', 'шайба', 'деталь',
-                                    'накладка', 'тормозная', 'задняя', 'комплект', 'колесо',
-                                    'производители', 'часто ищут', 'рекомендуем', 'сверла техмаш',
-                                    'тестовый', 'клиента', 'без артикула', 'оригинальная',
-                                    'дизель', 'дизеля', 'дизельный'
-                                ]) and
-                            not brand.lower().startswith('12643') and  # Исключаем артикулы
-                            not brand.lower().startswith('d-') and
-                            not any(char.isdigit() for char in brand[:3])  # Исключаем артикулы в начале
-                        ):
-                            brands.add(brand)
-                            log_debug(f"Autopiter: найден бренд '{brand}' для {artikul}")
+                    register_brand(span.get_text(strip=True), "основная таблица")
         
         # Если не нашли бренды через точный селектор, пробуем через title
         if not brands:
@@ -497,25 +505,19 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                 if info_column:
                     brand_spans = info_column.select('span[title]')
                     for span in brand_spans:
-                        brand = span.get('title')
-                        if brand and len(brand) > 1 and not brand.isdigit():
-                            if (len(brand) < 50 and 
-                                not any(exclude in brand.lower() for exclude in [
-                                    'сверла', 'свечи', 'автошина', 'заклепка', 'игла', 
-                                    'лейка', 'лента', 'помпа', 'поплавок', 'ремень', 
-                                    'фильтр', 'хомут', 'шина', 'щетка', 'кольцо',
-                                    'комплект', 'костюм', 'стартер', 'шайба', 'деталь',
-                                    'накладка', 'тормозная', 'задняя', 'комплект', 'колесо',
-                                    'производители', 'часто ищут', 'рекомендуем', 'сверла техмаш',
-                                    'тестовый', 'клиента', 'без артикула', 'оригинальная',
-                                    'дизель', 'дизеля', 'дизельный'
-                                ]) and
-                                not brand.lower().startswith('12643') and
-                                not brand.lower().startswith('d-') and
-                                not any(char.isdigit() for char in brand[:3])
-                            ):
-                                brands.add(brand)
-                                log_debug(f"Autopiter: найден бренд через title '{brand}' для {artikul}")
+                        register_brand(span.get('title'), "title в таблице")
+
+        # Дополнительно собираем бренды из блока "Производители" (чипы над таблицей)
+        brand_chip_selectors = [
+            "div[class*='Brands_root'] span[class*='ModalButton__button']",
+            "div[class*='Brands_root'] span[title]",
+            "div[class*='Brands_root'] a",
+            "div[class*='Brands_root'] button",
+        ]
+        for selector in brand_chip_selectors:
+            for element in soup.select(selector):
+                text = element.get('title') or element.get_text(strip=True)
+                register_brand(text, "блок производителей")
         
         log_debug(f"Autopiter: итого найдено {len(brands)} брендов для {artikul}")
         

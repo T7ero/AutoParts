@@ -192,6 +192,44 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
         'competitor_quantity': None,  # Добавляем это поле
         'error_message': ''
     }
+
+    def click_show_all_links(driver_instance) -> bool:
+        """Нажимает на кнопку 'Показать все', чтобы раскрыть скрытые предложения"""
+        show_all_selectors = [
+            "span.InteractiveLink__root___ZGRiMz.NonRetailAppraiseTable__showAll___ZjJlOD.InteractiveLink__blue___ZGRiMz",
+            "span[class*='NonRetailAppraiseTable__showAll']",
+            ".NonRetailAppraiseTable__footer span[class*='InteractiveLink']",
+            "button[data-testid='show-all']",
+        ]
+        clicked = False
+        for selector in show_all_selectors:
+            try:
+                elements = driver_instance.find_elements(By.CSS_SELECTOR, selector)
+                for element in elements:
+                    text = (element.text or '').strip().lower()
+                    if 'показать все' not in text:
+                        continue
+                    try:
+                        driver_instance.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+                    except Exception:
+                        pass
+                    try:
+                        driver_instance.execute_script("arguments[0].click();", element)
+                    except Exception:
+                        try:
+                            element.click()
+                        except Exception:
+                            continue
+                    clicked = True
+                    time.sleep(1.5)
+            except Exception as e:
+                print(f"[DEBUG] Selenium: ошибка при попытке нажать 'Показать все' ({selector}): {str(e)}")
+                continue
+            if clicked:
+                break
+        if clicked:
+            print("[DEBUG] Selenium: выполнено раскрытие списка предложений кнопкой 'Показать все'")
+        return clicked
     
     # Определяем URL в начале функции
     product_url = f"https://autopiter.ru/goods/{quote(str(article))}"
@@ -806,6 +844,7 @@ def check_autopiter_item(supplier_code: str, manufacturer: str, article: str, co
                 try:
                     driver.get(card_url)
                     time.sleep(3)
+                    click_show_all_links(driver)
                 except Exception as e:
                     print(f"[DEBUG] Selenium: ошибка перехода на карточку {card_idx + 1}: {str(e)}")
                     continue
@@ -1711,6 +1750,7 @@ def create_result_excel(items: List[Dict], output_path: str) -> bool:
                 'Артикул по Бренду': item['article'],
                 'Наименование': item['nomenclature'],
                 'наличие': 'выгружено' if item['is_found'] else 'НЕТ',
+                'Наши поставщки': 'да' if item['is_found'] else 'нет',
                 'источник': item.get('platform', ''),
                 'Цена Наша': f"{item['marketplace_price']:.0f} ₽" if item['marketplace_price'] else '',
                 'Минимальная цена конкурента': f"{item['min_competitor_price']:.0f} ₽" if item['min_competitor_price'] else '',
