@@ -273,9 +273,9 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
         'палец sitrak', 'переключатели подрулевые в сборе', 'мтз', 'сад и огород',
         'fmsi', 'ac delco', 'achim', 'achr', 'b-tech', 'beru', 'champion', 'chery', 'dragonzap',
         'ford', 'hot-parts', 'lucas', 'mobis', 'ngk', 'nissan', 'robiton', 'tesla', 'trw', 'vag',
-        'valeo', 'autotech', 'createk', 'howo', 'kamaz', 'leo trade', 'prc',
-        'shaanxi', 'shacman', 'sitrak', 'weichai', 'zg.link', 'ast', 'foton', 'htp', 'jmc',
-        'shaft-gear', 'wayteko', 'zevs', 'jac', 'faw', 'gspartshinotoyota', 'gspartshino',
+        'valeo', 'autotech', 'createk', 'kamaz', 'leo trade', 'prc',
+        'weichai', 'zg.link', 'ast', 'foton', 'htp', 'jmc',
+        'shaft-gear', 'zevs', 'gspartshinotoyota', 'gspartshino',
         'toyota / lexus', 'toyota/lexus', 'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus',
         'telegramwhatsapp', 'грузовые запчасти', 'выбор armtekсортировать по:выбор armtek',
         'каталогглавнаяподборкорзинагаражвойти', 'мы используем cookies, чтобы сайт был лучшехорошо',
@@ -304,7 +304,8 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
     
     filtered = []
     brand_whitelist_tokens = {
-        'jac', 'faw', 'автокомпонент', 'autocomponent'
+        'jac', 'faw', 'автокомпонент', 'autocomponent',
+        'sitrak', 'howo', 'wayteko', 'shaanxi', 'shacman'
     }
     # Часто встречающиеся "мусорные" токены, которые были не покрыты ранее
     extra_garbage_exact = {
@@ -327,7 +328,9 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
         'diesel': 'ДИЗЕЛЬ',
         'дизель': 'ДИЗЕЛЬ',
         'zevs': 'ZEVS',
-        'z': 'ZEVS'
+        'z': 'ZEVS',
+        'shaanxi': 'SHAANXI/SHACMAN',
+        'shacman': 'SHAANXI/SHACMAN'
     }
     
     # Сначала объединяем составные бренды
@@ -339,9 +342,27 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
             
         brand_lower = brand_clean.lower()
 
+        # Обрабатываем составные бренды с слэшем (например, "SHAANXI/SHACMAN")
+        if '/' in brand_clean:
+            parts = [p.strip() for p in brand_clean.split('/')]
+            # Если это известный составной бренд
+            if len(parts) == 2:
+                part1_lower = parts[0].lower()
+                part2_lower = parts[1].lower()
+                if part1_lower in compound_brands or part2_lower in compound_brands:
+                    compound_brand = compound_brands.get(part1_lower) or compound_brands.get(part2_lower)
+                    if compound_brand and compound_brand not in processed_brands:
+                        processed_brands.add(compound_brand)
+                        filtered.append(compound_brand)
+                        continue
+                # Если обе части в whitelist, оставляем как есть
+                if (part1_lower in brand_whitelist_tokens or part2_lower in brand_whitelist_tokens):
+                    filtered.append(normalize_brand_display(brand_clean))
+                    continue
+
         whitelist_match = False
         for token in brand_whitelist_tokens:
-            if brand_lower == token or brand_lower.startswith(f"{token} "):
+            if brand_lower == token or brand_lower.startswith(f"{token} ") or brand_lower.startswith(f"{token}/"):
                 filtered.append(normalize_brand_display(brand_clean))
                 whitelist_match = True
                 break
