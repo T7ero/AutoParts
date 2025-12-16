@@ -144,16 +144,21 @@ def split_compound_article(article: str) -> list:
     if not normalized:
         return []
     
-    # Ищем составные артикулы (два артикула подряд)
-    # Паттерн: цифры+буквы, затем еще цифры+буквы
-    parts = []
+    parts: List[str] = []
     
-    # Простое разбиение по пробелам в оригинальном артикуле
-    original_parts = article.upper().strip().split()
-    for part in original_parts:
-        clean_part = normalize_article_for_compare(part)
-        if clean_part and len(clean_part) >= 3:  # Минимальная длина артикула
-            parts.append(clean_part)
+    # Разбиваем по типичным разделителям кросс-номеров:
+    # ';' - как в наших файлах, '/' и ',' - как в названиях вида 'HDA-002 / 1-31800-142-0 / ME657650'
+    raw_chunks = re.split(r"[;]", article.upper())
+    for chunk in raw_chunks:
+        sub_parts = re.split(r"[\/,]", chunk)
+        for part in sub_parts:
+            token = part.strip()
+            if not token:
+                continue
+            clean_part = normalize_article_for_compare(token)
+            # Минимальная длина артикула, отсекаем совсем короткие/шум
+            if clean_part and len(clean_part) >= 3:
+                parts.append(clean_part)
     
     # Если не нашли части, возвращаем нормализованный артикул
     if not parts:
@@ -272,11 +277,11 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
         'каталоги', 'популярные категории', 'строительство и ремонт', 'электрика и свет',
         'палец sitrak', 'переключатели подрулевые в сборе', 'мтз', 'сад и огород',
         'fmsi', 'ac delco', 'achim', 'achr', 'b-tech', 'beru', 'champion', 'chery', 'dragonzap',
-        'ford', 'hot-parts', 'lucas', 'mobis', 'ngk', 'nissan', 'robiton', 'tesla', 'trw', 'vag',
-        'valeo', 'autotech', 'createk', 'kamaz', 'leo trade', 'prc',
-        'weichai', 'zg.link', 'ast', 'foton', 'htp', 'jmc',
-        'shaft-gear', 'zevs', 'gspartshinotoyota', 'gspartshino',
-        'toyota / lexus', 'toyota/lexus', 'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus',
+        'ford', 'lucas', 'ngk', 'robiton', 'trw', 'vag',
+        'kamaz', 'leo trade', 'prc',
+        'zg.link', 'ast', 'foton',
+        'shaft-gear', 'gspartshinotoyota', 'gspartshino',
+        'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus',
         'telegramwhatsapp', 'грузовые запчасти', 'выбор armtekсортировать по:выбор armtek',
         'каталогглавнаяподборкорзинагаражвойти', 'мы используем cookies, чтобы сайт был лучшехорошо',
         'прокладка гбц на hino hino', 'прокладка гбц производства японии', 'прокладка клапанной крышки',
@@ -305,7 +310,10 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
     filtered = []
     brand_whitelist_tokens = {
         'jac', 'faw', 'автокомпонент', 'autocomponent',
-        'sitrak', 'howo', 'wayteko', 'shaanxi', 'shacman'
+        'sitrak', 'howo', 'wayteko', 'shaanxi', 'shacman',
+        'mobis', 'valeo', 'createk', 'weichai', 'htp', 'jmc',
+        'zevs', 'toyota / lexus', 'toyota/lexus', 'hino', 'nissan',
+        'hot-parts', 'tesla', 'autotech'
     }
     # Часто встречающиеся "мусорные" токены, которые были не покрыты ранее
     extra_garbage_exact = {
