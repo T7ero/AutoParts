@@ -400,36 +400,99 @@ def make_request(
     
     log_debug(f"Все попытки исчерпаны для {url}")
     return None
+def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[str]:
+    """Selenium-парсинг АвтоПитер с полной загрузкой страницы"""
+    driver = None
+    temp_dir = tempfile.mkdtemp(prefix=f"chrome_autopiter_")
+    
+    try:
+        # Используем драйвер из пула или создаем новый
+        driver = get_driver_from_pool()
+        if not driver:
+            driver = _create_chrome_driver_robust(temp_dir, proxy)
+        
+        url = f"https://autopiter.ru/goods/{quote(artikul)}"
+        driver.get(url)
+        
+        # Ждем полной загрузки
+        time.sleep(3)
+        
+        # Прокручиваем страницу для подгрузки ВСЕХ данных
+        last_height = driver.execute_script("return document.body.scrollHeight")
+        
+        # Прокручиваем несколько раз для подгрузки всех товаров
+        for _ in range(10):  # Увеличить, если нужно больше скроллов
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(1.5)  # Ждем подгрузки
+            
+            # Проверяем, появились ли новые данные
+            new_height = driver.execute_script("return document.body.scrollHeight")
+            if new_height == last_height:
+                break
+            last_height = new_height
+        
+        # Дополнительная прокрутка вверх/вниз
+        driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(0.5)
+        
+        # Получаем ПОЛНЫЙ HTML после всех подгрузок
+        full_html = driver.page_source
+        
+        # Парсим бренды из полного HTML
+        return parse_autopiter_response(full_html, artikul)
+        
+    except Exception as e:
+        log_debug(f"Ошибка Selenium парсинга АвтоПитер: {str(e)}")
+        return []
+    finally:
+        if driver:
+            return_driver_to_pool(driver)
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str]:
-    """Получает бренды с Autopiter по артикулу"""
+    """Получает бренды с Autopiter по артикулу - ОБНОВЛЕННАЯ ВЕРСИЯ"""
     try:
+        log_debug(f"АвтоПитер: начинаем парсинг {artikul}")
+        
+        # 1. Сначала пробуем Selenium (самый надежный)
+        brands = parse_autopiter_selenium(artikul, proxy)
+        if brands:
+            log_debug(f"АвтоПитер Selenium: найдено {len(brands)} брендов")
+            return brands
+        
+        # 2. Fallback: обычный requests
+        log_debug(f"АвтоПитер: Selenium не сработал, пробуем requests")
         url = f"https://autopiter.ru/goods/{artikul}"
-        log_debug(f"Autopiter: запрос к {url}")
         
-        # Сначала пробуем без прокси
-        try:
-            log_debug(f"Попытка 1 без прокси для {url}")
-            response = make_request(url, None, max_retries=1)
-            if response and response.status_code == 200:
-                return parse_autopiter_response(response.text, artikul)
-        except Exception as e:
-            log_debug(f"Ошибка без прокси: {str(e)}")
+        # Используем сессию для сохранения cookies
+        session = requests.Session()
+        session.headers.update({
+            **HEADERS,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+        })
         
-        # Если не получилось, пробуем с прокси
-        if proxy:
-            try:
-                log_debug(f"Попытка 2 с прокси для {url}")
-                response = make_request(url, proxy, max_retries=1)
-                if response and response.status_code == 200:
-                    return parse_autopiter_response(response.text, artikul)
-            except Exception as e:
-                log_debug(f"Ошибка с прокси: {str(e)}")
+        # Добавляем случайную задержку
+        time.sleep(random.uniform(1, 3))
         
+        response = session.get(url, timeout=15)
+        
+        if response.status_code == 200:
+            brands = parse_autopiter_response(response.text, artikul)
+            log_debug(f"АвтоПитер requests: найдено {len(brands)} брендов")
+            return brands
+        
+        log_debug(f"АвтоПитер: HTTP {response.status_code} для {artikul}")
         return []
         
     except Exception as e:
-        log_debug(f"Ошибка Autopiter для {artikul}: {str(e)}")
+        log_debug(f"Ошибка АвтоПитер для {artikul}: {str(e)}")
         return []
 
 def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
