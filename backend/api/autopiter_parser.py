@@ -592,14 +592,54 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             if not brand or len(brand) <= 1 or len(brand) >= 50:
                 return
             brand_lower = brand.lower()
+            
+            # Исключаем чисто цифровые значения
             if brand_lower.isdigit():
                 return
+            
+            # Исключаем служебные слова
             if any(exclude in brand_lower for exclude in brand_exclude_tokens):
                 return
-            if brand_lower.startswith('12643') or brand_lower.startswith('d-'):
+            
+            # Исключаем артикулы, начинающиеся с определенных префиксов
+            if brand_lower.startswith('12643') or brand_lower.startswith('d-') or brand_lower.startswith('dz'):
                 return
+            
+            # Исключаем значения, начинающиеся с цифр (скорее всего артикулы)
+            if brand[0].isdigit():
+                return
+            
+            # Исключаем артикулы с форматом типа "43050.810", "DZ1560160020", "BAY15d", "MZ-005"
+            # Проверяем, если больше 50% символов - цифры или дефисы/точки, то это артикул
+            digit_and_separator_count = sum(1 for c in brand if c.isdigit() or c in '-./')
+            if digit_and_separator_count > len(brand) * 0.5:
+                return
+            
+            # Исключаем короткие коды типа "BAY15d", "MZ-005", "NI-007" (2-3 буквы + цифры)
+            if len(brand) <= 10 and re.match(r'^[A-Z]{2,3}[-]?\d+[A-Z]?$', brand, re.IGNORECASE):
+                return
+            
+            # Исключаем артикулы с форматом "XXX-XXX" где много цифр
+            if re.match(r'^[A-Z0-9]{2,}[-/][A-Z0-9]{2,}', brand, re.IGNORECASE):
+                # Проверяем, если больше 40% цифр, то это артикул
+                digit_count = sum(1 for c in brand if c.isdigit())
+                if digit_count > len(brand) * 0.4:
+                    return
+            
+            # Исключаем значения, где первые 3 символа содержат цифры (скорее всего артикулы)
             if any(char.isdigit() for char in brand[:3]):
                 return
+            
+            # Исключаем слишком короткие значения (меньше 2 символов) или слишком длинные
+            if len(brand) < 2 or len(brand) > 50:
+                return
+            
+            # Исключаем значения, состоящие только из заглавных букв и цифр без пробелов (скорее всего артикулы)
+            if brand.isupper() and not ' ' in brand and any(c.isdigit() for c in brand) and len(brand) > 5:
+                digit_ratio = sum(1 for c in brand if c.isdigit()) / len(brand)
+                if digit_ratio > 0.3:  # Если больше 30% цифр, то это артикул
+                    return
+            
             brands.add(brand)
             if source:
                 log_debug(f"Autopiter: найден бренд '{brand}' ({source}) для {artikul}")
@@ -702,12 +742,8 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             for div in all_divs:
                 div_text = div.get_text(strip=True)
                 if div_text and len(div_text) > 2 and len(div_text) < 50:
-                    # Проверяем, что это похоже на бренд (не только цифры, не служебный текст)
-                    if not div_text.isdigit() and not any(char.isdigit() for char in div_text[:3]):
-                        # Проверяем, что это не артикул (слишком много цифр)
-                        digit_count = sum(1 for c in div_text if c.isdigit())
-                        if digit_count < len(div_text) * 0.5:  # Меньше 50% цифр
-                            register_brand(div_text, f"div в строке {row_idx + 1}")
+                    # Используем ту же функцию register_brand для консистентной фильтрации
+                    register_brand(div_text, f"div в строке {row_idx + 1}")
         
         log_debug(f"Autopiter: итого найдено {len(brands)} брендов для {artikul}")
         
