@@ -411,29 +411,99 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
         if not driver:
             driver = _create_chrome_driver_robust(temp_dir, proxy)
         
+        # Очищаем cookies перед загрузкой для предотвращения проблем с кэшем
+        try:
+            driver.delete_all_cookies()
+        except Exception as e:
+            log_debug(f"Не удалось очистить cookies: {str(e)}")
+        
         url = f"https://autopiter.ru/goods/{quote(artikul)}"
         driver.get(url)
         
-        # Ждем полной загрузки
-        time.sleep(3)
+        # Ждем полной загрузки страницы
+        wait = WebDriverWait(driver, SELENIUM_TIMEOUT)
+        try:
+            # Ждем появления основного контента
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#main-content")))
+        except TimeoutException:
+            log_debug(f"АвтоПитер: таймаут ожидания #main-content для {artikul}")
+        
+        # Дополнительное ожидание для полной загрузки
+        time.sleep(2)
         
         # Прокручиваем страницу для подгрузки ВСЕХ данных
         last_height = driver.execute_script("return document.body.scrollHeight")
+        last_row_count = 0
         
-        # Прокручиваем несколько раз для подгрузки всех товаров
-        for _ in range(10):  # Увеличить, если нужно больше скроллов
+        # Увеличиваем количество прокруток и время ожидания
+        max_scrolls = 30  # Увеличено с 10 до 30
+        scroll_attempts = 0
+        no_change_count = 0
+        
+        for _ in range(max_scrolls):
+            scroll_attempts += 1
+            # Прокручиваем вниз
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(1.5)  # Ждем подгрузки
+            time.sleep(2)  # Увеличено с 1.5 до 2 секунд для подгрузки данных
             
-            # Проверяем, появились ли новые данные
+            # Проверяем количество строк в таблице
+            try:
+                rows = driver.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')
+                current_row_count = len(rows)
+                
+                # Если количество строк увеличилось, продолжаем прокрутку
+                if current_row_count > last_row_count:
+                    last_row_count = current_row_count
+                    no_change_count = 0
+                    log_debug(f"АвтоПитер: найдено {current_row_count} строк после прокрутки {scroll_attempts}")
+                else:
+                    no_change_count += 1
+            except Exception as e:
+                log_debug(f"Ошибка проверки строк: {str(e)}")
+            
+            # Проверяем, появились ли новые данные по высоте страницы
             new_height = driver.execute_script("return document.body.scrollHeight")
             if new_height == last_height:
+                no_change_count += 1
+            else:
+                last_height = new_height
+                no_change_count = 0
+            
+            # Если несколько раз подряд ничего не изменилось, прекращаем прокрутку
+            if no_change_count >= 3:
+                log_debug(f"АвтоПитер: прекращаем прокрутку после {scroll_attempts} попыток (нет изменений)")
                 break
-            last_height = new_height
         
-        # Дополнительная прокрутка вверх/вниз
+        # Дополнительная прокрутка: вверх, затем постепенно вниз для гарантированной загрузки
         driver.execute_script("window.scrollTo(0, 0);")
-        time.sleep(0.5)
+        time.sleep(1)
+        
+        # Постепенная прокрутка вниз для загрузки всех элементов
+        scroll_step = 500
+        current_position = 0
+        max_position = driver.execute_script("return document.body.scrollHeight")
+        
+        while current_position < max_position:
+            current_position += scroll_step
+            driver.execute_script(f"window.scrollTo(0, {current_position});")
+            time.sleep(0.3)
+        
+        # Финальная прокрутка в самый низ
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)
+        
+        # Явное ожидание появления всех строк таблицы
+        try:
+            wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')) > 0)
+        except TimeoutException:
+            log_debug(f"АвтоПитер: таймаут ожидания строк таблицы для {artikul}")
+        
+        # Финальная проверка количества строк
+        try:
+            final_rows = driver.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')
+            log_debug(f"АвтоПитер: итоговое количество строк в таблице: {len(final_rows)}")
+        except Exception as e:
+            log_debug(f"Ошибка подсчета строк: {str(e)}")
         
         # Получаем ПОЛНЫЙ HTML после всех подгрузок
         full_html = driver.page_source
@@ -454,15 +524,15 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
     try:
         log_debug(f"АвтоПитер: начинаем парсинг {artikul}")
         
-        # 1. Сначала пробуем Selenium (самый надежный)
+        # ВСЕГДА используем Selenium для АвтоПитер, так как данные загружаются динамически
         brands = parse_autopiter_selenium(artikul, proxy)
         if brands:
             log_debug(f"АвтоПитер Selenium: найдено {len(brands)} брендов")
             return brands
         
-        # 2. Fallback: обычный requests
+        # Fallback: обычный requests (только если Selenium полностью не сработал)
         log_debug(f"АвтоПитер: Selenium не сработал, пробуем requests")
-        url = f"https://autopiter.ru/goods/{artikul}"
+        url = f"https://autopiter.ru/goods/{quote(artikul)}"
         
         # Используем сессию для сохранения cookies
         session = requests.Session()
@@ -511,7 +581,10 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             'накладка', 'тормозная', 'задняя', 'колесо',
             'производители', 'часто ищут', 'рекомендуем', 'сверла техмаш',
             'тестовый', 'клиента', 'без артикула', 'оригинальная',
-            'дизель', 'дизеля', 'дизельный'
+            'дизель', 'дизеля', 'дизельный',
+            'запчасть', 'китай', 'россия', 'россий', 'китайск',
+            'производитель', 'бренд', 'артикул', 'номер', 'код',
+            'наименование', 'название', 'описание'
         ]
 
         def register_brand(value: Optional[str], source: str = '') -> None:
@@ -552,23 +625,62 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             log_debug(f"Autopiter: не найдены строки IndividualTableRow для {artikul}")
             return []
         
+        log_debug(f"Autopiter: найдено {len(rows)} строк IndividualTableRow для {artikul}")
+        
         # Проходим по всем строкам и ищем infoColumn с точным селектором
-        for row in rows:
+        for row_idx, row in enumerate(rows):
             info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
             if info_column:
-                # Используем точный селектор: span > span > span > span
+                # Собираем все возможные тексты из строки для поиска бренда
+                all_texts_in_row = []
+                
+                # 1. Используем точный селектор: span > span > span > span
                 brand_spans = info_column.select('span > span > span > span')
                 for span in brand_spans:
-                    register_brand(span.get_text(strip=True), "основная таблица")
-        
-        # Если не нашли бренды через точный селектор, пробуем через title
-        if not brands:
-            for row in rows:
-                info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
-                if info_column:
-                    brand_spans = info_column.select('span[title]')
-                    for span in brand_spans:
-                        register_brand(span.get('title'), "title в таблице")
+                    brand_text = span.get_text(strip=True)
+                    if brand_text:
+                        all_texts_in_row.append(brand_text)
+                
+                # 2. Пробуем через title
+                brand_spans_title = info_column.select('span[title]')
+                for span in brand_spans_title:
+                    title_text = span.get('title')
+                    if title_text:
+                        all_texts_in_row.append(title_text)
+                
+                # 3. Пробуем все span внутри infoColumn
+                all_spans = info_column.select('span')
+                for span in all_spans:
+                    span_text = span.get_text(strip=True)
+                    if span_text and len(span_text) > 1 and len(span_text) < 50:
+                        all_texts_in_row.append(span_text)
+                
+                # 4. Пробуем получить текст напрямую из infoColumn
+                direct_text = info_column.get_text(strip=True, separator=' ')
+                if direct_text:
+                    # Разбиваем на слова и проверяем каждое
+                    words = direct_text.split()
+                    for word in words:
+                        if len(word) > 1 and len(word) < 50:
+                            all_texts_in_row.append(word)
+                
+                # Регистрируем все найденные тексты как потенциальные бренды
+                found_brand_in_row = False
+                for text in all_texts_in_row:
+                    old_count = len(brands)
+                    register_brand(text, f"строка {row_idx + 1}")
+                    if len(brands) > old_count:
+                        found_brand_in_row = True
+                
+                # Если в строке не нашли бренд, пробуем найти в других колонках строки
+                if not found_brand_in_row:
+                    # Ищем во всей строке
+                    row_text = row.get_text(strip=True, separator=' ')
+                    if row_text:
+                        words = row_text.split()
+                        for word in words:
+                            if len(word) > 2 and len(word) < 50 and word.isalpha():
+                                register_brand(word, f"весь текст строки {row_idx + 1}")
 
         # Дополнительно собираем бренды из блока "Производители" (чипы над таблицей)
         brand_chip_selectors = [
@@ -581,6 +693,21 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             for element in soup.select(selector):
                 text = element.get('title') or element.get_text(strip=True)
                 register_brand(text, "блок производителей")
+        
+        # Дополнительный поиск брендов во всех колонках таблицы
+        # Ищем во всех div внутри строк, которые могут содержать бренды
+        for row_idx, row in enumerate(rows):
+            # Ищем все div с текстом, которые могут быть брендами
+            all_divs = row.select('div')
+            for div in all_divs:
+                div_text = div.get_text(strip=True)
+                if div_text and len(div_text) > 2 and len(div_text) < 50:
+                    # Проверяем, что это похоже на бренд (не только цифры, не служебный текст)
+                    if not div_text.isdigit() and not any(char.isdigit() for char in div_text[:3]):
+                        # Проверяем, что это не артикул (слишком много цифр)
+                        digit_count = sum(1 for c in div_text if c.isdigit())
+                        if digit_count < len(div_text) * 0.5:  # Меньше 50% цифр
+                            register_brand(div_text, f"div в строке {row_idx + 1}")
         
         log_debug(f"Autopiter: итого найдено {len(brands)} брендов для {artikul}")
         
