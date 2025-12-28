@@ -256,7 +256,7 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
     """Фильтрует мусорные бренды из результатов Autopiter и Emex"""
     garbage_words = {
         'артикул', 'тестовый', 'клиента', 'ремень', 'грм', 'без артикула', 'оригинальная',
-        'дизель', 'дизеля', 'дизельный',
+        'дизель', 'дизеля', 'дизельный', 'дизел', 'дизелями', 'дизелям',
         'крышка', 'решетки', 'фен', 'строительный', 'полироль', 'mat', 'номер', 'корея',
         'русская', 'артель', 'освар', 'plak', 'zabectuaptukyl', 'zikmar', 'plak',
         'testartikul', 'euroflextestartikul', 'тестовый артикул', 'артикул клиента',
@@ -329,6 +329,7 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
         'СЕМНАДЦАТЬ','ВОСЕМНАДЦАТЬ','ДЕВЯТНАДЦАТЬ','ДВАДЦАТЬ'
     }
     # Словарь для объединения составных брендов
+    # УБРАЛИ 'diesel' и 'дизель' - это не бренд, а тип двигателя
     compound_brands = {
         'auto': 'AUTO-COMFORT',
         'comfort': 'AUTO-COMFORT',
@@ -336,8 +337,6 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
         'parts': 'HOT-PARTS',
         'g': 'G-BRAKE',
         'brake': 'G-BRAKE',
-        'diesel': 'ДИЗЕЛЬ',
-        'дизель': 'ДИЗЕЛЬ',
         'zevs': 'ZEVS',
         'z': 'ZEVS',
         'shaanxi': 'SHAANXI/SHACMAN',
@@ -389,15 +388,21 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
             continue
         
         # Проверяем, что бренд не является мусором
+        # Строгая проверка: точное совпадение И подстрока
+        is_garbage = (
+            brand_lower in garbage_words or
+            brand_lower in extra_garbage_exact or
+            brand_clean.upper() in ru_number_words or
+            any(garbage in brand_lower for garbage in garbage_words) or
+            any(garbage in brand_lower for garbage in extra_garbage_exact)
+        )
+        
         if (brand_clean and 
             len(brand_clean) > 1 and 
-            brand_lower not in garbage_words and
-            brand_lower not in extra_garbage_exact and
+            not is_garbage and
             not any(char.isdigit() for char in brand_clean) and
-            brand_clean.upper() not in ru_number_words and
             not brand_clean.startswith('...') and
-            not brand_clean.endswith('...') and
-            not any(garbage in brand_lower for garbage in garbage_words)):
+            not brand_clean.endswith('...')):
             # Нормализуем отображение
             filtered.append(normalize_brand_display(brand_clean))
     
@@ -741,6 +746,13 @@ def process_parsing_task(self, task_id):
                                             }
                                             results_autopiter.append(d)
                             else:
+                                # Если b2 пустой, но есть артикул, все равно проверяем b2 на мусор
+                                if b2:
+                                    filtered_b2 = filter_garbage_brands([b2])
+                                    if not filtered_b2:
+                                        continue  # Пропускаем, если это мусорный бренд
+                                    b2 = filtered_b2[0] if filtered_b2 else ''
+                                
                                 # Нормализуем артикул для предотвращения дублей
                                 normalized_article = normalize_article_for_compare(pn2)
                                 if normalized_article:  # Только если артикул не пустой после нормализации
@@ -748,7 +760,7 @@ def process_parsing_task(self, task_id):
                                         'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
                                         'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
                                         'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                        'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
+                                        'Бренд № 2': clean_excel_string(b2) if b2 else '',  # Результат парсинга (только если не пустой)
                                         'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
                                         'Источник': src
                                     }

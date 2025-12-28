@@ -520,18 +520,11 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str]:
-    """Получает бренды с Autopiter по артикулу - ОБНОВЛЕННАЯ ВЕРСИЯ"""
+    """Получает бренды с Autopiter по артикулу - ТОЛЬКО HTTP ЗАПРОСЫ (без Selenium)"""
     try:
         log_debug(f"АвтоПитер: начинаем парсинг {artikul}")
         
-        # ВСЕГДА используем Selenium для АвтоПитер, так как данные загружаются динамически
-        brands = parse_autopiter_selenium(artikul, proxy)
-        if brands:
-            log_debug(f"АвтоПитер Selenium: найдено {len(brands)} брендов")
-            return brands
-        
-        # Fallback: обычный requests (только если Selenium полностью не сработал)
-        log_debug(f"АвтоПитер: Selenium не сработал, пробуем requests")
+        # Используем только HTTP-запросы (без Selenium)
         url = f"https://autopiter.ru/goods/{quote(artikul)}"
         
         # Используем сессию для сохранения cookies
@@ -547,6 +540,18 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
         })
+        
+        # Настройка прокси, если указан
+        if proxy:
+            if isinstance(proxy, str):
+                if proxy.startswith('http://'):
+                    proxy = proxy[7:]  # Убираем 'http://'
+                proxy_dict = {
+                    'http': f'http://{proxy}',
+                    'https': f'http://{proxy}'
+                }
+                session.proxies.update(proxy_dict)
+                log_debug(f"АвтоПитер: использование прокси {proxy}")
         
         # Добавляем случайную задержку
         time.sleep(random.uniform(1, 3))
@@ -597,8 +602,15 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             if brand_lower.isdigit():
                 return
             
-            # Исключаем служебные слова
+            # Исключаем служебные слова - проверяем точное совпадение И подстроку
+            # Сначала проверяем точное совпадение (более строгая проверка)
+            if brand_lower in brand_exclude_tokens:
+                return
+            # Затем проверяем, является ли бренд частью исключаемых слов
             if any(exclude in brand_lower for exclude in brand_exclude_tokens):
+                return
+            # Также проверяем обратное - является ли исключаемое слово частью бренда
+            if any(brand_lower in exclude for exclude in brand_exclude_tokens if len(exclude) > len(brand_lower)):
                 return
             
             # Исключаем артикулы, начинающиеся с определенных префиксов
