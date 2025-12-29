@@ -466,7 +466,7 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
             if new_height == last_height:
                 no_change_count += 1
             else:
-            last_height = new_height
+                last_height = new_height
                 no_change_count = 0
             
             # Если несколько раз подряд ничего не изменилось, прекращаем прокрутку
