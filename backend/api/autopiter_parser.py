@@ -466,7 +466,7 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
             if new_height == last_height:
                 no_change_count += 1
             else:
-                last_height = new_height
+            last_height = new_height
                 no_change_count = 0
             
             # Если несколько раз подряд ничего не изменилось, прекращаем прокрутку
@@ -646,11 +646,29 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             if len(brand) < 2 or len(brand) > 50:
                 return
             
+            # Исключаем артикулы с форматом "2911033G1080", "2912021LE058", "2206010A86AD"
+            # Паттерн: начинается с цифр, затем буквы, затем цифры (или наоборот)
+            if re.match(r'^\d+[A-Z]+\d+', brand, re.IGNORECASE) or re.match(r'^[A-Z]+\d+[A-Z]+\d+', brand, re.IGNORECASE):
+                return
+            
+            # Исключаем артикулы с форматом типа "2911033G", "2206010A" (много цифр + одна буква)
+            if re.match(r'^\d{6,}[A-Z]{1,3}$', brand, re.IGNORECASE):
+                return
+            
+            # Исключаем артикулы с форматом типа "G1080", "LE058" (буквы + цифры, если цифр больше 3)
+            if re.match(r'^[A-Z]{1,4}\d{4,}$', brand, re.IGNORECASE):
+                return
+            
             # Исключаем значения, состоящие только из заглавных букв и цифр без пробелов (скорее всего артикулы)
             if brand.isupper() and not ' ' in brand and any(c.isdigit() for c in brand) and len(brand) > 5:
                 digit_ratio = sum(1 for c in brand if c.isdigit()) / len(brand)
                 if digit_ratio > 0.3:  # Если больше 30% цифр, то это артикул
                     return
+                
+            # Исключаем артикулы, где больше 60% символов - цифры (даже если есть буквы)
+            digit_count = sum(1 for c in brand if c.isdigit())
+            if digit_count > len(brand) * 0.6:
+                return
             
             brands.add(brand)
             if source:
@@ -692,7 +710,7 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                     brand_text = span.get_text(strip=True)
                     if brand_text:
                         all_texts_in_row.append(brand_text)
-                
+        
                 # 2. Пробуем через title
                 brand_spans_title = info_column.select('span[title]')
                 for span in brand_spans_title:

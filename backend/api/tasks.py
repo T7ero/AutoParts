@@ -300,8 +300,6 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
         'клапанной крышки', 'крышки', 'клапанной', 'производства', 'японии', 'hino',
         'гбц', 'прокладка', 'кольцо', 'стержня', 'капана', 'victor', 'reinz', 'маслосъемный',
         'колпачок', 'крышки', 'клапанной', 'производства', 'японии', 'hino', 'гбц', 'прокладка',
-        'Стремянка', 'Задней', 'Задний', 'Рессоры', 'Болт', 'Тормозной', 'Штанг', 'Рулевая',
-        'Сборе', 'Тяга', 'Правый', 'Кулак',
         # Emex specific garbage
         'emex', 'вакансии', 'контакты', 'аккумуляторы', 'возврат', 'вход', 'доставка', 'оплата',
         'корзина', 'найти', 'подобрать', 'деталь', 'компании', 'покупателям', 'поставщикам',
@@ -682,7 +680,15 @@ def process_parsing_task(self, task_id):
                 
                 # Правильное чтение данных из Excel с защитой от NaN
                 # A1: "Бренд № 1" - данные из колонки E входного файла (индекс 4)
-                brand_from_e = safe_cell_to_str(row.iloc[4]) if len(row) > 4 else ''
+                brand_from_e_raw = safe_cell_to_str(row.iloc[4]) if len(row) > 4 else ''
+                # Фильтруем "Бренд № 1" - убираем мусорные слова
+                brand_from_e = ''
+                if brand_from_e_raw:
+                    filtered_brand_1 = filter_garbage_brands([brand_from_e_raw])
+                    if filtered_brand_1:
+                        brand_from_e = filtered_brand_1[0]
+                    # Если после фильтрации пусто, оставляем пустым
+                
                 # B1: "Артикул по Бренду № 1" - данные из колонки F входного файла (индекс 5) - для записи в итоговый файл
                 part_number_from_f = safe_cell_to_str(row.iloc[5]) if len(row) > 5 else ''
                 # C1: "Наименование" - данные из колонки B входного файла (индекс 1)
@@ -731,10 +737,25 @@ def process_parsing_task(self, task_id):
                         for (b1, pn1, n1, b2, pn2, src) in parallel_results['autopiter']:
                             # Фильтруем бренд № 2 (результат парсинга)
                             if b2 and b2.strip():
+                                # Дополнительная проверка: если b2 похож на артикул, пропускаем
+                                b2_lower = b2.lower().strip()
+                                # Проверяем, не является ли b2 артикулом (начинается с цифр, содержит много цифр и т.д.)
+                                if (b2_lower.startswith('d-') or b2_lower.startswith('dz') or 
+                                    b2[0].isdigit() if b2 else False or
+                                    sum(1 for c in b2 if c.isdigit()) > len(b2) * 0.5):
+                                    continue  # Пропускаем, если это артикул
+                                
                                 filtered_brands = filter_garbage_brands([b2])
                                 if filtered_brands:
                                     # Создаем отдельную запись для каждого отфильтрованного бренда
                                     for filtered_brand in filtered_brands:
+                                        # Дополнительная проверка: убеждаемся, что это не артикул
+                                        if (filtered_brand.lower().startswith('d-') or 
+                                            filtered_brand.lower().startswith('dz') or
+                                            (filtered_brand and filtered_brand[0].isdigit()) or
+                                            sum(1 for c in filtered_brand if c.isdigit()) > len(filtered_brand) * 0.6):
+                                            continue  # Пропускаем артикулы
+                                        
                                         # Нормализуем артикул для предотвращения дублей
                                         normalized_article = normalize_article_for_compare(pn2)
                                         if normalized_article:  # Только если артикул не пустой после нормализации
@@ -772,10 +793,25 @@ def process_parsing_task(self, task_id):
                         for (b1, pn1, n1, b2, pn2, src) in parallel_results['emex']:
                             # Фильтруем бренд № 2 (результат парсинга)
                             if b2 and b2.strip():
+                                # Дополнительная проверка: если b2 похож на артикул, пропускаем
+                                b2_lower = b2.lower().strip()
+                                # Проверяем, не является ли b2 артикулом (начинается с цифр, содержит много цифр и т.д.)
+                                if (b2_lower.startswith('d-') or b2_lower.startswith('dz') or 
+                                    b2[0].isdigit() if b2 else False or
+                                    sum(1 for c in b2 if c.isdigit()) > len(b2) * 0.5):
+                                    continue  # Пропускаем, если это артикул
+                                
                                 filtered_brands = filter_garbage_brands([b2])
                                 if filtered_brands:
                                     # Создаем отдельную запись для каждого отфильтрованного бренда
                                     for filtered_brand in filtered_brands:
+                                        # Дополнительная проверка: убеждаемся, что это не артикул
+                                        if (filtered_brand.lower().startswith('d-') or 
+                                            filtered_brand.lower().startswith('dz') or
+                                            (filtered_brand and filtered_brand[0].isdigit()) or
+                                            sum(1 for c in filtered_brand if c.isdigit()) > len(filtered_brand) * 0.6):
+                                            continue  # Пропускаем артикулы
+                                        
                                         # Нормализуем артикул для предотвращения дублей
                                         normalized_article = normalize_article_for_compare(pn2)
                                         if normalized_article:  # Только если артикул не пустой после нормализации
@@ -789,6 +825,13 @@ def process_parsing_task(self, task_id):
                                             }
                                             results_emex.append(d)
                             else:
+                                # Если b2 пустой, но есть артикул, все равно проверяем b2 на мусор
+                                if b2:
+                                    filtered_b2 = filter_garbage_brands([b2])
+                                    if not filtered_b2:
+                                        continue  # Пропускаем, если это мусорный бренд
+                                    b2 = filtered_b2[0] if filtered_b2 else ''
+                                
                                 # Нормализуем артикул для предотвращения дублей
                                 normalized_article = normalize_article_for_compare(pn2)
                                 if normalized_article:  # Только если артикул не пустой после нормализации
@@ -796,7 +839,7 @@ def process_parsing_task(self, task_id):
                                         'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
                                         'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
                                         'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                        'Бренд № 2': clean_excel_string(b2),  # Результат парсинга
+                                        'Бренд № 2': clean_excel_string(b2) if b2 else '',  # Результат парсинга (только если не пустой)
                                         'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
                                         'Источник': src
                                     }
