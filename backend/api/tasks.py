@@ -300,6 +300,12 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
         'клапанной крышки', 'крышки', 'клапанной', 'производства', 'японии', 'hino',
         'гбц', 'прокладка', 'кольцо', 'стержня', 'капана', 'victor', 'reinz', 'маслосъемный',
         'колпачок', 'крышки', 'клапанной', 'производства', 'японии', 'hino', 'гбц', 'прокладка',
+        'болт', 'болты', 'гайка', 'шайба', 'винт', 'штифт', 'шпилька', 'заклепка',
+        'стремянка', 'рессора', 'рессоры', 'амортизатор', 'пружина', 'стойка',
+        'задний', 'задняя', 'заднее', 'задней', 'передний', 'передняя', 'переднее',
+        'левый', 'правый', 'верхний', 'нижний', 'внутренний', 'наружный',
+        'образный', 'u-образный', 'компас', 'грузовые', 'автозапчасти',
+        'дизель', 'дизеля', 'дизельный', 'дизел', 'дизелями', 'дизелям',
         # Emex specific garbage
         'emex', 'вакансии', 'контакты', 'аккумуляторы', 'возврат', 'вход', 'доставка', 'оплата',
         'корзина', 'найти', 'подобрать', 'деталь', 'компании', 'покупателям', 'поставщикам',
@@ -312,11 +318,12 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
     
     filtered = []
     brand_whitelist_tokens = {
-        'jac', 'faw', 'автокомпонент', 'autocomponent',
-        'sitrak', 'howo', 'wayteko', 'shaanxi', 'shacman',
-        'mobis', 'valeo', 'createk', 'weichai', 'htp', 'jmc',
-        'zevs', 'toyota / lexus', 'toyota/lexus', 'hino', 'nissan',
-        'hot-parts', 'tesla', 'autotech'
+        'jac', 'faw', 'автокомпонент', 'autocomponent', 'sitrak', 'howo', 
+        'wayteko', 'shaanxi', 'shacman', 'mobis', 'valeo', 'createk', 
+        'weichai', 'htp', 'jmc', 'zevs', 'toyota / lexus', 'toyota/lexus', 
+        'hino', 'nissan', 'hot-parts', 'tesla', 'autotech', 'isuzu', 'kamaz',
+        'movelex', 'wal', 'raider', 'anhui', 'jian', 'vignal', 'autocomfort',
+        'g-brake', 'zevs', 'shaanxi/shacman', 'jac diesel', 'jac diesel parts'
     }
     # Часто встречающиеся "мусорные" токены, которые были не покрыты ранее
     extra_garbage_exact = {
