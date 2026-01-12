@@ -258,6 +258,14 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
         'артикул', 'тестовый', 'клиента', 'ремень', 'грм', 'без артикула', 'оригинальная',
         'дизель', 'дизеля', 'дизельный', 'дизел', 'дизелями', 'дизелям',
         'крышка', 'решетки', 'фен', 'строительный', 'полироль', 'mat', 'номер', 'корея',
+        # Слова из описаний товаров Autopiter
+        'между', 'металл', 'накала', 'накаливания', 'накаткой', 'накаливания',
+        'муфта', 'муфтой', 'рулевой', 'колонки', 'набор', 'бит', 'сталь', 'шт',
+        'насос', 'гур', 'передней', 'рессоры', 'задне', 'задней', 'задни',
+        'втулка', 'кронштейн', 'осью', 'lh', 'rh', 'левая', 'правая',
+        'передняя', 'задняя', 'верхняя', 'нижняя', 'боковая',
+        'сцепления', 'диск', 'вала', 'карданный', 'подвесн', 'свеча',
+        'муфта рулевой колонки', 'набор бит х сталь шт', 'насос гур shacman',
         'русская', 'артель', 'освар', 'plak', 'zabectuaptukyl', 'zikmar', 'plak',
         'testartikul', 'euroflextestartikul', 'тестовый артикул', 'артикул клиента',
         'артикул №', 'без артикула', 'оригинальная', 'артикул', 'см предыдущий артикул',
@@ -300,12 +308,6 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
         'клапанной крышки', 'крышки', 'клапанной', 'производства', 'японии', 'hino',
         'гбц', 'прокладка', 'кольцо', 'стержня', 'капана', 'victor', 'reinz', 'маслосъемный',
         'колпачок', 'крышки', 'клапанной', 'производства', 'японии', 'hino', 'гбц', 'прокладка',
-        'болт', 'болты', 'гайка', 'шайба', 'винт', 'штифт', 'шпилька', 'заклепка',
-        'стремянка', 'рессора', 'рессоры', 'амортизатор', 'пружина', 'стойка',
-        'задний', 'задняя', 'заднее', 'задней', 'передний', 'передняя', 'переднее',
-        'левый', 'правый', 'верхний', 'нижний', 'внутренний', 'наружный',
-        'образный', 'u-образный', 'компас', 'грузовые', 'автозапчасти',
-        'дизель', 'дизеля', 'дизельный', 'дизел', 'дизелями', 'дизелям',
         # Emex specific garbage
         'emex', 'вакансии', 'контакты', 'аккумуляторы', 'возврат', 'вход', 'доставка', 'оплата',
         'корзина', 'найти', 'подобрать', 'деталь', 'компании', 'покупателям', 'поставщикам',
@@ -318,12 +320,11 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
     
     filtered = []
     brand_whitelist_tokens = {
-        'jac', 'faw', 'автокомпонент', 'autocomponent', 'sitrak', 'howo', 
-        'wayteko', 'shaanxi', 'shacman', 'mobis', 'valeo', 'createk', 
-        'weichai', 'htp', 'jmc', 'zevs', 'toyota / lexus', 'toyota/lexus', 
-        'hino', 'nissan', 'hot-parts', 'tesla', 'autotech', 'isuzu', 'kamaz',
-        'movelex', 'wal', 'raider', 'anhui', 'jian', 'vignal', 'autocomfort',
-        'g-brake', 'zevs', 'shaanxi/shacman', 'jac diesel', 'jac diesel parts'
+        'jac', 'faw', 'автокомпонент', 'autocomponent',
+        'sitrak', 'howo', 'wayteko', 'shaanxi', 'shacman',
+        'mobis', 'valeo', 'createk', 'weichai', 'htp', 'jmc',
+        'zevs', 'toyota / lexus', 'toyota/lexus', 'hino', 'nissan',
+        'hot-parts', 'tesla', 'autotech'
     }
     # Часто встречающиеся "мусорные" токены, которые были не покрыты ранее
     extra_garbage_exact = {
@@ -688,13 +689,22 @@ def process_parsing_task(self, task_id):
                 # Правильное чтение данных из Excel с защитой от NaN
                 # A1: "Бренд № 1" - данные из колонки E входного файла (индекс 4)
                 brand_from_e_raw = safe_cell_to_str(row.iloc[4]) if len(row) > 4 else ''
-                # Фильтруем "Бренд № 1" - убираем мусорные слова
+                # Фильтруем "Бренд № 1" - убираем мусорные слова и артикулы
                 brand_from_e = ''
                 if brand_from_e_raw:
-                    filtered_brand_1 = filter_garbage_brands([brand_from_e_raw])
-                    if filtered_brand_1:
-                        brand_from_e = filtered_brand_1[0]
-                    # Если после фильтрации пусто, оставляем пустым
+                    brand_from_e_raw_lower = brand_from_e_raw.lower().strip()
+                    # Проверяем, не является ли это артикулом (начинается с d-, dz, содержит много цифр и т.д.)
+                    if (brand_from_e_raw_lower.startswith('d-') or 
+                        brand_from_e_raw_lower.startswith('dz') or
+                        brand_from_e_raw[0].isdigit() if brand_from_e_raw else False or
+                        sum(1 for c in brand_from_e_raw if c.isdigit()) > len(brand_from_e_raw) * 0.5):
+                        # Это артикул, не бренд - оставляем пустым
+                        brand_from_e = ''
+                    else:
+                        filtered_brand_1 = filter_garbage_brands([brand_from_e_raw])
+                        if filtered_brand_1:
+                            brand_from_e = filtered_brand_1[0]
+                        # Если после фильтрации пусто, оставляем пустым
                 
                 # B1: "Артикул по Бренду № 1" - данные из колонки F входного файла (индекс 5) - для записи в итоговый файл
                 part_number_from_f = safe_cell_to_str(row.iloc[5]) if len(row) > 5 else ''
