@@ -689,28 +689,29 @@ def process_parsing_task(self, task_id):
                 # Правильное чтение данных из Excel с защитой от NaN
                 # A1: "Бренд № 1" - данные из колонки E входного файла (индекс 4)
                 brand_from_e_raw = safe_cell_to_str(row.iloc[4]) if len(row) > 4 else ''
-                # Фильтруем "Бренд № 1" - убираем только явные артикулы и мусорные слова
-                # По умолчанию используем значение из входного файла
+                # Для "Бренд № 1" используем данные из входного файла БЕЗ фильтрации мусорных слов
+                # Фильтруем только явные артикулы (начинается с d- и содержит цифры)
+                # Мусорные слова фильтруются только в результатах парсинга (Бренд № 2), а не во входных данных
                 brand_from_e = brand_from_e_raw.strip() if brand_from_e_raw else ''
                 
                 if brand_from_e:
                     brand_from_e_raw_lower = brand_from_e.lower()
                     
-                    # Явные мусорные слова, которые точно не бренды
-                    explicit_garbage = {'дизель', 'дизеля', 'дизельный', 'артикул', 'номер', 'код', 'тестовый', 'клиента', 'без артикула'}
-                    if brand_from_e_raw_lower in explicit_garbage:
-                        log(f"Строка {index + 1}: фильтруем 'Бренд № 1' '{brand_from_e}' как мусорное слово")
-                        brand_from_e = ''
                     # Проверяем, не является ли это явным артикулом (начинается с d- и содержит цифры, или чисто цифровой)
-                    elif (brand_from_e_raw_lower.startswith('d-') and any(c.isdigit() for c in brand_from_e) or
-                          brand_from_e_raw_lower.startswith('dz') and any(c.isdigit() for c in brand_from_e) or
-                          (brand_from_e and brand_from_e[0].isdigit() and 
-                           sum(1 for c in brand_from_e if c.isdigit()) > len(brand_from_e) * 0.7)):
+                    # НЕ фильтруем мусорные слова из входного файла - они могут быть валидными брендами
+                    is_article = (
+                        (brand_from_e_raw_lower.startswith('d-') and any(c.isdigit() for c in brand_from_e)) or
+                        (brand_from_e_raw_lower.startswith('dz') and any(c.isdigit() for c in brand_from_e)) or
+                        (brand_from_e and brand_from_e[0].isdigit() and 
+                         sum(1 for c in brand_from_e if c.isdigit()) > len(brand_from_e) * 0.7)
+                    )
+                    
+                    if is_article:
                         # Это явный артикул, не бренд - оставляем пустым
                         log(f"Строка {index + 1}: фильтруем 'Бренд № 1' '{brand_from_e}' как артикул")
                         brand_from_e = ''
                     else:
-                        # Это потенциально валидный бренд - используем как есть
+                        # Используем значение из входного файла как есть (включая "Дизель" и другие)
                         log(f"Строка {index + 1}: используем 'Бренд № 1' '{brand_from_e}' из входного файла")
                 
                 # B1: "Артикул по Бренду № 1" - данные из колонки F входного файла (индекс 5) - для записи в итоговый файл
