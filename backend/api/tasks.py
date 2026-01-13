@@ -689,22 +689,27 @@ def process_parsing_task(self, task_id):
                 # Правильное чтение данных из Excel с защитой от NaN
                 # A1: "Бренд № 1" - данные из колонки E входного файла (индекс 4)
                 brand_from_e_raw = safe_cell_to_str(row.iloc[4]) if len(row) > 4 else ''
-                # Фильтруем "Бренд № 1" - убираем мусорные слова и артикулы
+                # Фильтруем "Бренд № 1" - убираем только явные артикулы и мусорные слова
                 brand_from_e = ''
                 if brand_from_e_raw:
-                    brand_from_e_raw_lower = brand_from_e_raw.lower().strip()
-                    # Проверяем, не является ли это артикулом (начинается с d-, dz, содержит много цифр и т.д.)
-                    if (brand_from_e_raw_lower.startswith('d-') or 
-                        brand_from_e_raw_lower.startswith('dz') or
-                        brand_from_e_raw[0].isdigit() if brand_from_e_raw else False or
-                        sum(1 for c in brand_from_e_raw if c.isdigit()) > len(brand_from_e_raw) * 0.5):
-                        # Это артикул, не бренд - оставляем пустым
+                    brand_from_e_raw = brand_from_e_raw.strip()
+                    brand_from_e_raw_lower = brand_from_e_raw.lower()
+                    
+                    # Явные мусорные слова, которые точно не бренды
+                    explicit_garbage = {'дизель', 'дизеля', 'дизельный', 'артикул', 'номер', 'код', 'тестовый', 'клиента'}
+                    if brand_from_e_raw_lower in explicit_garbage:
+                        brand_from_e = ''
+                    # Проверяем, не является ли это явным артикулом (начинается с d-, dz, или чисто цифровой)
+                    elif (brand_from_e_raw_lower.startswith('d-') or 
+                          brand_from_e_raw_lower.startswith('dz') or
+                          (brand_from_e_raw and brand_from_e_raw[0].isdigit() and 
+                           sum(1 for c in brand_from_e_raw if c.isdigit()) > len(brand_from_e_raw) * 0.6)):
+                        # Это явный артикул, не бренд - оставляем пустым
                         brand_from_e = ''
                     else:
-                        filtered_brand_1 = filter_garbage_brands([brand_from_e_raw])
-                        if filtered_brand_1:
-                            brand_from_e = filtered_brand_1[0]
-                        # Если после фильтрации пусто, оставляем пустым
+                        # Это потенциально валидный бренд - используем как есть
+                        # (filter_garbage_brands применяется только к результатам парсинга, не к входным данным)
+                        brand_from_e = brand_from_e_raw
                 
                 # B1: "Артикул по Бренду № 1" - данные из колонки F входного файла (индекс 5) - для записи в итоговый файл
                 part_number_from_f = safe_cell_to_str(row.iloc[5]) if len(row) > 5 else ''
