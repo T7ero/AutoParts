@@ -586,7 +586,7 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             'накладка', 'тормозная', 'задняя', 'колесо',
             'производители', 'часто ищут', 'рекомендуем', 'сверла техмаш',
             'тестовый', 'клиента', 'без артикула', 'оригинальная',
-            'дизель', 'дизеля', 'дизельный',
+            'дизель', 'дизеля', 'дизельный', 'diesel', 'diesel part', 'diesel part:',
             'запчасть', 'китай', 'россия', 'россий', 'китайск',
             'производитель', 'бренд', 'артикул', 'номер', 'код',
             'наименование', 'название', 'описание',
@@ -613,6 +613,9 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             # Исключаем служебные слова - проверяем точное совпадение И подстроку
             # Сначала проверяем точное совпадение (более строгая проверка)
             if brand_lower in brand_exclude_tokens:
+                return
+            # Проверяем специальные случаи типа "diesel part", "diesel part:"
+            if 'diesel' in brand_lower and ('part' in brand_lower or 'parts' in brand_lower):
                 return
             # Затем проверяем, является ли бренд частью исключаемых слов
             if any(exclude in brand_lower for exclude in brand_exclude_tokens):

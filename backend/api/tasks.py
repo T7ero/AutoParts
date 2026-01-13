@@ -256,7 +256,7 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
     """Фильтрует мусорные бренды из результатов Autopiter и Emex"""
     garbage_words = {
         'артикул', 'тестовый', 'клиента', 'ремень', 'грм', 'без артикула', 'оригинальная',
-        'дизель', 'дизеля', 'дизельный', 'дизел', 'дизелями', 'дизелям',
+        'дизель', 'дизеля', 'дизельный', 'дизел', 'дизелями', 'дизелям', 'diesel', 'diesel part', 'diesel part:',
         'крышка', 'решетки', 'фен', 'строительный', 'полироль', 'mat', 'номер', 'корея',
         # Слова из описаний товаров Autopiter
         'между', 'металл', 'накала', 'накаливания', 'накаткой', 'накаливания',
@@ -690,26 +690,28 @@ def process_parsing_task(self, task_id):
                 # A1: "Бренд № 1" - данные из колонки E входного файла (индекс 4)
                 brand_from_e_raw = safe_cell_to_str(row.iloc[4]) if len(row) > 4 else ''
                 # Фильтруем "Бренд № 1" - убираем только явные артикулы и мусорные слова
-                brand_from_e = ''
-                if brand_from_e_raw:
-                    brand_from_e_raw = brand_from_e_raw.strip()
-                    brand_from_e_raw_lower = brand_from_e_raw.lower()
+                # По умолчанию используем значение из входного файла
+                brand_from_e = brand_from_e_raw.strip() if brand_from_e_raw else ''
+                
+                if brand_from_e:
+                    brand_from_e_raw_lower = brand_from_e.lower()
                     
                     # Явные мусорные слова, которые точно не бренды
-                    explicit_garbage = {'дизель', 'дизеля', 'дизельный', 'артикул', 'номер', 'код', 'тестовый', 'клиента'}
+                    explicit_garbage = {'дизель', 'дизеля', 'дизельный', 'артикул', 'номер', 'код', 'тестовый', 'клиента', 'без артикула'}
                     if brand_from_e_raw_lower in explicit_garbage:
+                        log(f"Строка {index + 1}: фильтруем 'Бренд № 1' '{brand_from_e}' как мусорное слово")
                         brand_from_e = ''
-                    # Проверяем, не является ли это явным артикулом (начинается с d-, dz, или чисто цифровой)
-                    elif (brand_from_e_raw_lower.startswith('d-') or 
-                          brand_from_e_raw_lower.startswith('dz') or
-                          (brand_from_e_raw and brand_from_e_raw[0].isdigit() and 
-                           sum(1 for c in brand_from_e_raw if c.isdigit()) > len(brand_from_e_raw) * 0.6)):
+                    # Проверяем, не является ли это явным артикулом (начинается с d- и содержит цифры, или чисто цифровой)
+                    elif (brand_from_e_raw_lower.startswith('d-') and any(c.isdigit() for c in brand_from_e) or
+                          brand_from_e_raw_lower.startswith('dz') and any(c.isdigit() for c in brand_from_e) or
+                          (brand_from_e and brand_from_e[0].isdigit() and 
+                           sum(1 for c in brand_from_e if c.isdigit()) > len(brand_from_e) * 0.7)):
                         # Это явный артикул, не бренд - оставляем пустым
+                        log(f"Строка {index + 1}: фильтруем 'Бренд № 1' '{brand_from_e}' как артикул")
                         brand_from_e = ''
                     else:
                         # Это потенциально валидный бренд - используем как есть
-                        # (filter_garbage_brands применяется только к результатам парсинга, не к входным данным)
-                        brand_from_e = brand_from_e_raw
+                        log(f"Строка {index + 1}: используем 'Бренд № 1' '{brand_from_e}' из входного файла")
                 
                 # B1: "Артикул по Бренду № 1" - данные из колонки F входного файла (индекс 5) - для записи в итоговый файл
                 part_number_from_f = safe_cell_to_str(row.iloc[5]) if len(row) > 5 else ''
