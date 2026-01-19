@@ -753,14 +753,14 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                     if span_text and len(span_text) > 1 and len(span_text) < 50:
                         all_texts_in_row.append(span_text)
                 
-                # 4. Пробуем получить текст напрямую из infoColumn
+                # 4. Пробуем получить текст напрямую из infoColumn как единый кандидат бренда
+                # РАНЬШЕ здесь мы разбивали строку на отдельные слова, из‑за чего
+                # составные бренды вроде "Big Filter", "Abby Belt", "Teknorot Otomotiv",
+                # "Meritor (Ror)" превращались в несколько брендов ("Big", "Filter" и т.п.).
+                # Теперь добавляем только полный текст как один кандидат.
                 direct_text = info_column.get_text(strip=True, separator=' ')
-                if direct_text:
-                    # Разбиваем на слова и проверяем каждое
-                    words = direct_text.split()
-                    for word in words:
-                        if len(word) > 1 and len(word) < 50:
-                            all_texts_in_row.append(word)
+                if direct_text and 1 < len(direct_text) < 80:
+                    all_texts_in_row.append(direct_text)
                 
                 # Регистрируем все найденные тексты как потенциальные бренды
                 for text in all_texts_in_row:
