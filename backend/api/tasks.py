@@ -24,6 +24,7 @@ import queue
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from typing import List, Dict, Optional, Set
+import os
 from celery.utils.log import get_task_logger
 from datetime import datetime
 # Кэш для ускорения работы парсера
@@ -697,6 +698,19 @@ def process_parsing_task(self, task_id):
 
             return results
         
+        # Статистика качества данных по ходу обработки
+        stats = {
+            'rows_processed': 0,
+            'brand1_filtered_as_article': 0,
+            'brand2_filtered_as_article': 0,
+            'brand2_filtered_as_garbage': 0,
+            'unique_brands': {
+                'autopiter': set(),
+                'emex': set(),
+                'armtek': set(),
+            }
+        }
+
         # Основной цикл с улучшенной обработкой ошибок и предотвращением бесконечного цикла
         for index, row in df.iterrows():
             try:
@@ -732,6 +746,7 @@ def process_parsing_task(self, task_id):
                     
                     if is_article:
                         # Это явный артикул, не бренд - оставляем пустым
+                        stats['brand1_filtered_as_article'] += 1
                         log(f"Строка {index + 1}: фильтруем 'Бренд № 1' '{brand_from_e}' как артикул")
                         brand_from_e = ''
                     else:
@@ -792,6 +807,7 @@ def process_parsing_task(self, task_id):
                                 if (b2_lower.startswith('d-') or b2_lower.startswith('dz') or 
                                     b2[0].isdigit() if b2 else False or
                                     sum(1 for c in b2 if c.isdigit()) > len(b2) * 0.5):
+                                    stats['brand2_filtered_as_article'] += 1
                                     continue  # Пропускаем, если это артикул
                                 
                                 filtered_brands = filter_garbage_brands([b2])
@@ -803,6 +819,7 @@ def process_parsing_task(self, task_id):
                                             filtered_brand.lower().startswith('dz') or
                                             (filtered_brand and filtered_brand[0].isdigit()) or
                                             sum(1 for c in filtered_brand if c.isdigit()) > len(filtered_brand) * 0.6):
+                                            stats['brand2_filtered_as_article'] += 1
                                             continue  # Пропускаем артикулы
                                         
                                         # Нормализуем артикул для предотвращения дублей
@@ -817,11 +834,13 @@ def process_parsing_task(self, task_id):
                                                 'Источник': src
                                             }
                                             results_autopiter.append(d)
+                                            stats['unique_brands']['autopiter'].add(filtered_brand)
                             else:
                                 # Если b2 пустой, но есть артикул, все равно проверяем b2 на мусор
                                 if b2:
                                     filtered_b2 = filter_garbage_brands([b2])
                                     if not filtered_b2:
+                                        stats['brand2_filtered_as_garbage'] += 1
                                         continue  # Пропускаем, если это мусорный бренд
                                     b2 = filtered_b2[0] if filtered_b2 else ''
                                 
@@ -837,6 +856,8 @@ def process_parsing_task(self, task_id):
                                         'Источник': src
                                     }
                                     results_autopiter.append(d)
+                                    if b2:
+                                        stats['unique_brands']['autopiter'].add(b2)
                         
                         # Обрабатываем результаты Emex для текущего артикула
                         for (b1, pn1, n1, b2, pn2, src) in parallel_results['emex']:
@@ -848,6 +869,7 @@ def process_parsing_task(self, task_id):
                                 if (b2_lower.startswith('d-') or b2_lower.startswith('dz') or 
                                     b2[0].isdigit() if b2 else False or
                                     sum(1 for c in b2 if c.isdigit()) > len(b2) * 0.5):
+                                    stats['brand2_filtered_as_article'] += 1
                                     continue  # Пропускаем, если это артикул
                                 
                                 filtered_brands = filter_garbage_brands([b2])
@@ -859,6 +881,7 @@ def process_parsing_task(self, task_id):
                                             filtered_brand.lower().startswith('dz') or
                                             (filtered_brand and filtered_brand[0].isdigit()) or
                                             sum(1 for c in filtered_brand if c.isdigit()) > len(filtered_brand) * 0.6):
+                                            stats['brand2_filtered_as_article'] += 1
                                             continue  # Пропускаем артикулы
                                         
                                         # Нормализуем артикул для предотвращения дублей
@@ -873,11 +896,13 @@ def process_parsing_task(self, task_id):
                                                 'Источник': src
                                             }
                                             results_emex.append(d)
+                                            stats['unique_brands']['emex'].add(filtered_brand)
                             else:
                                 # Если b2 пустой, но есть артикул, все равно проверяем b2 на мусор
                                 if b2:
                                     filtered_b2 = filter_garbage_brands([b2])
                                     if not filtered_b2:
+                                        stats['brand2_filtered_as_garbage'] += 1
                                         continue  # Пропускаем, если это мусорный бренд
                                     b2 = filtered_b2[0] if filtered_b2 else ''
                                 
@@ -893,6 +918,8 @@ def process_parsing_task(self, task_id):
                                         'Источник': src
                                     }
                                     results_emex.append(d)
+                                    if b2:
+                                        stats['unique_brands']['emex'].add(b2)
                         
                         # Armtek (Selenium) - оптимизированная версия (если выбран)
                         def parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b):
@@ -985,6 +1012,7 @@ def process_parsing_task(self, task_id):
                 
                 # Увеличиваем счетчик обработанных строк
                 task._processed_rows += 1
+                stats['rows_processed'] += 1
                 
                 # Обновляем статус каждые 3 строки для более частого обновления
                 if (index + 1) % 3 == 0 or index == total_rows - 1:
@@ -1106,6 +1134,42 @@ def process_parsing_task(self, task_id):
                 log(f"Файл Emex добавлен в result_files: {emex_file}")
         except Exception as e:
             log(f"Критическая ошибка при создании Excel файлов: {str(e)}")
+        
+        # Итоговый отчёт по качеству и уникальным брендам
+        try:
+            os.makedirs('media/results', exist_ok=True)
+
+            summary_lines = [
+                f"Обработано строк: {stats['rows_processed']} из {total_rows}",
+                f"Бренд №1 отфильтрован как артикул: {stats['brand1_filtered_as_article']}",
+                f"Бренд №2 отфильтрован как артикул: {stats['brand2_filtered_as_article']}",
+                f"Бренд №2 отфильтрован как мусор: {stats['brand2_filtered_as_garbage']}",
+                "",
+                f"Уникальные бренды Autopiter: {len(stats['unique_brands']['autopiter'])}",
+                f"Уникальные бренды Emex: {len(stats['unique_brands']['emex'])}",
+                f"Уникальные бренды Armtek: {len(stats['unique_brands']['armtek'])}",
+            ]
+
+            summary_path = f"media/results/summary_{task.id}.txt"
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(summary_lines))
+            task.result_files = task.result_files or {}
+            task.result_files['summary'] = summary_path
+            log(f"Создан файл summary: {summary_path}")
+
+            # Экспорт уникальных брендов в отдельный Excel
+            unique_rows = []
+            for source_name, brands_set in stats['unique_brands'].items():
+                for b in sorted(brands_set):
+                    unique_rows.append({'Источник': source_name, 'Бренд': b})
+            if unique_rows:
+                df_unique = pd.DataFrame(unique_rows)
+                unique_path = f"media/results/unique_brands_{task.id}.xlsx"
+                df_unique.to_excel(unique_path, index=False, engine='openpyxl')
+                task.result_files['unique_brands'] = unique_path
+                log(f"Создан файл уникальных брендов: {unique_path}")
+        except Exception as e:
+            log(f"Ошибка создания итогового отчёта или файла уникальных брендов: {str(e)}")
         
         # Принудительно сохраняем task с файлами
         update_task_fields(status='completed', result_files=task.result_files)
