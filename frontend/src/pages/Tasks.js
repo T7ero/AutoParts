@@ -168,6 +168,46 @@ function Tasks() {
     }
   };
 
+  const handleDownloadStats = async (task) => {
+    if (task.status !== 'completed' || !task.result_files) return;
+
+    const statsTypes = ['summary', 'unique_brands'];
+
+    for (const type of statsTypes) {
+      if (!task.result_files[type]) continue;
+      try {
+        const response = await axios.get(
+          `/api/parsing-tasks/${task.id}/download-stats/?type=${type}`,
+          {
+            headers: {
+              'Authorization': `Token ${localStorage.getItem('token')}`,
+            },
+            responseType: 'blob',
+          }
+        );
+
+        const url = window.URL.createObjectURL(new Blob([response.data]));
+        const link = document.createElement('a');
+
+        const baseName =
+          type === 'summary'
+            ? `summary_result_${task.id}.xlsx`
+            : `unique_brands_result_${task.id}.xlsx`;
+
+        link.href = url;
+        link.setAttribute('download', baseName);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      } catch (err) {
+        console.error(`Ошибка при скачивании статистики (${type}):`, err);
+      }
+    }
+  };
+
   const getStatusColor = (status) => {
     switch (status) {
       case 'completed': return 'text-green-600 dark:text-green-400';
@@ -324,14 +364,22 @@ function Tasks() {
 
                     <div className="flex flex-col space-y-2 ml-4">
                       {task.status === 'completed' && (
-                        <button
-                          onClick={() => handleDownloadResult(task)}
-                          className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-sm"
-                        >
-                          Скачать все результаты
-                        </button>
+                        <>
+                          <button
+                            onClick={() => handleDownloadResult(task)}
+                            className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-sm"
+                          >
+                            Скачать результаты
+                          </button>
+                          <button
+                            onClick={() => handleDownloadStats(task)}
+                            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors text-sm"
+                          >
+                            Скачать статистику
+                          </button>
+                        </>
                       )}
-                      
+
                       <button
                         onClick={() => handleDeleteTask(task.id)}
                         className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors text-sm"

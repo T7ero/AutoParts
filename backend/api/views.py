@@ -418,3 +418,56 @@ def download_site_result(request, task_id, site):
         return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def download_stats(request, task_id):
+    """
+    Скачать файлы статистики (summary и unique_brands) для задачи.
+    Возвращает один файл за запрос – summary или unique_brands,
+    в зависимости от параметра ?type=summary|unique_brands.
+    """
+    try:
+        task = ParsingTask.objects.get(id=task_id)
+
+        if task.status != 'completed':
+            return Response({'error': 'Задача не завершена'}, status=status.HTTP_400_BAD_REQUEST)
+
+        stats_type = request.GET.get('type', 'summary')
+        if not task.result_files or stats_type not in task.result_files:
+            return Response({'error': f'Файл статистики {stats_type} не найден'}, status=status.HTTP_404_NOT_FOUND)
+
+        file_path = task.result_files[stats_type]
+
+        import os
+        from django.conf import settings
+        from django.http import FileResponse
+
+        # Формируем полный путь
+        if file_path.startswith('media/'):
+            relative_path = file_path[6:]
+            full_path = os.path.join(settings.MEDIA_ROOT, relative_path)
+        elif file_path.startswith('/'):
+            full_path = file_path
+        else:
+            full_path = os.path.join(settings.MEDIA_ROOT, file_path)
+
+        if not os.path.exists(full_path):
+            return Response({'error': 'Файл не найден на диске'}, status=status.HTTP_404_NOT_FOUND)
+
+        filename_map = {
+            'summary': f'summary_result_{task_id}.xlsx',
+            'unique_brands': f'unique_brands_result_{task_id}.xlsx',
+        }
+        download_name = filename_map.get(stats_type, os.path.basename(full_path))
+
+        response = FileResponse(open(full_path, 'rb'))
+        response['Content-Type'] = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        response['Content-Disposition'] = f'attachment; filename="{download_name}"'
+        return response
+
+    except ParsingTask.DoesNotExist:
+        return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
