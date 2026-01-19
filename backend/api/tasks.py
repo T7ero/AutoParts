@@ -1150,12 +1150,14 @@ def process_parsing_task(self, task_id):
                 f"Уникальные бренды Armtek: {len(stats['unique_brands']['armtek'])}",
             ]
 
-            summary_path = f"media/results/summary_{task.id}.txt"
-            with open(summary_path, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(summary_lines))
+            # Сохраняем summary в Excel (чтобы Excel открывался без ошибок)
+            summary_df = pd.DataFrame([line.split(': ', 1) for line in summary_lines if line],
+                                      columns=['Показатель', 'Значение'])
+            summary_path = f"media/results/summary_{task.id}.xlsx"
             task.result_files = task.result_files or {}
+            summary_df.to_excel(summary_path, index=False, engine='openpyxl')
             task.result_files['summary'] = summary_path
-            log(f"Создан файл summary: {summary_path}")
+            log(f"Создан файл summary (xlsx): {summary_path}")
 
             # Экспорт уникальных брендов в отдельный Excel
             unique_rows = []
