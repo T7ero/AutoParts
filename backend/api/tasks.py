@@ -15,6 +15,7 @@ from .autopiter_parser import (
     filter_armtek_brands
 )
 import re
+import unicodedata
 import concurrent.futures
 import time
 import gc
@@ -114,6 +115,8 @@ def normalize_article_for_compare(article: str) -> str:
     if not article:
         return ''
     a = article.upper().strip()
+    # Unicode-нормализация + защита от неразрывных/нулевой ширины пробелов
+    a = unicodedata.normalize("NFKC", a).replace("\u00A0", " ").replace("\u200B", "")
     
     # Маппинг русских букв на английские для унификации
     ru_to_en_map = {
@@ -176,8 +179,29 @@ def normalize_brand_for_compare(brand: str) -> str:
     if not brand:
         return ''
     b = str(brand).upper().strip()
-    # Оставляем только буквы и цифры (рус/лат)
-    b = re.sub(r"[^0-9A-ZА-ЯЁ]+", "", b)
+    # Unicode-нормализация + защита от неразрывных/нулевой ширины пробелов
+    b = unicodedata.normalize("NFKC", b).replace("\u00A0", " ").replace("\u200B", "")
+
+    # Маппинг похожих русских букв на английские для унификации (частая причина "видимых" дублей)
+    ru_to_en_map = {
+        'А': 'A',
+        'В': 'B',
+        'М': 'M',
+        'Р': 'P',
+        'Е': 'E',
+        'О': 'O',
+        'С': 'C',
+        'Х': 'X',
+        'К': 'K',
+        'Н': 'H',
+        'Т': 'T',
+        'У': 'Y',
+    }
+    for ru_char, en_char in ru_to_en_map.items():
+        b = b.replace(ru_char, en_char)
+
+    # Оставляем только буквы и цифры
+    b = re.sub(r"[^0-9A-Z]+", "", b)
     return b
 
 def normalize_brand_display(brand: str) -> str:
