@@ -756,9 +756,11 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                 # 4. Пробуем получить текст напрямую из infoColumn
                 direct_text = info_column.get_text(strip=True, separator=' ')
                 if direct_text:
-                    # ВАЖНО: не разбиваем на слова — иначе многословные бренды ("Carville Racing", "Golden Asia")
-                    # превращаются в отдельные "Carville" и "Racing".
-                    all_texts_in_row.append(direct_text)
+                    # Разбиваем на слова и проверяем каждое
+                    words = direct_text.split()
+                    for word in words:
+                        if len(word) > 1 and len(word) < 50:
+                            all_texts_in_row.append(word)
                 
                 # Регистрируем все найденные тексты как потенциальные бренды
                 for text in all_texts_in_row:

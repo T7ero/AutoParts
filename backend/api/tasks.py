@@ -343,10 +343,7 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
         'персональных', 'данных', 'сотрудничество', 'товары', 'щетки', 'стеклоочистителя'
     }
     
-    filtered: List[str] = []
-    # Дедупликация брендов на уровне результатов, иначе Emex (и иногда Autopiter)
-    # может возвращать один и тот же бренд разными путями/в разных списках.
-    seen_norm: set = set()
+    filtered = []
     brand_whitelist_tokens = {
         'jac', 'faw', 'автокомпонент', 'autocomponent',
         'sitrak', 'howo', 'wayteko', 'shaanxi', 'shacman',
@@ -399,28 +396,17 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
                     compound_brand = compound_brands.get(part1_lower) or compound_brands.get(part2_lower)
                     if compound_brand and compound_brand not in processed_brands:
                         processed_brands.add(compound_brand)
-                        cb_norm = normalize_brand_for_compare(compound_brand)
-                        if cb_norm and cb_norm not in seen_norm:
-                            seen_norm.add(cb_norm)
-                            filtered.append(compound_brand)
+                        filtered.append(compound_brand)
                         continue
                 # Если обе части в whitelist, оставляем как есть
                 if (part1_lower in brand_whitelist_tokens or part2_lower in brand_whitelist_tokens):
-                    display = normalize_brand_display(brand_clean)
-                    norm = normalize_brand_for_compare(display)
-                    if norm and norm not in seen_norm:
-                        seen_norm.add(norm)
-                        filtered.append(display)
+                    filtered.append(normalize_brand_display(brand_clean))
                     continue
 
         whitelist_match = False
         for token in brand_whitelist_tokens:
             if brand_lower == token or brand_lower.startswith(f"{token} ") or brand_lower.startswith(f"{token}/"):
-                display = normalize_brand_display(brand_clean)
-                norm = normalize_brand_for_compare(display)
-                if norm and norm not in seen_norm:
-                    seen_norm.add(norm)
-                    filtered.append(display)
+                filtered.append(normalize_brand_display(brand_clean))
                 whitelist_match = True
                 break
         if whitelist_match:
@@ -431,10 +417,7 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
             compound_brand = compound_brands[brand_lower]
             if compound_brand not in processed_brands:
                 processed_brands.add(compound_brand)
-                cb_norm = normalize_brand_for_compare(compound_brand)
-                if cb_norm and cb_norm not in seen_norm:
-                    seen_norm.add(cb_norm)
-                    filtered.append(compound_brand)
+                filtered.append(compound_brand)
             continue
         
         # Проверяем, что бренд не является мусором
@@ -454,29 +437,8 @@ def filter_garbage_brands(brands: List[str]) -> List[str]:
             not brand_clean.startswith('...') and
             not brand_clean.endswith('...')):
             # Нормализуем отображение
-            display = normalize_brand_display(brand_clean)
-            norm = normalize_brand_for_compare(display)
-            if norm and norm not in seen_norm:
-                seen_norm.add(norm)
-                filtered.append(display)
-
-    # Emex часто отдает одновременно составной бренд и его части:
-    # "Carville Racing" + "Carville" + "Racing", "Golden Asia" + "Golden" + "Asia".
-    # Если составной бренд присутствует, удаляем его однословные компоненты.
-    multi_word_tokens: set = set()
-    for b in filtered:
-        low = (b or "").strip().lower()
-        if " " in low:
-            for tok in re.split(r"\s+", low):
-                if tok:
-                    multi_word_tokens.add(tok)
-
-    if multi_word_tokens:
-        filtered = [
-            b for b in filtered
-            if not ((b or "").strip().lower() in multi_word_tokens and " " not in (b or "").strip())
-        ]
-
+            filtered.append(normalize_brand_display(brand_clean))
+    
     return filtered
 
 def split_large_file(file_path: str, max_rows_per_batch: int = 100) -> List[str]:
