@@ -3,16 +3,8 @@ FROM python:3.11-slim
 # Устанавливаем переменные окружения
 ENV PYTHONUNBUFFERED=1
 ENV DISPLAY=:99
-ENV DEBIAN_FRONTEND=noninteractive
-ENV APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE=1
 
-# Настраиваем таймауты для apt-get (предотвращаем зависания)
-RUN echo 'Acquire::http::Timeout "300";' > /etc/apt/apt.conf.d/99timeout && \
-    echo 'Acquire::ftp::Timeout "300";' >> /etc/apt/apt.conf.d/99timeout && \
-    echo 'Acquire::https::Timeout "300";' >> /etc/apt/apt.conf.d/99timeout && \
-    echo 'Acquire::Retries "5";' >> /etc/apt/apt.conf.d/99timeout
-
-# Обновляем систему и устанавливаем все зависимости за один раз (оптимизация кэша)
+# Обновляем систему и устанавливаем базовые зависимости
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -25,6 +17,28 @@ RUN apt-get update && \
         xvfb \
         sudo \
         gosu \
+        && rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем Chromium и ChromeDriver
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        chromium \
+        chromium-driver \
+        && rm -rf /var/lib/apt/lists/*
+
+# Создаем символические ссылки для совместимости
+RUN ln -sf /usr/bin/chromium /usr/bin/google-chrome && \
+    ln -sf /usr/bin/chromedriver /usr/local/bin/chromedriver
+
+# Создаем пользователя для запуска приложения
+RUN groupadd -r appuser && \
+    useradd -r -g appuser -G audio,video appuser && \
+    mkdir -p /home/appuser && \
+    chown -R appuser:appuser /home/appuser && \
+    echo "appuser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+# Устанавливаем дополнительные зависимости
+RUN apt-get update && apt-get install -y --no-install-recommends \
         procps \
         gcc \
         fonts-liberation \
@@ -43,25 +57,6 @@ RUN apt-get update && \
         libpq-dev \
         postgresql-client \
         && rm -rf /var/lib/apt/lists/*
-
-# Устанавливаем Chromium и ChromeDriver с retry логикой
-RUN for i in 1 2 3; do \
-        apt-get update && \
-        apt-get install -y --no-install-recommends chromium chromium-driver && \
-        break || sleep 10; \
-    done && \
-    rm -rf /var/lib/apt/lists/*
-
-# Создаем символические ссылки для совместимости
-RUN ln -sf /usr/bin/chromium /usr/bin/google-chrome && \
-    ln -sf /usr/bin/chromedriver /usr/local/bin/chromedriver
-
-# Создаем пользователя для запуска приложения
-RUN groupadd -r appuser && \
-    useradd -r -g appuser -G audio,video appuser && \
-    mkdir -p /home/appuser && \
-    chown -R appuser:appuser /home/appuser && \
-    echo "appuser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
 # Устанавливаем рабочую директорию
 WORKDIR /app
