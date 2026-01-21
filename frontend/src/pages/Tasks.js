@@ -109,34 +109,28 @@ function Tasks() {
   const handleDownloadResult = async (task) => {
     if (task.status === 'completed') {
       try {
-        // Скачиваем основной файл результата (если нужен общий файл)
+        // Скачиваем основной файл результата
         if (task.result_file) {
-          try {
-            const response = await axios.get(`/api/parsing-tasks/${task.id}/download/`, {
-              headers: {
-                'Authorization': `Token ${localStorage.getItem('token')}`
-              },
-              responseType: 'blob'
-            });
-            
-            const url = window.URL.createObjectURL(new Blob([response.data]));
-            const link = document.createElement('a');
-            link.href = url;
-            link.setAttribute('download', `result_${task.id}.xlsx`);
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-            window.URL.revokeObjectURL(url);
-          } catch (err) {
-            console.error('Ошибка при скачивании общего результата:', err);
-          }
+          const response = await axios.get(`/api/parsing-tasks/${task.id}/download/`, {
+            headers: {
+              'Authorization': `Token ${localStorage.getItem('token')}`
+            },
+            responseType: 'blob'
+          });
+          
+          const url = window.URL.createObjectURL(new Blob([response.data]));
+          const link = document.createElement('a');
+          link.href = url;
+          link.setAttribute('download', `result_${task.id}.xlsx`);
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          window.URL.revokeObjectURL(url);
         }
         
-        // Скачиваем файлы только по сайтам (Autopiter, Emex, Armtek)
+        // Скачиваем файлы по сайтам, если есть
         if (task.result_files) {
-          const allowedSites = ['autopiter', 'emex', 'armtek'];
-          for (const [site] of Object.entries(task.result_files)) {
-            if (!allowedSites.includes(site)) continue;
+          for (const [site, filePath] of Object.entries(task.result_files)) {
             try {
               const response = await axios.get(`/api/parsing-tasks/${task.id}/download-site/${site}/`, {
                 headers: {
