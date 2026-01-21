@@ -6,13 +6,14 @@ ENV DISPLAY=:99
 ENV DEBIAN_FRONTEND=noninteractive
 ENV APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE=1
 
-# Настраиваем таймауты для apt-get (предотвращаем зависания)
-RUN echo 'Acquire::http::Timeout "300";' > /etc/apt/apt.conf.d/99timeout && \
-    echo 'Acquire::ftp::Timeout "300";' >> /etc/apt/apt.conf.d/99timeout && \
-    echo 'Acquire::https::Timeout "300";' >> /etc/apt/apt.conf.d/99timeout && \
-    echo 'Acquire::Retries "5";' >> /etc/apt/apt.conf.d/99timeout
+# Настраиваем таймауты и retry для apt-get
+RUN echo 'Acquire::http::Timeout "600";' > /etc/apt/apt.conf.d/99timeout && \
+    echo 'Acquire::ftp::Timeout "600";' >> /etc/apt/apt.conf.d/99timeout && \
+    echo 'Acquire::https::Timeout "600";' >> /etc/apt/apt.conf.d/99timeout && \
+    echo 'Acquire::Retries "10";' >> /etc/apt/apt.conf.d/99timeout && \
+    echo 'Acquire::http::Pipeline-Depth "0";' >> /etc/apt/apt.conf.d/99timeout
 
-# Обновляем систему и устанавливаем все зависимости за один раз (оптимизация кэша)
+# Обновляем систему и устанавливаем все зависимости за один раз
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -44,11 +45,17 @@ RUN apt-get update && \
         postgresql-client \
         && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем Chromium и ChromeDriver с retry логикой
-RUN for i in 1 2 3; do \
+# Устанавливаем Chromium и ChromeDriver с улучшенной retry логикой
+RUN set -e; \
+    for i in 1 2 3 4 5; do \
+        echo "Попытка $i установки Chromium..."; \
         apt-get update && \
         apt-get install -y --no-install-recommends chromium chromium-driver && \
-        break || sleep 10; \
+        echo "Chromium успешно установлен!" && \
+        break || \
+        (echo "Ошибка установки, повтор через 15 секунд..." && \
+         sleep 15 && \
+         rm -rf /var/lib/apt/lists/*); \
     done && \
     rm -rf /var/lib/apt/lists/*
 
@@ -115,4 +122,5 @@ RUN python manage.py collectstatic --noinput
 EXPOSE 8000
 
 # Устанавливаем entrypoint
-ENTRYPOINT ["/usr/local/bin/entrypoint_simple.sh"] 
+ENTRYPOINT ["/usr/local/bin/entrypoint_simple.sh"]
+
