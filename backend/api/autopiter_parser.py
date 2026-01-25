@@ -698,9 +698,16 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                 if brand_lower not in known_russian_brands:
                     return
             
-            brands.add(brand)
-            if source:
-                log_debug(f"Autopiter: найден бренд '{brand}' ({source}) для {artikul}")
+            # Разбиваем бренды с запятыми на отдельные (например, "БРТ, Балаково" -> "БРТ" и "Балаково")
+            # Используем ту же функцию, что и для Emex
+            split_brands = _split_comma_separated_brands(brand)
+            for split_brand in split_brands:
+                # Убираем ведущие подчеркивания (например, "_Балаково" -> "Балаково")
+                split_brand = split_brand.lstrip('_').strip()
+                if split_brand and len(split_brand) >= 2:
+                    brands.add(split_brand)
+                    if source:
+                        log_debug(f"Autopiter: найден бренд '{split_brand}' ({source}) для {artikul} (из '{brand}')")
         
         # Используем ТОЧНЫЙ селектор из DevTools пользователя
         # #main-content > div > div > div.Table__table____693a7dea7e60fe92 > div > div.IndividualTableRow__infoColumn___b7ecc9b28c9245b4 > span > span > span > span
@@ -1749,6 +1756,21 @@ def parse_armtek_http_response(html: str, artikul: str) -> List[str]:
 	log_debug(f"Armtek HTTP: найдено {len(filtered)} брендов для {artikul}")
 	return filtered
 
+def _split_comma_separated_brands(brand_str: str) -> List[str]:
+    """Разбивает бренды, разделенные запятыми, на отдельные бренды.
+    
+    Например: "Bmw, Mini" -> ["Bmw", "Mini"]
+              "Geunyoung, Geun Young" -> ["Geunyoung", "Geun Young"]
+    """
+    if not brand_str or not brand_str.strip():
+        return []
+    
+    # Разбиваем по запятой и очищаем каждый бренд
+    parts = [part.strip() for part in brand_str.split(',')]
+    # Убираем пустые строки
+    return [part for part in parts if part]
+
+
 def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> List[str]:
     """Получает бренды с Emex по артикулу с улучшенной обработкой блокировок"""
     try:
@@ -1924,14 +1946,20 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                                                     if isinstance(item, dict):
                                                         brand = item.get("make")
                                                         if brand and brand.strip():
-                                                            brands.add(brand.strip())
-                                                            log_debug(f"Emex API: добавлен бренд '{brand}' для {artikul}")
+                                                            # Разбиваем бренды с запятыми на отдельные
+                                                            split_brands = _split_comma_separated_brands(brand.strip())
+                                                            for split_brand in split_brands:
+                                                                brands.add(split_brand)
+                                                                log_debug(f"Emex API: добавлен бренд '{split_brand}' для {artikul} (из '{brand}')")
                                             
                                             # Дополнительно берем бренд из searchResult.make
                                             sr_make = search_result.get("make")
                                             if isinstance(sr_make, str) and sr_make.strip():
-                                                brands.add(sr_make.strip())
-                                                log_debug(f"Emex API: добавлен бренд из searchResult.make '{sr_make}' для {artikul}")
+                                                # Разбиваем бренды с запятыми на отдельные
+                                                split_brands = _split_comma_separated_brands(sr_make.strip())
+                                                for split_brand in split_brands:
+                                                    brands.add(split_brand)
+                                                    log_debug(f"Emex API: добавлен бренд из searchResult.make '{split_brand}' для {artikul} (из '{sr_make}')")
                                         
                                         if brands:
                                             log_debug(f"Emex API: найдено {len(brands)} брендов для {artikul}")
@@ -2035,7 +2063,10 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                         for el in elems:
                             txt = el.text.strip()
                             if txt and len(txt) > 1 and not txt.isdigit():
-                                brands.add(txt)
+                                # Разбиваем бренды с запятыми на отдельные
+                                split_brands = _split_comma_separated_brands(txt)
+                                for split_brand in split_brands:
+                                    brands.add(split_brand)
                     except Exception:
                         continue
             finally:

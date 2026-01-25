@@ -277,6 +277,21 @@ def dedupe_rows(rows: list) -> list:
 
     return unique
 
+def _split_comma_separated_brands(brand_str: str) -> List[str]:
+    """Разбивает бренды, разделенные запятыми, на отдельные бренды.
+    
+    Например: "Bmw, Mini" -> ["Bmw", "Mini"]
+              "Geunyoung, Geun Young" -> ["Geunyoung", "Geun Young"]
+    """
+    if not brand_str or not brand_str.strip():
+        return []
+    
+    # Разбиваем по запятой и очищаем каждый бренд
+    parts = [part.strip() for part in brand_str.split(',')]
+    # Убираем пустые строки
+    return [part for part in parts if part]
+
+
 def filter_garbage_brands(brands: List[str]) -> List[str]:
     """Фильтрует мусорные бренды из результатов Autopiter и Emex"""
     garbage_words = {
@@ -839,40 +854,50 @@ def process_parsing_task(self, task_id):
                         for (b1, pn1, n1, b2, pn2, src) in parallel_results['autopiter']:
                             # Фильтруем бренд № 2 (результат парсинга)
                             if b2 and b2.strip():
-                                # Дополнительная проверка: если b2 похож на артикул, пропускаем
-                                b2_lower = b2.lower().strip()
-                                # Проверяем, не является ли b2 артикулом (начинается с цифр, содержит много цифр и т.д.)
-                                if (b2_lower.startswith('d-') or b2_lower.startswith('dz') or 
-                                    b2[0].isdigit() if b2 else False or
-                                    sum(1 for c in b2 if c.isdigit()) > len(b2) * 0.5):
-                                    stats['brand2_filtered_as_article'] += 1
-                                    continue  # Пропускаем, если это артикул
+                                # Разбиваем бренды с запятыми на отдельные (например, "БРТ, Балаково" -> "БРТ" и "Балаково")
+                                split_brands = _split_comma_separated_brands(b2.strip())
                                 
-                                filtered_brands = filter_garbage_brands([b2])
-                                if filtered_brands:
-                                    # Создаем отдельную запись для каждого отфильтрованного бренда
-                                    for filtered_brand in filtered_brands:
-                                        # Дополнительная проверка: убеждаемся, что это не артикул
-                                        if (filtered_brand.lower().startswith('d-') or 
-                                            filtered_brand.lower().startswith('dz') or
-                                            (filtered_brand and filtered_brand[0].isdigit()) or
-                                            sum(1 for c in filtered_brand if c.isdigit()) > len(filtered_brand) * 0.6):
-                                            stats['brand2_filtered_as_article'] += 1
-                                            continue  # Пропускаем артикулы
-                                        
-                                        # Нормализуем артикул для предотвращения дублей
-                                        normalized_article = normalize_article_for_compare(pn2)
-                                        if normalized_article:  # Только если артикул не пустой после нормализации
-                                            d = {
-                                                'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                                                'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                                                'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                                'Бренд № 2': clean_excel_string(filtered_brand),  # Результат парсинга
-                                                'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
-                                                'Источник': src
-                                            }
-                                            results_autopiter.append(d)
-                                            stats['unique_brands']['autopiter'].add(filtered_brand)
+                                # Обрабатываем каждый бренд отдельно
+                                for single_brand in split_brands:
+                                    # Дополнительная проверка: если single_brand похож на артикул, пропускаем
+                                    single_brand_lower = single_brand.lower().strip()
+                                    # Проверяем, не является ли single_brand артикулом (начинается с цифр, содержит много цифр и т.д.)
+                                    if (single_brand_lower.startswith('d-') or single_brand_lower.startswith('dz') or 
+                                        single_brand[0].isdigit() if single_brand else False or
+                                        sum(1 for c in single_brand if c.isdigit()) > len(single_brand) * 0.5):
+                                        stats['brand2_filtered_as_article'] += 1
+                                        continue  # Пропускаем, если это артикул
+                                    
+                                    # Убираем ведущие подчеркивания (например, "_Балаково" -> "Балаково")
+                                    single_brand = single_brand.lstrip('_').strip()
+                                    if not single_brand:
+                                        continue
+                                    
+                                    filtered_brands = filter_garbage_brands([single_brand])
+                                    if filtered_brands:
+                                        # Создаем отдельную запись для каждого отфильтрованного бренда
+                                        for filtered_brand in filtered_brands:
+                                            # Дополнительная проверка: убеждаемся, что это не артикул
+                                            if (filtered_brand.lower().startswith('d-') or 
+                                                filtered_brand.lower().startswith('dz') or
+                                                (filtered_brand and filtered_brand[0].isdigit()) or
+                                                sum(1 for c in filtered_brand if c.isdigit()) > len(filtered_brand) * 0.6):
+                                                stats['brand2_filtered_as_article'] += 1
+                                                continue  # Пропускаем артикулы
+                                            
+                                            # Нормализуем артикул для предотвращения дублей
+                                            normalized_article = normalize_article_for_compare(pn2)
+                                            if normalized_article:  # Только если артикул не пустой после нормализации
+                                                d = {
+                                                    'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                                                    'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                                                    'Бренд № 2': clean_excel_string(filtered_brand),  # Результат парсинга
+                                                    'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                                    'Источник': src
+                                                }
+                                                results_autopiter.append(d)
+                                                stats['unique_brands']['autopiter'].add(filtered_brand)
                             else:
                                 # Если b2 пустой, но есть артикул, все равно проверяем b2 на мусор
                                 if b2:
@@ -901,40 +926,45 @@ def process_parsing_task(self, task_id):
                         for (b1, pn1, n1, b2, pn2, src) in parallel_results['emex']:
                             # Фильтруем бренд № 2 (результат парсинга)
                             if b2 and b2.strip():
-                                # Дополнительная проверка: если b2 похож на артикул, пропускаем
-                                b2_lower = b2.lower().strip()
-                                # Проверяем, не является ли b2 артикулом (начинается с цифр, содержит много цифр и т.д.)
-                                if (b2_lower.startswith('d-') or b2_lower.startswith('dz') or 
-                                    b2[0].isdigit() if b2 else False or
-                                    sum(1 for c in b2 if c.isdigit()) > len(b2) * 0.5):
-                                    stats['brand2_filtered_as_article'] += 1
-                                    continue  # Пропускаем, если это артикул
+                                # Разбиваем бренды с запятыми на отдельные (на случай, если они не были разбиты в парсере)
+                                split_brands = _split_comma_separated_brands(b2.strip())
                                 
-                                filtered_brands = filter_garbage_brands([b2])
-                                if filtered_brands:
-                                    # Создаем отдельную запись для каждого отфильтрованного бренда
-                                    for filtered_brand in filtered_brands:
-                                        # Дополнительная проверка: убеждаемся, что это не артикул
-                                        if (filtered_brand.lower().startswith('d-') or 
-                                            filtered_brand.lower().startswith('dz') or
-                                            (filtered_brand and filtered_brand[0].isdigit()) or
-                                            sum(1 for c in filtered_brand if c.isdigit()) > len(filtered_brand) * 0.6):
-                                            stats['brand2_filtered_as_article'] += 1
-                                            continue  # Пропускаем артикулы
-                                        
-                                        # Нормализуем артикул для предотвращения дублей
-                                        normalized_article = normalize_article_for_compare(pn2)
-                                        if normalized_article:  # Только если артикул не пустой после нормализации
-                                            d = {
-                                                'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                                                'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                                                'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                                'Бренд № 2': clean_excel_string(filtered_brand),  # Результат парсинга
-                                                'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
-                                                'Источник': src
-                                            }
-                                            results_emex.append(d)
-                                            stats['unique_brands']['emex'].add(filtered_brand)
+                                # Обрабатываем каждый бренд отдельно
+                                for single_brand in split_brands:
+                                    # Дополнительная проверка: если single_brand похож на артикул, пропускаем
+                                    single_brand_lower = single_brand.lower().strip()
+                                    # Проверяем, не является ли single_brand артикулом (начинается с цифр, содержит много цифр и т.д.)
+                                    if (single_brand_lower.startswith('d-') or single_brand_lower.startswith('dz') or 
+                                        single_brand[0].isdigit() if single_brand else False or
+                                        sum(1 for c in single_brand if c.isdigit()) > len(single_brand) * 0.5):
+                                        stats['brand2_filtered_as_article'] += 1
+                                        continue  # Пропускаем, если это артикул
+                                    
+                                    filtered_brands = filter_garbage_brands([single_brand])
+                                    if filtered_brands:
+                                        # Создаем отдельную запись для каждого отфильтрованного бренда
+                                        for filtered_brand in filtered_brands:
+                                            # Дополнительная проверка: убеждаемся, что это не артикул
+                                            if (filtered_brand.lower().startswith('d-') or 
+                                                filtered_brand.lower().startswith('dz') or
+                                                (filtered_brand and filtered_brand[0].isdigit()) or
+                                                sum(1 for c in filtered_brand if c.isdigit()) > len(filtered_brand) * 0.6):
+                                                stats['brand2_filtered_as_article'] += 1
+                                                continue  # Пропускаем артикулы
+                                            
+                                            # Нормализуем артикул для предотвращения дублей
+                                            normalized_article = normalize_article_for_compare(pn2)
+                                            if normalized_article:  # Только если артикул не пустой после нормализации
+                                                d = {
+                                                    'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
+                                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
+                                                    'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
+                                                    'Бренд № 2': clean_excel_string(filtered_brand),  # Результат парсинга
+                                                    'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                                    'Источник': src
+                                                }
+                                                results_emex.append(d)
+                                                stats['unique_brands']['emex'].add(filtered_brand)
                             else:
                                 # Если b2 пустой, но есть артикул, все равно проверяем b2 на мусор
                                 if b2:
