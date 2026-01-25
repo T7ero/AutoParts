@@ -18,7 +18,7 @@ function Logs() {
     const interval = setInterval(() => {
       fetchTasks();
       fetchPriceListTasks();
-    }, 5000); // Обновляем каждые 5 секунд
+    }, 2000); // Обновляем каждые 2 секунды для более частого обновления прогресса
     return () => clearInterval(interval);
   }, []);
 
@@ -26,7 +26,7 @@ function Logs() {
     if (selectedTask && selectedTaskType) {
       if (selectedTaskType === 'parsing') {
         fetchTaskLogs(selectedTask);
-        const interval = setInterval(() => fetchTaskLogs(selectedTask), 2000);
+        const interval = setInterval(() => fetchTaskLogs(selectedTask), 2000); // Обновляем каждые 2 секунды
         return () => clearInterval(interval);
       } else if (selectedTaskType === 'price_list') {
         fetchPriceListTaskLogs(selectedTask);
@@ -85,6 +85,23 @@ function Logs() {
         ...prev,
         [`parsing_${taskId}`]: response.data.logs || []
       }));
+      
+      // Обновляем информацию о прогрессе задачи, если она есть в ответе
+      if (response.data.progress) {
+        setTasks(prevTasks => 
+          prevTasks.map(task => 
+            task.id === taskId 
+              ? { 
+                  ...task, 
+                  current_row: response.data.progress.current_row,
+                  total_rows: response.data.progress.total_rows,
+                  processed_rows: response.data.progress.processed_rows,
+                  progress: response.data.progress.progress_percent
+                }
+              : task
+          )
+        );
+      }
     } catch (err) {
       console.error('Ошибка при загрузке логов:', err);
     }
@@ -285,15 +302,24 @@ function Logs() {
                             {getStatusText(task.status)}
                           </span>
                         </div>
-                        {task.progress !== undefined && (
+                        {(task.status === 'in_progress' || task.status === 'processing' || task.progress !== undefined) && (
                           <div className="mt-2">
                             <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2">
                               <div
                                 className="bg-blue-600 dark:bg-blue-400 h-2 rounded-full transition-all duration-300"
-                                style={{ width: `${task.progress}%` }}
+                                style={{ width: `${task.progress !== undefined ? task.progress : 0}%` }}
                               ></div>
                             </div>
-                            <span className="text-xs text-gray-600 dark:text-gray-400">{task.progress}%</span>
+                            <div className="flex justify-between items-center mt-1">
+                              <span className="text-xs text-gray-600 dark:text-gray-400">
+                                {task.progress !== undefined ? `${task.progress}%` : '0%'}
+                              </span>
+                              {task.current_row && task.total_rows && (
+                                <span className="text-xs text-gray-500 dark:text-gray-400">
+                                  Строка {task.current_row} / {task.total_rows}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         )}
                       </div>
@@ -321,18 +347,51 @@ function Logs() {
                   </span>
                 </div>
                 
-                <div className="flex-1 bg-gray-900 text-green-400 p-4 rounded-lg overflow-y-auto font-mono text-sm">
-                  {logs[`${selectedTaskType}_${selectedTask}`] && logs[`${selectedTaskType}_${selectedTask}`].length > 0 ? (
-                    logs[`${selectedTaskType}_${selectedTask}`].map((log, index) => (
-                      <div key={index} className="mb-1">
-                        <span className="text-gray-400">[{formatTimestamp(log.timestamp)}]</span>
-                        <span className="ml-2">{log.message}</span>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="text-gray-500">Логи не найдены</div>
-                  )}
-                  <div ref={logsEndRef} />
+                <div className="flex-1 flex flex-col">
+                  {/* Информация о прогрессе для задач парсинга */}
+                  {selectedTaskType === 'parsing' && tasks.find(t => t.id === selectedTask) && (() => {
+                    const task = tasks.find(t => t.id === selectedTask);
+                    if (task && (task.status === 'in_progress' || task.status === 'processing' || task.progress > 0)) {
+                      return (
+                        <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
+                          <div className="flex justify-between items-center mb-2">
+                            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                              Прогресс выполнения
+                            </span>
+                            <span className="text-sm text-gray-600 dark:text-gray-400">
+                              {task.progress !== undefined ? `${task.progress}%` : '0%'}
+                            </span>
+                          </div>
+                          <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2 mb-2">
+                            <div
+                              className="bg-blue-600 dark:bg-blue-400 h-2 rounded-full transition-all duration-300"
+                              style={{ width: `${task.progress !== undefined ? task.progress : 0}%` }}
+                            ></div>
+                          </div>
+                          {task.current_row && task.total_rows && (
+                            <p className="text-xs text-gray-600 dark:text-gray-400">
+                              Обрабатывается строка <span className="font-semibold">{task.current_row}</span> из <span className="font-semibold">{task.total_rows}</span>
+                            </p>
+                          )}
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+                  
+                  <div className="flex-1 bg-gray-900 text-green-400 p-4 rounded-lg overflow-y-auto font-mono text-sm">
+                    {logs[`${selectedTaskType}_${selectedTask}`] && logs[`${selectedTaskType}_${selectedTask}`].length > 0 ? (
+                      logs[`${selectedTaskType}_${selectedTask}`].map((log, index) => (
+                        <div key={index} className="mb-1">
+                          <span className="text-gray-400">[{formatTimestamp(log.timestamp)}]</span>
+                          <span className="ml-2">{log.message}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-gray-500">Логи не найдены</div>
+                    )}
+                    <div ref={logsEndRef} />
+                  </div>
                 </div>
               </div>
             ) : (

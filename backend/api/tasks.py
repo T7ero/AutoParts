@@ -563,7 +563,12 @@ def process_parsing_task(self, task_id):
             if active_threads > 50:  # Если слишком много потоков, пропускаем отправку
                 log(f"Пропускаем ws_send: слишком много активных потоков ({active_threads})")
                 return
-                
+            
+            # Рассчитываем прогресс
+            progress = 0
+            if hasattr(task, '_total_rows') and task._total_rows > 0:
+                progress = min(100, int((task._processed_rows / task._total_rows) * 100))
+            
             async_to_sync(channel_layer.group_send)(
                 f'task_{task.id}',
                 {
@@ -574,6 +579,10 @@ def process_parsing_task(self, task_id):
                         'error_message': task.error_message,
                         'result_files': {},  # Поле отсутствует в модели
                         'log': '',  # Поле отсутствует в модели
+                        'progress': progress,
+                        'current_row': getattr(task, '_current_row', 0),
+                        'total_rows': getattr(task, '_total_rows', 0),
+                        'processed_rows': getattr(task, '_processed_rows', 0),
                     }
                 }
             )
@@ -632,6 +641,19 @@ def process_parsing_task(self, task_id):
         # Инициализируем таймаут и счетчик обработанных строк
         task._timeout_check = time.time()
         task._processed_rows = 0  # Добавляем счетчик обработанных строк
+        task._total_rows = total_rows  # Сохраняем общее количество строк
+        task._current_row = 0  # Текущая обрабатываемая строка
+        
+        # Сохраняем total_rows в метаданных задачи для доступа через API
+        if not task.sources:
+            task.sources = {}
+        if isinstance(task.sources, dict):
+            task.sources['_meta'] = {
+                'total_rows': total_rows,
+                'processed_rows': 0,
+                'current_row': 0
+            }
+            update_task_fields(sources=task.sources)
 
         # Чтение выбранных источников (autopiter, emex, armtek) из полей задачи, если есть
         selected_sources = {"autopiter", "emex", "armtek"}
@@ -1078,15 +1100,31 @@ def process_parsing_task(self, task_id):
                         log(f"Ошибка при обработке артикула {current_number} в строке {index + 1}: {str(e)}")
                         continue
                 
+                # Обновляем текущую обрабатываемую строку
+                task._current_row = index + 1
+                
                 # Увеличиваем счетчик обработанных строк
                 task._processed_rows += 1
                 stats['rows_processed'] += 1
+                
+                # Обновляем метаданные в sources для доступа через API
+                if task.sources and isinstance(task.sources, dict):
+                    if '_meta' not in task.sources:
+                        task.sources['_meta'] = {}
+                    task.sources['_meta'].update({
+                        'processed_rows': task._processed_rows,
+                        'current_row': task._current_row,
+                        'total_rows': task._total_rows
+                    })
                 
                 # Обновляем статус каждые 3 строки для более частого обновления
                 if (index + 1) % 3 == 0 or index == total_rows - 1:
                     # task.log = '\n'.join(log_messages[-100:])  # Поле отсутствует в модели
                     task.status = 'in_progress'
-                    update_task_fields(status='in_progress')
+                    if task.sources and isinstance(task.sources, dict):
+                        update_task_fields(status='in_progress', sources=task.sources)
+                    else:
+                        update_task_fields(status='in_progress')
                     ws_send()
                     
                     # Принудительная очистка памяти
