@@ -283,19 +283,6 @@ def task_logs(request, task_id):
                         'timestamp': task.updated_at.isoformat(),
                         'message': f"Обрабатывается строка {current_row} из {total_rows}"
                     })
-        
-        # Добавляем информацию о текущей строке из метаданных задачи
-        if task.sources and isinstance(task.sources, dict) and '_meta' in task.sources:
-            meta = task.sources['_meta']
-            current_row = meta.get('current_row', 0)
-            total_rows = meta.get('total_rows', 0)
-            processed_rows = meta.get('processed_rows', 0)
-            if current_row > 0 and total_rows > 0:
-                progress = min(100, int((processed_rows / total_rows) * 100))
-                logs.append({
-                    'timestamp': task.updated_at.isoformat(),
-                    'message': f"Обрабатывается строка {current_row} из {total_rows} (Прогресс: {progress}%)"
-                })
                 
                 # Добавляем детальные логи если есть
                 if 'detailed_logs' in celery_result.info:
@@ -316,27 +303,14 @@ def task_logs(request, task_id):
         # Сортируем логи по времени (если timestamps отсутствуют, они будут в конце)
         logs = [l for l in logs if l.get('timestamp')] + [l for l in logs if not l.get('timestamp')]
         
-        # Добавляем информацию о прогрессе в ответ
-        response_data = {'logs': logs}
-        
-        # Добавляем информацию о прогрессе из метаданных
-        if task.sources and isinstance(task.sources, dict) and '_meta' in task.sources:
-            meta = task.sources['_meta']
-            response_data['progress'] = {
-                'current_row': meta.get('current_row', 0),
-                'total_rows': meta.get('total_rows', 0),
-                'processed_rows': meta.get('processed_rows', 0),
-                'progress_percent': min(100, int((meta.get('processed_rows', 0) / meta.get('total_rows', 1)) * 100)) if meta.get('total_rows', 0) > 0 else 0
-            }
-        
-        # Добавляем дополнительную информацию в ответ
-        response_data['task_id'] = task_id
-        response_data['status'] = task.status
-        response_data['created_at'] = task.created_at.isoformat()
-        response_data['updated_at'] = task.updated_at.isoformat()
-        response_data['file_name'] = task.file.name if task.file else None
-        
-        return Response(response_data)
+        return Response({
+            'task_id': task_id,
+            'status': task.status,
+            'logs': logs,
+            'created_at': task.created_at.isoformat(),
+            'updated_at': task.updated_at.isoformat(),
+            'file_name': task.file.name if task.file else None
+        })
         
     except ParsingTask.DoesNotExist:
         return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)

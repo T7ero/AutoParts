@@ -37,7 +37,7 @@ function Tasks() {
         } catch (err) {
           console.error('Ошибка при обновлении статуса:', err);
         }
-      }, 2000); // Обновляем каждые 2 секунды для более частого обновления прогресса
+      }, 5000);
     } else {
       // Автообновление списка задач, если есть незавершённые задачи
       interval = setInterval(async () => {
@@ -51,7 +51,7 @@ function Tasks() {
         } catch (err) {
           // ignore
         }
-      }, 2000); // Обновляем каждые 2 секунды для более частого обновления прогресса
+      }, 5000);
     }
 
     return () => {
@@ -329,30 +329,18 @@ function Tasks() {
                         )}
                       </div>
 
-                      {(task.status === 'in_progress' || task.status === 'processing' || task.progress !== undefined) && (
+                      {task.progress !== undefined && (
                         <div className="mt-3">
                           <div className="flex justify-between text-sm text-gray-600 dark:text-gray-300 mb-1">
-                            <span>Прогресс парсинга</span>
-                            <span>
-                              {task.progress !== undefined ? `${task.progress}%` : '0%'}
-                              {task.current_row && task.total_rows && (
-                                <span className="ml-2 text-xs">
-                                  ({task.current_row} / {task.total_rows})
-                                </span>
-                              )}
-                            </span>
+                            <span>Прогресс</span>
+                            <span>{task.progress}%</span>
                           </div>
-                          <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2.5">
+                          <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2">
                             <div
-                              className="bg-blue-600 dark:bg-blue-400 h-2.5 rounded-full transition-all duration-300"
-                              style={{ width: `${task.progress !== undefined ? task.progress : 0}%` }}
+                              className="bg-blue-600 dark:bg-blue-400 h-2 rounded-full transition-all duration-300"
+                              style={{ width: `${task.progress}%` }}
                             ></div>
                           </div>
-                          {task.current_row && task.total_rows && (
-                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                              Обрабатывается строка {task.current_row} из {task.total_rows}
-                            </p>
-                          )}
                         </div>
                       )}
 
