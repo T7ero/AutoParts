@@ -8,7 +8,6 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.authtoken.views import ObtainAuthToken
 from django.contrib.auth import authenticate
-from django.conf import settings
 from core.models import ParsingTask
 from .serializers import ParsingTaskSerializer
 from .tasks import process_parsing_task, mark_parsing_task_cancelled
@@ -52,24 +51,13 @@ def create_parsing_task(request):
         if sources:
             try:
                 # Пытаемся распарсить JSON
-                parsed_sources = json.loads(sources)
+                sources_data = json.loads(sources)
             except json.JSONDecodeError:
                 # Если не JSON, то это строка с разделителями
-                parsed_sources = [s.strip() for s in sources.split(',') if s.strip()]
+                sources_data = [s.strip() for s in sources.split(',') if s.strip()]
         else:
             # По умолчанию все источники
-            parsed_sources = ['autopiter', 'emex', 'armtek']
-
-        # Нормализуем и сохраняем источники в виде словаря, чтобы можно было
-        # добавлять служебные данные (_meta), не теряя исходный выбор.
-        if isinstance(parsed_sources, (list, tuple, set)):
-            normalized_sources = [str(s).strip().lower() for s in parsed_sources if str(s).strip()]
-        else:
-            normalized_sources = []
-
-        sources_data = {
-            'sources': normalized_sources or ['autopiter', 'emex', 'armtek']
-        }
+            sources_data = ['autopiter', 'emex', 'armtek']
         
         task = ParsingTask.objects.create(
             user=user,
@@ -251,28 +239,21 @@ def task_logs(request, task_id):
                 'message': f"Задача завершена с ошибкой: {task.error_message or 'Неизвестная ошибка'}"
             })
         
-        # Добавляем накопленные логи из файлового лога задачи (parsing_task_<id>.log)
-        # Это даёт детальную информацию: какие бренды найдены, какая строка/артикул обрабатывается.
-        try:
+        # Добавляем накопленные логи из поля task.log (поддержка текущей строки парсинга)
+        if getattr(task, 'log', None):
             import re
-            log_file_path = os.path.join(settings.MEDIA_ROOT, 'results', f'parsing_task_{task_id}.log')
-            if os.path.exists(log_file_path):
-                with open(log_file_path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        # Парсим время в формате [dd.mm.yyyy, HH:MM:SS]
-                        m = re.match(r"^\[(\d{2}\.\d{2}\.\d{4}), (\d{2}:\d{2}:\d{2})\]\s*(.*)$", line)
-                        if m:
-                            dt = f"{m.group(1).split('.')[2]}-{m.group(1).split('.')[1]}-{m.group(1).split('.')[0]}T{m.group(2)}"
-                            msg = m.group(3)
-                            logs.append({'timestamp': dt, 'message': msg})
-                        else:
-                            logs.append({'timestamp': task.updated_at.isoformat(), 'message': line})
-        except Exception:
-            # В случае любой ошибки просто пропускаем файловые логи
-            pass
+            for line in str(task.log).split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                # Парсим время в формате [dd.mm.yyyy, HH:MM:SS]
+                m = re.match(r"^\[(\d{2}\.\d{2}\.\d{4}), (\d{2}:\d{2}:\d{2})\]\s*(.*)$", line)
+                if m:
+                    dt = f"{m.group(1).split('.')[2]}-{m.group(1).split('.')[1]}-{m.group(1).split('.')[0]}T{m.group(2)}"
+                    msg = m.group(3)
+                    logs.append({'timestamp': dt, 'message': msg})
+                else:
+                    logs.append({'timestamp': task.updated_at.isoformat(), 'message': line})
 
         # Пытаемся получить дополнительную информацию из Celery
         if celery_result.info:
