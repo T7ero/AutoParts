@@ -553,6 +553,17 @@ def process_parsing_task(self, task_id):
     update_task_fields(status='in_progress')
     
     log_messages = []
+    # Путь к файловому логу для этой задачи
+    log_file_path = os.path.join('media', 'results', f'parsing_task_{task_id}.log')
+    # Готовим файл логов: создаём директорию и очищаем старое содержимое
+    try:
+        os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+        with open(log_file_path, 'w', encoding='utf-8') as _f:
+            _f.write('')
+    except Exception:
+        # Если не удалось создать файл логов — работаем только с in-memory логами
+        log_file_path = None
+
     logger = get_task_logger(__name__)
     channel_layer = get_channel_layer()
     
@@ -595,13 +606,25 @@ def process_parsing_task(self, task_id):
         load_proxies_from_file()
         
         def log(msg: str):
+            """Логирование c временной меткой + запись в файл (если доступен)."""
+            from datetime import datetime as _dt
+            timestamp = _dt.now().strftime('%d.%m.%Y, %H:%M:%S')
+            line = f"[{timestamp}] {msg}"
             # Пишем в память, stdout и celery-лог
-            log_messages.append(msg)
+            log_messages.append(line)
             try:
-                logger.info(msg)
+                logger.info(line)
             except Exception:
                 pass
-            print(msg)
+            print(line)
+            # Дублируем в файловый лог
+            if log_file_path:
+                try:
+                    with open(log_file_path, 'a', encoding='utf-8') as f:
+                        f.write(line + '\n')
+                except Exception:
+                    # Не роняем задачу при ошибке записи лога
+                    pass
 
         # Проверяем размер файла и разбиваем на части если нужно
         df = pd.read_excel(task.file.path)
@@ -644,16 +667,16 @@ def process_parsing_task(self, task_id):
         task._total_rows = total_rows  # Сохраняем общее количество строк
         task._current_row = 0  # Текущая обрабатываемая строка
         
-        # Сохраняем total_rows в метаданных задачи для доступа через API
-        if not task.sources:
+        # Сохраняем total_rows в метаданных задачи для доступа через API.
+        # Принудительно приводим sources к dict, чтобы в нём можно было хранить служебные данные.
+        if not isinstance(task.sources, dict):
             task.sources = {}
-        if isinstance(task.sources, dict):
-            task.sources['_meta'] = {
-                'total_rows': total_rows,
-                'processed_rows': 0,
-                'current_row': 0
-            }
-            update_task_fields(sources=task.sources)
+        task.sources['_meta'] = {
+            'total_rows': total_rows,
+            'processed_rows': 0,
+            'current_row': 0
+        }
+        update_task_fields(sources=task.sources)
 
         # Чтение выбранных источников (autopiter, emex, armtek) из полей задачи, если есть
         selected_sources = {"autopiter", "emex", "armtek"}
@@ -855,11 +878,6 @@ def process_parsing_task(self, task_id):
                 log(f"Обрабатываем строку {index + 1}: {len(numbers_to_parse)} артикулов")
                 # Обновляем статус для отображения в интерфейсе
                 task.status = 'in_progress'
-                
-                # Логирование (без сохранения в БД, так как поле log отсутствует)
-                current_log = f"[{datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Обрабатываем строку {index + 1}: {len(numbers_to_parse)} артикулов"
-                print(f"[DEBUG] {current_log}")
-                
                 update_task_fields(status='in_progress')
                 ws_send()
                 
@@ -1108,23 +1126,21 @@ def process_parsing_task(self, task_id):
                 stats['rows_processed'] += 1
                 
                 # Обновляем метаданные в sources для доступа через API
-                if task.sources and isinstance(task.sources, dict):
-                    if '_meta' not in task.sources:
-                        task.sources['_meta'] = {}
-                    task.sources['_meta'].update({
-                        'processed_rows': task._processed_rows,
-                        'current_row': task._current_row,
-                        'total_rows': task._total_rows
-                    })
+                if not isinstance(task.sources, dict):
+                    task.sources = {}
+                if '_meta' not in task.sources:
+                    task.sources['_meta'] = {}
+                task.sources['_meta'].update({
+                    'processed_rows': task._processed_rows,
+                    'current_row': task._current_row,
+                    'total_rows': task._total_rows
+                })
                 
                 # Обновляем статус каждые 3 строки для более частого обновления
                 if (index + 1) % 3 == 0 or index == total_rows - 1:
                     # task.log = '\n'.join(log_messages[-100:])  # Поле отсутствует в модели
                     task.status = 'in_progress'
-                    if task.sources and isinstance(task.sources, dict):
-                        update_task_fields(status='in_progress', sources=task.sources)
-                    else:
-                        update_task_fields(status='in_progress')
+                    update_task_fields(status='in_progress', sources=task.sources)
                     ws_send()
                     
                     # Принудительная очистка памяти
@@ -1191,6 +1207,11 @@ def process_parsing_task(self, task_id):
             if results_autopiter:
                 results_autopiter = dedupe_rows(results_autopiter)
                 df_autopiter = pd.DataFrame(results_autopiter)
+                # Дополнительная защита от дублей на уровне DataFrame
+                df_autopiter.drop_duplicates(
+                    subset=['Бренд № 2', 'Артикул по Бренду № 2', 'Источник'],
+                    inplace=True
+                )
                 autopiter_file = f'media/results/autopiter_results_{task.id}.xlsx'
                 try:
                     # Используем openpyxl engine для лучшей совместимости
@@ -1208,6 +1229,10 @@ def process_parsing_task(self, task_id):
             if results_armtek:
                 results_armtek = dedupe_rows(results_armtek)
                 df_armtek = pd.DataFrame(results_armtek)
+                df_armtek.drop_duplicates(
+                    subset=['Бренд № 2', 'Артикул по Бренду № 2', 'Источник'],
+                    inplace=True
+                )
                 armtek_file = f'media/results/armtek_results_{task.id}.xlsx'
                 try:
                     # Используем openpyxl engine для лучшей совместимости
@@ -1225,6 +1250,10 @@ def process_parsing_task(self, task_id):
             if results_emex:
                 results_emex = dedupe_rows(results_emex)
                 df_emex = pd.DataFrame(results_emex)
+                df_emex.drop_duplicates(
+                    subset=['Бренд № 2', 'Артикул по Бренду № 2', 'Источник'],
+                    inplace=True
+                )
                 emex_file = f'media/results/emex_results_{task.id}.xlsx'
                 try:
                     # Используем openpyxl engine для лучшей совместимости

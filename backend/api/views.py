@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.authtoken.views import ObtainAuthToken
 from django.contrib.auth import authenticate
+from django.conf import settings
 from core.models import ParsingTask
 from .serializers import ParsingTaskSerializer
 from .tasks import process_parsing_task, mark_parsing_task_cancelled
@@ -239,21 +240,28 @@ def task_logs(request, task_id):
                 'message': f"Задача завершена с ошибкой: {task.error_message or 'Неизвестная ошибка'}"
             })
         
-        # Добавляем накопленные логи из поля task.log (поддержка текущей строки парсинга)
-        if getattr(task, 'log', None):
+        # Добавляем накопленные логи из файлового лога задачи (parsing_task_<id>.log)
+        # Это даёт детальную информацию: какие бренды найдены, какая строка/артикул обрабатывается.
+        try:
             import re
-            for line in str(task.log).split('\n'):
-                line = line.strip()
-                if not line:
-                    continue
-                # Парсим время в формате [dd.mm.yyyy, HH:MM:SS]
-                m = re.match(r"^\[(\d{2}\.\d{2}\.\d{4}), (\d{2}:\d{2}:\d{2})\]\s*(.*)$", line)
-                if m:
-                    dt = f"{m.group(1).split('.')[2]}-{m.group(1).split('.')[1]}-{m.group(1).split('.')[0]}T{m.group(2)}"
-                    msg = m.group(3)
-                    logs.append({'timestamp': dt, 'message': msg})
-                else:
-                    logs.append({'timestamp': task.updated_at.isoformat(), 'message': line})
+            log_file_path = os.path.join(settings.MEDIA_ROOT, 'results', f'parsing_task_{task_id}.log')
+            if os.path.exists(log_file_path):
+                with open(log_file_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        # Парсим время в формате [dd.mm.yyyy, HH:MM:SS]
+                        m = re.match(r"^\[(\d{2}\.\d{2}\.\d{4}), (\d{2}:\d{2}:\d{2})\]\s*(.*)$", line)
+                        if m:
+                            dt = f"{m.group(1).split('.')[2]}-{m.group(1).split('.')[1]}-{m.group(1).split('.')[0]}T{m.group(2)}"
+                            msg = m.group(3)
+                            logs.append({'timestamp': dt, 'message': msg})
+                        else:
+                            logs.append({'timestamp': task.updated_at.isoformat(), 'message': line})
+        except Exception:
+            # В случае любой ошибки просто пропускаем файловые логи
+            pass
 
         # Пытаемся получить дополнительную информацию из Celery
         if celery_result.info:
