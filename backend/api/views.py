@@ -51,13 +51,25 @@ def create_parsing_task(request):
         if sources:
             try:
                 # Пытаемся распарсить JSON
-                sources_data = json.loads(sources)
+                parsed_sources = json.loads(sources)
             except json.JSONDecodeError:
                 # Если не JSON, то это строка с разделителями
-                sources_data = [s.strip() for s in sources.split(',') if s.strip()]
+                parsed_sources = [s.strip() for s in sources.split(',') if s.strip()]
         else:
             # По умолчанию все источники
-            sources_data = ['autopiter', 'emex', 'armtek']
+            parsed_sources = ['autopiter', 'emex', 'armtek']
+
+        # Нормализуем и сохраняем источники в виде словаря, чтобы можно было
+        # добавлять служебные данные (_meta), не теряя исходный выбор.
+        if isinstance(parsed_sources, (list, tuple, set)):
+            normalized_sources = [str(s).strip().lower() for s in parsed_sources if str(s).strip()]
+        else:
+            normalized_sources = []
+
+        sources_data = {
+            'sources': normalized_sources or ['autopiter', 'emex', 'armtek']
+        }
+        
         
         task = ParsingTask.objects.create(
             user=user,
