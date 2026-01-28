@@ -1207,11 +1207,6 @@ def process_parsing_task(self, task_id):
             if results_autopiter:
                 results_autopiter = dedupe_rows(results_autopiter)
                 df_autopiter = pd.DataFrame(results_autopiter)
-                # Дополнительная защита от дублей на уровне DataFrame
-                df_autopiter.drop_duplicates(
-                    subset=['Бренд № 2', 'Артикул по Бренду № 2', 'Источник'],
-                    inplace=True
-                )
                 autopiter_file = f'media/results/autopiter_results_{task.id}.xlsx'
                 try:
                     # Используем openpyxl engine для лучшей совместимости
@@ -1229,10 +1224,6 @@ def process_parsing_task(self, task_id):
             if results_armtek:
                 results_armtek = dedupe_rows(results_armtek)
                 df_armtek = pd.DataFrame(results_armtek)
-                df_armtek.drop_duplicates(
-                    subset=['Бренд № 2', 'Артикул по Бренду № 2', 'Источник'],
-                    inplace=True
-                )
                 armtek_file = f'media/results/armtek_results_{task.id}.xlsx'
                 try:
                     # Используем openpyxl engine для лучшей совместимости
@@ -1250,10 +1241,6 @@ def process_parsing_task(self, task_id):
             if results_emex:
                 results_emex = dedupe_rows(results_emex)
                 df_emex = pd.DataFrame(results_emex)
-                df_emex.drop_duplicates(
-                    subset=['Бренд № 2', 'Артикул по Бренду № 2', 'Источник'],
-                    inplace=True
-                )
                 emex_file = f'media/results/emex_results_{task.id}.xlsx'
                 try:
                     # Используем openpyxl engine для лучшей совместимости
