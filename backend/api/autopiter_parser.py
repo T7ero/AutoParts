@@ -2005,9 +2005,22 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                                     session.proxies.update(new_proxy)
                                 break  # Переходим к следующей конфигурации
                             
-                        except requests.exceptions.Timeout:
+                        except requests.exceptions.Timeout as e:
                             total_attempts += 1
-                            log_debug(f"Emex API: таймаут для {artikul} (попытка {total_attempts})")
+                            log_debug(f"Emex API: таймаут для {artikul} (попытка {total_attempts}): {str(e)}")
+                            # Если таймаут с прокси — считаем прокси проблемным и пробуем без прокси
+                            if proxies is not None:
+                                try:
+                                    current_http = session.proxies.get('http') or ''
+                                    if current_http:
+                                        mark_proxy_bad(current_http.replace('http://', ''))
+                                        log_debug(f"Emex API: помечаем прокси как проблемный из-за таймаута: {current_http}")
+                                except Exception:
+                                    pass
+                                # очищаем прокси и пробуем прямое соединение
+                                session.proxies.clear()
+                                proxies = None
+                                log_debug("Emex API: переключаемся на прямое соединение без прокси после таймаута")
                             if total_attempts >= max_total_attempts:
                                 log_debug(f"Emex API: слишком много таймаутов для {artikul}, пропускаем")
                                 break
@@ -2024,22 +2037,28 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                         except requests.exceptions.RequestException as e:
                             total_attempts += 1
                             log_debug(f"Emex API: ошибка запроса для {artikul}: {str(e)} (попытка {total_attempts})")
-                            # При ошибке запроса тоже пробуем сменить прокси
-                            if not proxy:
+                            # Если ошибка похожа на проблему прокси — помечаем и пробуем без прокси
+                            from requests.exceptions import ProxyError as _ProxyError
+                            is_proxy_error = isinstance(e, _ProxyError) or '502 Bad Gateway' in str(e) or 'Failed to establish a new connection' in str(e)
+                            if proxies is not None and is_proxy_error:
                                 try:
-                                    # Если это ProxyError или 502, помечаем текущий прокси как проблемный
-                                    try:
-                                        from requests.exceptions import ProxyError as _ProxyError
-                                        if isinstance(e, _ProxyError) or '502 Bad Gateway' in str(e):
-                                            current_http = session.proxies.get('http') or ''
-                                            if current_http:
-                                                mark_proxy_bad(current_http)
-                                    except Exception:
-                                        pass
+                                    current_http = session.proxies.get('http') or ''
+                                    if current_http:
+                                        mark_proxy_bad(current_http.replace('http://', ''))
+                                        log_debug(f"Emex API: помечаем прокси как проблемный из-за ошибки запроса: {current_http}")
+                                except Exception:
+                                    pass
+                                session.proxies.clear()
+                                proxies = None
+                                log_debug("Emex API: переключаемся на прямое соединение без прокси после ошибки прокси")
+                            # Если прокси явно не используются и Emex недоступен напрямую — пробуем получить новый прокси
+                            elif proxies is None and not proxy:
+                                try:
                                     new_proxy_dict = get_next_proxy()
                                     if new_proxy_dict:
                                         session.proxies.update(new_proxy_dict)
-                                        log_debug(f"Emex API: смена прокси после ошибки")
+                                        proxies = new_proxy_dict
+                                        log_debug(f"Emex API: пробуем новый прокси после ошибки: {new_proxy_dict}")
                                 except Exception:
                                     pass
                             continue
