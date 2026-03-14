@@ -332,8 +332,15 @@ function Tasks() {
                       {task.progress !== undefined && (
                         <div className="mt-3">
                           <div className="flex justify-between text-sm text-gray-600 dark:text-gray-300 mb-1">
-                            <span>Прогресс</span>
-                            <span>{task.progress}%</span>
+                            <span>Прогресс парсинга</span>
+                            <span>
+                              {task.progress}%
+                              {task.processed_cross_numbers && task.total_cross_numbers ? (
+                                <span className="ml-2 text-xs">
+                                  ({task.processed_cross_numbers} / {task.total_cross_numbers} кросс-номеров)
+                                </span>
+                              ) : null}
+                            </span>
                           </div>
                           <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2">
                             <div
@@ -341,6 +348,11 @@ function Tasks() {
                               style={{ width: `${task.progress}%` }}
                             ></div>
                           </div>
+                          {task.current_number && (
+                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                              Текущий кросс-номер: <span className="font-mono">{task.current_number}</span>
+                            </p>
+                          )}
                         </div>
                       )}
 

@@ -577,7 +577,11 @@ def process_parsing_task(self, task_id):
             
             # Рассчитываем прогресс
             progress = 0
-            if hasattr(task, '_total_rows') and task._total_rows > 0:
+            # В первую очередь считаем по количеству кросс-номеров (артикулов),
+            # если эта статистика уже посчитана.
+            if hasattr(task, '_total_cross_numbers') and getattr(task, '_total_cross_numbers', 0) > 0:
+                progress = min(100, int((getattr(task, '_processed_cross_numbers', 0) / task._total_cross_numbers) * 100))
+            elif hasattr(task, '_total_rows') and task._total_rows > 0:
                 progress = min(100, int((task._processed_rows / task._total_rows) * 100))
             
             async_to_sync(channel_layer.group_send)(
@@ -594,6 +598,9 @@ def process_parsing_task(self, task_id):
                         'current_row': getattr(task, '_current_row', 0),
                         'total_rows': getattr(task, '_total_rows', 0),
                         'processed_rows': getattr(task, '_processed_rows', 0),
+                        'current_number': getattr(task, '_current_number', ''),
+                        'total_cross_numbers': getattr(task, '_total_cross_numbers', 0),
+                        'processed_cross_numbers': getattr(task, '_processed_cross_numbers', 0),
                     }
                 }
             )
@@ -661,20 +668,42 @@ def process_parsing_task(self, task_id):
         else:
             df = pd.DataFrame()
         
-        # Инициализируем таймаут и счетчик обработанных строк
+        # Инициализируем таймаут и счетчики
         task._timeout_check = time.time()
-        task._processed_rows = 0  # Добавляем счетчик обработанных строк
-        task._total_rows = total_rows  # Сохраняем общее количество строк
-        task._current_row = 0  # Текущая обрабатываемая строка
+        task._processed_rows = 0  # количество обработанных строк исходного файла
+        task._total_rows = total_rows  # общее количество строк
+        task._current_row = 0  # текущая обрабатываемая строка
+        # Счётчики по кросс-номерам (артикулам) из столбца G/F
+        task._total_cross_numbers = 0
+        task._processed_cross_numbers = 0
+        task._current_number = ''
         
-        # Сохраняем total_rows в метаданных задачи для доступа через API.
-        # Принудительно приводим sources к dict, чтобы в нём можно было хранить служебные данные.
+        # Быстрый проход по DataFrame, чтобы посчитать общее количество кросс-номеров.
+        try:
+            total_cross = 0
+            for _, src_row in df.iterrows():
+                cross_from_g = safe_cell_to_str(src_row.iloc[6]) if len(src_row) > 6 else ''
+                part_from_f = safe_cell_to_str(src_row.iloc[5]) if len(src_row) > 5 else ''
+                numbers_source_value = cross_from_g if cross_from_g else part_from_f
+                if not numbers_source_value:
+                    continue
+                nums = [n.strip() for n in str(numbers_source_value).split(';') if n and str(n).strip()]
+                total_cross += len(nums)
+            task._total_cross_numbers = total_cross
+        except Exception as e:
+            log(f"Ошибка подсчёта общего количества кросс-номеров: {e}")
+            task._total_cross_numbers = 0
+        
+        # Сохраняем метаданные в sources для доступа через API / WebSocket.
         if not isinstance(task.sources, dict):
             task.sources = {}
         task.sources['_meta'] = {
             'total_rows': total_rows,
             'processed_rows': 0,
-            'current_row': 0
+            'current_row': 0,
+            'total_cross_numbers': getattr(task, '_total_cross_numbers', 0),
+            'processed_cross_numbers': 0,
+            'current_number': ''
         }
         update_task_fields(sources=task.sources)
 
@@ -887,6 +916,22 @@ def process_parsing_task(self, task_id):
                         continue
                     
                     try:
+                        # Обновляем текущий кросс-номер и счётчики
+                        task._current_number = current_number
+                        task._processed_cross_numbers = getattr(task, '_processed_cross_numbers', 0) + 1
+                        # Обновляем метаданные по кросс-номерам
+                        if not isinstance(task.sources, dict):
+                            task.sources = {}
+                        if '_meta' not in task.sources:
+                            task.sources['_meta'] = {}
+                        task.sources['_meta'].update({
+                            'current_number': task._current_number,
+                            'total_cross_numbers': getattr(task, '_total_cross_numbers', 0),
+                            'processed_cross_numbers': getattr(task, '_processed_cross_numbers', 0),
+                        })
+                        # Отправляем обновлённый прогресс по кросс-номерам
+                        ws_send()
+                        
                         # Параллельно Autopiter, Emex для текущего артикула
                         parallel_results = parse_all_parallel([current_number], brand_from_e, part_number_from_f, name_from_b)
                         

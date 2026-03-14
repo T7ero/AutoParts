@@ -251,21 +251,29 @@ def task_logs(request, task_id):
                 'message': f"Задача завершена с ошибкой: {task.error_message or 'Неизвестная ошибка'}"
             })
         
-        # Добавляем накопленные логи из поля task.log (поддержка текущей строки парсинга)
-        if getattr(task, 'log', None):
+        # Добавляем накопленные логи из файлового лога задачи (parsing_task_<id>.log),
+        # где во время исполнения мы пишем все события, в том числе ошибки Emex/Armtek.
+        try:
             import re
-            for line in str(task.log).split('\n'):
-                line = line.strip()
-                if not line:
-                    continue
-                # Парсим время в формате [dd.mm.yyyy, HH:MM:SS]
-                m = re.match(r"^\[(\d{2}\.\d{2}\.\d{4}), (\d{2}:\d{2}:\d{2})\]\s*(.*)$", line)
-                if m:
-                    dt = f"{m.group(1).split('.')[2]}-{m.group(1).split('.')[1]}-{m.group(1).split('.')[0]}T{m.group(2)}"
-                    msg = m.group(3)
-                    logs.append({'timestamp': dt, 'message': msg})
-                else:
-                    logs.append({'timestamp': task.updated_at.isoformat(), 'message': line})
+            from django.conf import settings
+            log_file_path = os.path.join(settings.MEDIA_ROOT, 'results', f'parsing_task_{task_id}.log')
+            if os.path.exists(log_file_path):
+                with open(log_file_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        # Парсим время в формате [dd.mm.yyyy, HH:MM:SS]
+                        m = re.match(r"^\[(\d{2}\.\д{2}\.\д{4}), (\д{2}:\д{2}:\д{2})\]\s*(.*)$", line)
+                        if m:
+                            dt = f"{m.group(1).split('.')[2]}-{m.group(1).split('.')[1]}-{m.group(1).split('.')[0]}T{m.group(2)}"
+                            msg = m.group(3)
+                            logs.append({'timestamp': dt, 'message': msg})
+                        else:
+                            logs.append({'timestamp': task.updated_at.isoformat(), 'message': line})
+        except Exception:
+            # В случае любой ошибки просто пропускаем файловые логи
+            pass
 
         # Пытаемся получить дополнительную информацию из Celery
         if celery_result.info:
@@ -315,14 +323,22 @@ def task_logs(request, task_id):
         # Сортируем логи по времени (если timestamps отсутствуют, они будут в конце)
         logs = [l for l in logs if l.get('timestamp')] + [l for l in logs if not l.get('timestamp')]
         
-        return Response({
+        # Дополнительные метаданные для фронтенда (прогресс, текущий кросс-номер)
+        meta = {}
+        if task.sources and isinstance(task.sources, dict):
+            meta = task.sources.get('_meta', {})
+        response_payload = {
             'task_id': task_id,
             'status': task.status,
             'logs': logs,
             'created_at': task.created_at.isoformat(),
             'updated_at': task.updated_at.isoformat(),
-            'file_name': task.file.name if task.file else None
-        })
+            'file_name': task.file.name if task.file else None,
+        }
+        if meta:
+            response_payload['meta'] = meta
+
+        return Response(response_payload)
         
     except ParsingTask.DoesNotExist:
         return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)

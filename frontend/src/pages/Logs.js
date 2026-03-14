@@ -85,6 +85,14 @@ function Logs() {
         ...prev,
         [`parsing_${taskId}`]: response.data.logs || []
       }));
+      // Обновляем базовую информацию о задаче (прогресс, текущий кросс-номер и т.п.), если она есть
+      if (response.data.meta) {
+        setTasks(prev =>
+          prev.map(t =>
+            t.id === taskId ? { ...t, ...response.data.meta } : t
+          )
+        );
+      }
     } catch (err) {
       console.error('Ошибка при загрузке логов:', err);
     }
