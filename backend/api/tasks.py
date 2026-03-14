@@ -3,16 +3,17 @@ from celery import shared_task
 from django.core.files import File
 from core.models import ParsingTask
 from .autopiter_parser import (
-    get_brands_by_artikul, 
-    get_brands_by_artikul_armtek, 
-    get_brands_by_artikul_emex, 
+    get_brands_by_artikul,
+    get_brands_by_artikul_armtek,
+    get_brands_by_artikul_emex,
     cleanup_chrome_processes,
     cleanup_driver_pool,
     get_next_proxy,
     get_proxy_string,
     load_proxies_from_file,
     log_debug,
-    filter_armtek_brands
+    filter_armtek_brands,
+    PROXY_LIST,
 )
 import re
 import unicodedata
@@ -746,7 +747,21 @@ def process_parsing_task(self, task_id):
             results = {'autopiter': [], 'emex': []}
             state = {"emex_disabled": False, "emex_failures": 0}
             ARTICLE_TIMEOUT = 10  # Уменьшаем общий таймаут на один артикул
-            emex_semaphore = threading.Semaphore(1)  # Уменьшаем до 1 одновременного Emex-запроса
+
+            # Динамический семафор для Emex: чем больше рабочих прокси, тем больше одновременно
+            # можно безопасно держать HTTP-запросов к Emex (но не более 3).
+            try:
+                total_proxies = len(PROXY_LIST)
+            except Exception:
+                total_proxies = 0
+            emex_parallel = 1
+            if total_proxies > 0:
+                emex_parallel = min(total_proxies, 3)
+            emex_semaphore = threading.Semaphore(emex_parallel)
+
+            # Лёгкий параллелизм по Autopiter: не более 2 одновременных артикулов,
+            # чтобы не перегружать сайт.
+            AUTOPITER_MAX_WORKERS = 2
 
             def parse_one(site, parser_func, max_retries=1):
                 def inner(num, proxy=None):
@@ -814,14 +829,18 @@ def process_parsing_task(self, task_id):
                             log(f"Emex: критическая ошибка для артикула {num}: {str(e)}")
                 return local
 
-            # Последовательная обработка для предотвращения исчерпания потоков
-            for num in numbers:
-                try:
-                    res = worker(num)
-                    results['autopiter'].extend(res.get('autopiter', []))
-                    results['emex'].extend(res.get('emex', []))
-                except Exception as e:
-                    log(f"Ошибка обработки артикула {num}: {str(e)}")
+            # Обработка артикулов с лёгким параллелизмом:
+            # Autopiter выполняется в пуле потоков, Emex ограничен семафором выше.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=AUTOPITER_MAX_WORKERS) as executor:
+                future_map = {executor.submit(worker, num): num for num in numbers}
+                for future in concurrent.futures.as_completed(future_map):
+                    num = future_map[future]
+                    try:
+                        res = future.result()
+                        results['autopiter'].extend(res.get('autopiter', []))
+                        results['emex'].extend(res.get('emex', []))
+                    except Exception as e:
+                        log(f"Ошибка обработки артикула {num}: {str(e)}")
 
             return results
         
