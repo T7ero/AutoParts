@@ -58,12 +58,17 @@ FAILED_REQUESTS_CACHE = {}
 PROXY_LIST = []
 PROXY_INDEX = 0
 # Набор проблемных прокси, которые следует временно исключать
-BAD_PROXIES = set()
+BAD_PROXIES: Set[str] = set()
+
+# Состояние для Emex Selenium: чтобы не создавать тысячи "падающих" сессий
+EMEX_SELENIUM_FAILURES = 0
+EMEX_SELENIUM_DISABLED = False
+MAX_EMEX_SELENIUM_FAILURES = 3
 
 # Пул драйверов для Armtek
-DRIVER_POOL = []
+DRIVER_POOL: List[webdriver.Chrome] = []
 DRIVER_POOL_LOCK = threading.Lock()
-DRIVER_LAST_USED = {}
+DRIVER_LAST_USED: Dict[int, float] = {}
 
 def log_debug(message):
     print(f"[DEBUG] {message}")
@@ -1772,7 +1777,14 @@ def _split_comma_separated_brands(brand_str: str) -> List[str]:
 
 
 def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> List[str]:
-    """Получает бренды с Emex по артикулу с улучшенной обработкой блокировок"""
+    """Получает бренды с Emex по артикулу.
+    
+    Selenium для Emex НЕ убираем, но:
+    - ограничиваем число неудачных API‑попыток;
+    - отключаем Selenium fallback после нескольких критических ошибок,
+      чтобы один артикул не зависал на минуты и не создавал тысячи процессов Chrome.
+    """
+    global EMEX_SELENIUM_FAILURES, EMEX_SELENIUM_DISABLED
     try:
         encoded_artikul = quote(artikul)
         
@@ -1887,9 +1899,12 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             {"showAll": "true", "isHeaderSearch": "true"},
         ]
         
-        # Счетчик попыток для предотвращения бесконечных циклов
+        # Счетчик попыток и общий лимит времени на один артикул,
+        # чтобы избежать многоминутных зависаний при недоступном Emex.
         total_attempts = 0
-        max_total_attempts = 3  # Уменьшаем количество попыток для ускорения
+        max_total_attempts = 3
+        api_start_ts = time.time()
+        max_api_time_seconds = 25
         
         for num in candidate_nums:
             num_enc = quote(num)
@@ -1897,6 +1912,9 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             for params in api_variants:
                 if total_attempts >= max_total_attempts:
                     log_debug(f"Emex API: достигнут лимит попыток для {artikul}, пропускаем")
+                    break
+                if time.time() - api_start_ts > max_api_time_seconds:
+                    log_debug(f"Emex API: превышен общий лимит времени для {artikul}, прекращаем попытки")
                     break
                     
                 try:
@@ -1988,6 +2006,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                                 break  # Переходим к следующей конфигурации
                             
                         except requests.exceptions.Timeout:
+                            total_attempts += 1
                             log_debug(f"Emex API: таймаут для {artikul} (попытка {total_attempts})")
                             if total_attempts >= max_total_attempts:
                                 log_debug(f"Emex API: слишком много таймаутов для {artikul}, пропускаем")
@@ -2003,7 +2022,8 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                                     pass
                             continue
                         except requests.exceptions.RequestException as e:
-                            log_debug(f"Emex API: ошибка запроса для {artikul}: {str(e)}")
+                            total_attempts += 1
+                            log_debug(f"Emex API: ошибка запроса для {artikul}: {str(e)} (попытка {total_attempts})")
                             # При ошибке запроса тоже пробуем сменить прокси
                             if not proxy:
                                 try:
@@ -2034,6 +2054,11 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
 
         # Если все попытки не удались, пробуем SeleniumFallback (ограниченный)
         log_debug(f"Emex API: не удалось получить бренды для {artikul}, пробуем Selenium fallback")
+        # Если Selenium уже несколько раз «падал», больше не пытаемся его запускать
+        if EMEX_SELENIUM_DISABLED:
+            log_debug("Emex Selenium fallback: отключён из-за предыдущих ошибок, пропускаем")
+            return []
+
         try:
             # Легкий парсинг страницы поиска: бренды часто присутствуют в блоке фильтров/подсказок
             from selenium.webdriver.common.by import By as _By
@@ -2083,7 +2108,11 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                 log_debug(f"Emex Selenium fallback: найдено {len(brands)} брендов для {artikul}")
                 return sorted(list(brands))
         except Exception as _e:
-            log_debug(f"Emex Selenium fallback ошибка: {str(_e)}")
+            EMEX_SELENIUM_FAILURES += 1
+            log_debug(f"Emex Selenium fallback ошибка: {str(_e)} (ошибок подряд: {EMEX_SELENIUM_FAILURES})")
+            if EMEX_SELENIUM_FAILURES >= MAX_EMEX_SELENIUM_FAILURES:
+                EMEX_SELENIUM_DISABLED = True
+                log_debug("Emex Selenium fallback: достигнут лимит ошибок, дальнейшие попытки будут пропускаться")
         return []
         
     except Exception as e:
