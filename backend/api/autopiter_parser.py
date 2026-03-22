@@ -1,4 +1,5 @@
 import requests
+from requests.adapters import HTTPAdapter
 from bs4 import BeautifulSoup
 import re
 from urllib.parse import quote
@@ -53,6 +54,26 @@ DRIVER_TIMEOUT_RETRIES = 3  # Увеличиваем количество поп
 REQUEST_CACHE = {}
 CACHE_EXPIRATION = 600
 FAILED_REQUESTS_CACHE = {}
+
+# Пул HTTP-сессий на поток: переиспользование keep-alive и пула соединений (заметно ускоряет Autopiter/Emex API)
+_HTTP_SESSION_TLS = threading.local()
+_HTTP_POOL_CONN = 32
+_HTTP_POOL_SIZE = 32
+
+
+def _get_thread_requests_session() -> requests.Session:
+    """Одна Session на поток с пулом соединений urllib3."""
+    if getattr(_HTTP_SESSION_TLS, "session", None) is None:
+        sess = requests.Session()
+        adapter = HTTPAdapter(
+            pool_connections=_HTTP_POOL_CONN,
+            pool_maxsize=_HTTP_POOL_SIZE,
+            max_retries=0,
+        )
+        sess.mount("https://", adapter)
+        sess.mount("http://", adapter)
+        _HTTP_SESSION_TLS.session = sess
+    return _HTTP_SESSION_TLS.session
 
 # Глобальная переменная для хранения прокси
 PROXY_LIST = []
@@ -321,8 +342,9 @@ def make_request(
     Параметр cache_key зарезервирован для возможного кеширования (пока не используется).
     """
 
-    # Настройка сессии
-    session = requests.Session()
+    # Настройка сессии (пул соединений на поток)
+    session = _get_thread_requests_session()
+    session.proxies.clear()
     
     # Настройка прокси
     if proxy:
@@ -532,8 +554,8 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
         # Используем только HTTP-запросы (без Selenium)
         url = f"https://autopiter.ru/goods/{quote(artikul)}"
         
-        # Используем сессию для сохранения cookies
-        session = requests.Session()
+        # Пул соединений на поток (не создаём новую Session на каждый артикул)
+        session = _get_thread_requests_session()
         session.headers.update({
             **HEADERS,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -545,6 +567,7 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
         })
+        session.proxies.clear()
         
         # Настройка прокси, если указан
         if proxy:
@@ -558,10 +581,10 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
                 session.proxies.update(proxy_dict)
                 log_debug(f"АвтоПитер: использование прокси {proxy}")
         
-        # Добавляем случайную задержку
-        time.sleep(random.uniform(1, 3))
+        # Минимальный джиттер вместо 1–3 с (раньше сильно тормозило тысячи позиций)
+        time.sleep(random.uniform(0, 0.12))
         
-        response = session.get(url, timeout=15)
+        response = session.get(url, timeout=12)
         
         if response.status_code == 200:
             brands = parse_autopiter_response(response.text, artikul)
@@ -1833,8 +1856,13 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
         except Exception:
             candidate_nums = [artikul]
 
-        # Создаем сессию с прокси
-        session = requests.Session()
+        # Сессия с пулом соединений (переиспользование TCP на потоке)
+        session = _get_thread_requests_session()
+        session.proxies.clear()
+        try:
+            session.cookies.clear()
+        except Exception:
+            pass
         session.headers.update(headers)
         
         # Настройка прокси - принудительно используем прокси для Emex
@@ -1874,11 +1902,11 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
         except Exception:
             pass
         
-        # Прогрев сессии (сокращенный)
+        # Короткий прогрев (раньше +0.5 с на каждый артикул сильно замедляло парсинг)
         try:
             log_debug(f"Emex: прогрев сессии с прокси: {proxies is not None}")
-            session.get("https://emex.ru/", timeout=5, proxies=proxies)
-            time.sleep(0.5)  # Небольшая пауза между запросами
+            session.get("https://emex.ru/", timeout=4, proxies=proxies)
+            time.sleep(0.05)
         except Exception as e:
             log_debug(f"Emex: ошибка прогрева сессии: {str(e)}")
             pass

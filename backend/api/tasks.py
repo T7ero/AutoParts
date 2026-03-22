@@ -741,71 +741,72 @@ def process_parsing_task(self, task_id):
         ws_send()
         # Батч-обработка: по 25 строк с промежуточным сохранением результатов
         batch_size = 25
+        cross_progress_lock = threading.Lock()
         
-        # Оптимизированная функция для параллельного парсинга с таймаутами и прокси
-        def parse_all_parallel(numbers, brand, part_number, name):
+        # Параллельный парсинг по всем кросс-номерам строки сразу (раньше — по одному, пул потоков не использовался)
+        def parse_all_parallel(numbers, brand, part_number, name, on_article_done=None):
             results = {'autopiter': [], 'emex': []}
             state = {"emex_disabled": False, "emex_failures": 0}
-            ARTICLE_TIMEOUT = 10  # Уменьшаем общий таймаут на один артикул
+            if not numbers:
+                return results
 
-            # Динамический семафор для Emex: чем больше рабочих прокси, тем больше одновременно
-            # можно безопасно держать HTTP-запросов к Emex (но не более 3).
             try:
                 total_proxies = len(PROXY_LIST)
             except Exception:
                 total_proxies = 0
-            emex_parallel = 1
+            # Emex: до 8 параллельных HTTP при наличии прокси; без прокси — 2 (осторожно с rate limit)
             if total_proxies > 0:
-                emex_parallel = min(total_proxies, 3)
+                emex_parallel = min(total_proxies, 8)
+            else:
+                emex_parallel = 2
             emex_semaphore = threading.Semaphore(emex_parallel)
 
-            # Лёгкий параллелизм по Autopiter: не более 2 одновременных артикулов,
-            # чтобы не перегружать сайт.
-            AUTOPITER_MAX_WORKERS = 2
+            try:
+                cpu_n = os.cpu_count() or 4
+            except Exception:
+                cpu_n = 4
+            # Autopiter — сетевой I/O: несколько артикулов одновременно на строку
+            nnums = len(numbers)
+            AUTOPITER_MAX_WORKERS = max(1, min(nnums, max(4, min(cpu_n * 2, 16))))
 
             def parse_one(site, parser_func, max_retries=1):
                 def inner(num, proxy=None):
-                    # Проверяем кэш перед парсингом
                     cached_result = get_from_cache(num, site)
                     if cached_result is not None:
-                        log(f"{site.capitalize()}: результат из кэша для {num} → {cached_result}")
+                        log_debug(f"{site}: кэш {num} ({len(cached_result)} брендов)")
                         return [(brand, part_number, name, b, num, site) for b in cached_result]
-                    
+
                     for attempt in range(max_retries):
                         try:
                             if attempt == 0:
                                 if site == 'emex' and proxy:
-                                    log(f"{site.capitalize()}: попытка {attempt+1} с прокси для {num}")
+                                    log_debug(f"{site}: попытка {attempt+1} с прокси для {num}")
                                 else:
                                     proxy = None
-                                    log(f"{site.capitalize()}: попытка {attempt+1} без прокси для {num}")
+                                    log_debug(f"{site}: попытка {attempt+1} для {num}")
                             else:
                                 proxy = get_next_proxy()
-                                log(f"{site.capitalize()}: попытка {attempt+1} с прокси для {num}")
-                            
-                            # Уменьшаем задержку для ускорения
-                            time.sleep(0.01 if site == 'autopiter' else 0.01)  # Еще больше уменьшаем задержки
+                                log_debug(f"{site}: попытка {attempt+1} с прокси для {num}")
+
+                            time.sleep(0.01 if site == 'autopiter' else 0.01)
                             brands = parser_func(num, proxy)
-                            
-                            # Сохраняем результат в кэш
+
                             is_empty = len(brands) == 0
                             set_cache(num, site, brands, is_empty)
-                            
-                            log(f"{site}: {num} → {brands}")
+
+                            log_debug(f"{site}: {num} → {len(brands)} брендов")
                             return [(brand, part_number, name, b, num, site) for b in brands]
                         except Exception as e:
                             log(f"Error parsing {site} for {num} (attempt {attempt + 1}): {str(e)}")
                             if attempt < max_retries - 1:
-                                time.sleep(0.1)  # Еще больше уменьшаем время ожидания
+                                time.sleep(0.1)
                             else:
                                 log(f"Failed to parse {site} for {num} after {max_retries} attempts")
-                                # Сохраняем пустой результат в кэш
                                 set_cache(num, site, [], True)
                                 return []
                 return inner
-            
-            # Параллельная обработка артикулов с семафором для Emex
-            log(f"Начинаем парсинг {len(numbers)} артикулов для строки {index + 1}")
+
+            log(f"Начинаем парсинг {len(numbers)} артикулов для строки {index + 1} (потоков Autopiter/строка: {AUTOPITER_MAX_WORKERS}, Emex параллельно: {emex_parallel})")
 
             def worker(num):
                 local = {'autopiter': [], 'emex': []}
@@ -829,8 +830,6 @@ def process_parsing_task(self, task_id):
                             log(f"Emex: критическая ошибка для артикула {num}: {str(e)}")
                 return local
 
-            # Обработка артикулов с лёгким параллелизмом:
-            # Autopiter выполняется в пуле потоков, Emex ограничен семафором выше.
             with concurrent.futures.ThreadPoolExecutor(max_workers=AUTOPITER_MAX_WORKERS) as executor:
                 future_map = {executor.submit(worker, num): num for num in numbers}
                 for future in concurrent.futures.as_completed(future_map):
@@ -841,7 +840,69 @@ def process_parsing_task(self, task_id):
                         results['emex'].extend(res.get('emex', []))
                     except Exception as e:
                         log(f"Ошибка обработки артикула {num}: {str(e)}")
+                    finally:
+                        if callable(on_article_done):
+                            try:
+                                on_article_done(num)
+                            except Exception:
+                                pass
 
+            return results
+
+        def parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b, row_index: int):
+            """Armtek (Selenium) — последовательно по артикулам, но один раз на строку."""
+            results = []
+            log(f"Armtek: начало обработки {len(numbers)} артикулов для строки {row_index + 1}")
+
+            def parse_one_armtek(num):
+                cached_result = get_from_cache(num, 'armtek')
+                if cached_result is not None:
+                    log_debug(f"Armtek: кэш {num} ({len(cached_result)} брендов)")
+                    if cached_result:
+                        return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in cached_result]
+                    return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
+
+                max_retries = 1
+                for attempt in range(max_retries):
+                    try:
+                        if attempt == 0:
+                            proxy = None
+                            log_debug(f"Armtek: попытка {attempt+1} без прокси для {num}")
+                        else:
+                            proxy = get_next_proxy()
+                            log_debug(f"Armtek: попытка {attempt+1} с прокси для {num}")
+
+                        time.sleep(0.01)
+                        from .autopiter_parser import get_brands_by_artikul_armtek
+                        brands = get_brands_by_artikul_armtek(num, proxy)
+
+                        is_empty = len(brands) == 0
+                        set_cache(num, 'armtek', brands, is_empty)
+
+                        if brands:
+                            filtered_brands = filter_armtek_brands(brands)
+                            if filtered_brands:
+                                log_debug(f"armtek: {num} → {len(filtered_brands)} брендов")
+                                return [(brand_from_e, part_number_from_f, name_from_b, brand, num, 'armtek') for brand in filtered_brands]
+                            return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
+                        return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
+                    except Exception as e:
+                        log(f"Error parsing armtek for {num} (attempt {attempt + 1}): {str(e)}")
+                        if attempt < max_retries - 1:
+                            time.sleep(0.1)
+                        else:
+                            log(f"Failed to parse armtek for {num} after {max_retries} attempts")
+                            set_cache(num, 'armtek', [], True)
+                            return []
+
+            for num in numbers:
+                try:
+                    for res in parse_one_armtek(num):
+                        results.append(res)
+                except Exception as e:
+                    log(f"Error processing armtek result for {num}: {str(e)}")
+
+            log(f"Armtek: завершена обработка для строки {row_index + 1}, найдено {len(results)} результатов")
             return results
         
         # Статистика качества данных по ходу обработки
@@ -929,33 +990,34 @@ def process_parsing_task(self, task_id):
                 update_task_fields(status='in_progress')
                 ws_send()
                 
-                # Обрабатываем каждый артикул отдельно для создания отдельных строк
-                for current_number in numbers_to_parse:
-                    if not current_number:
-                        continue
-                    
-                    try:
-                        # Обновляем текущий кросс-номер и счётчики
-                        task._current_number = current_number
-                        task._processed_cross_numbers = getattr(task, '_processed_cross_numbers', 0) + 1
-                        # Обновляем метаданные по кросс-номерам
-                        if not isinstance(task.sources, dict):
-                            task.sources = {}
-                        if '_meta' not in task.sources:
-                            task.sources['_meta'] = {}
-                        task.sources['_meta'].update({
-                            'current_number': task._current_number,
-                            'total_cross_numbers': getattr(task, '_total_cross_numbers', 0),
-                            'processed_cross_numbers': getattr(task, '_processed_cross_numbers', 0),
-                        })
-                        # Отправляем обновлённый прогресс по кросс-номерам
-                        ws_send()
-                        
-                        # Параллельно Autopiter, Emex для текущего артикула
-                        parallel_results = parse_all_parallel([current_number], brand_from_e, part_number_from_f, name_from_b)
-                        
-                        # Обрабатываем результаты Autopiter для текущего артикула
-                        for (b1, pn1, n1, b2, pn2, src) in parallel_results['autopiter']:
+                try:
+                    def on_cross_article_done(num):
+                        """Прогресс по кросс-номерам: +1 после завершения Autopiter/Emex по артикулу."""
+                        with cross_progress_lock:
+                            task._processed_cross_numbers = getattr(task, '_processed_cross_numbers', 0) + 1
+                            task._current_number = str(num) if num is not None else ''
+                            if not isinstance(task.sources, dict):
+                                task.sources = {}
+                            if '_meta' not in task.sources:
+                                task.sources['_meta'] = {}
+                            task.sources['_meta'].update({
+                                'current_number': task._current_number,
+                                'total_cross_numbers': getattr(task, '_total_cross_numbers', 0),
+                                'processed_cross_numbers': getattr(task, '_processed_cross_numbers', 0),
+                            })
+                            ws_send()
+
+                    # Все кросс-номера строки параллельно (Autopiter HTTP + Emex с семафором)
+                    parallel_results = parse_all_parallel(
+                        numbers_to_parse,
+                        brand_from_e,
+                        part_number_from_f,
+                        name_from_b,
+                        on_article_done=on_cross_article_done,
+                    )
+
+                    # Обрабатываем результаты Autopiter по строке
+                    for (b1, pn1, n1, b2, pn2, src) in parallel_results['autopiter']:
                             # Фильтруем бренд № 2 (результат парсинга)
                             if b2 and b2.strip():
                                 # Разбиваем бренды с запятыми на отдельные (например, "БРТ, Балаково" -> "БРТ" и "Балаково")
@@ -1025,9 +1087,9 @@ def process_parsing_task(self, task_id):
                                     results_autopiter.append(d)
                                     if b2:
                                         stats['unique_brands']['autopiter'].add(b2)
-                        
-                        # Обрабатываем результаты Emex для текущего артикула
-                        for (b1, pn1, n1, b2, pn2, src) in parallel_results['emex']:
+
+                    # Обрабатываем результаты Emex по строке
+                    for (b1, pn1, n1, b2, pn2, src) in parallel_results['emex']:
                             # Фильтруем бренд № 2 (результат парсинга)
                             if b2 and b2.strip():
                                 # Разбиваем бренды с запятыми на отдельные (на случай, если они не были разбиты в парсере)
@@ -1092,95 +1154,26 @@ def process_parsing_task(self, task_id):
                                     results_emex.append(d)
                                     if b2:
                                         stats['unique_brands']['emex'].add(b2)
-                        
-                        # Armtek (Selenium) - оптимизированная версия (если выбран)
-                        def parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b):
-                            results = []
-                            log(f"Armtek: начало обработки {len(numbers)} артикулов для строки {index + 1}")
-                            
-                            def parse_one(num):
-                                # Проверяем кэш перед парсингом
-                                cached_result = get_from_cache(num, 'armtek')
-                                if cached_result is not None:
-                                    log(f"Armtek: результат из кэша для {num} → {cached_result}")
-                                    if cached_result:
-                                        return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in cached_result]
-                                    else:
-                                        return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
-                                
-                                max_retries = 1  # Только одна попытка для ускорения
-                                for attempt in range(max_retries):
-                                    try:
-                                        if attempt == 0:
-                                            proxy = None
-                                            log(f"Armtek: попытка {attempt+1} без прокси для {num}")
-                                        else:
-                                            proxy = get_next_proxy()
-                                            log(f"Armtek: попытка {attempt+1} с прокси для {num}")
-                                        
-                                        # Убираем задержку для максимального ускорения
-                                        time.sleep(0.01)
-                                        # Используем функцию для поиска брендов
-                                        from .autopiter_parser import get_brands_by_artikul_armtek
-                                        brands = get_brands_by_artikul_armtek(num, proxy)
-                                        
-                                        # Сохраняем результат в кэш
-                                        is_empty = len(brands) == 0
-                                        set_cache(num, 'armtek', brands, is_empty)
-                                        
-                                        if brands:
-                                            # Для Armtek используем специализированный фильтр,
-                                            # без дополнительной глобальной фильтрации
-                                            filtered_brands = filter_armtek_brands(brands)
-                                            if filtered_brands:
-                                                log(f"armtek: {num} → найдено {len(filtered_brands)} брендов (после фильтрации)")
-                                                return [(brand_from_e, part_number_from_f, name_from_b, brand, num, 'armtek') for brand in filtered_brands]
-                                            else:
-                                                log(f"armtek: {num} → бренды отфильтрованы как мусор")
-                                                return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
-                                        else:
-                                            log(f"armtek: {num} → бренды не найдены")
-                                            return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
-                                    except Exception as e:
-                                        log(f"Error parsing armtek for {num} (attempt {attempt + 1}): {str(e)}")
-                                        if attempt < max_retries - 1:
-                                            time.sleep(0.1)
-                                        else:
-                                            log(f"Failed to parse armtek for {num} after {max_retries} attempts")
-                                            # Сохраняем пустой результат в кэш
-                                            set_cache(num, 'armtek', [], True)
-                                            return []
-                            
-                            # Последовательная обработка для предотвращения исчерпания потоков
-                            for num in numbers:
-                                try:
-                                    for res in parse_one(num):
-                                        results.append(res)
-                                except Exception as e:
-                                    log(f"Error processing armtek result for {num}: {str(e)}")
-                            
-                            log(f"Armtek: завершена обработка для строки {index + 1}, найдено {len(results)} результатов")
-                            return results
-                        
-                        if 'armtek' in selected_sources:
-                            armtek_results = parse_armtek_parallel([current_number], brand_from_e, part_number_from_f, name_from_b)
-                            for (b1, pn1, n1, brand, original_num, src) in armtek_results:
-                                results_armtek.append({
-                                    'Бренд № 1': clean_excel_string(brand_from_e),
-                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
-                                    'Наименование': clean_excel_string(name_from_b),
-                                    'Бренд № 2': clean_excel_string(brand),  # Найденный бренд
-                                    'Артикул по Бренду № 2': clean_excel_string(original_num),  # Исходный артикул
-                                    'Источник': src
-                                })
-                            # промежуточный лог (без сохранения в БД)
-                            print(f"[DEBUG] {log_messages[-1] if log_messages else 'Обработка артикула'}")
-                            ensure_not_cancelled()
-                            ws_send()
-                    
-                    except Exception as e:
-                        log(f"Ошибка при обработке артикула {current_number} в строке {index + 1}: {str(e)}")
-                        continue
+
+                    if 'armtek' in selected_sources:
+                        armtek_results = parse_armtek_parallel(
+                            numbers_to_parse, brand_from_e, part_number_from_f, name_from_b, index
+                        )
+                        for (b1, pn1, n1, brand, original_num, src) in armtek_results:
+                            results_armtek.append({
+                                'Бренд № 1': clean_excel_string(brand_from_e),
+                                'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
+                                'Наименование': clean_excel_string(name_from_b),
+                                'Бренд № 2': clean_excel_string(brand),
+                                'Артикул по Бренду № 2': clean_excel_string(original_num),
+                                'Источник': src
+                            })
+                        print(f"[DEBUG] {log_messages[-1] if log_messages else 'Обработка строки'}")
+                        ensure_not_cancelled()
+                        ws_send()
+
+                except Exception as e:
+                    log(f"Ошибка при обработке строки {index + 1}: {str(e)}")
                 
                 # Обновляем текущую обрабатываемую строку
                 task._current_row = index + 1
