@@ -86,6 +86,18 @@ EMEX_SELENIUM_FAILURES = 0
 EMEX_SELENIUM_DISABLED = False
 MAX_EMEX_SELENIUM_FAILURES = 3
 
+
+class AutopiterRateLimitException(Exception):
+    """Autopiter вернул rate-limit и нам нужно повторить позже.
+
+    Важно: такие ответы нельзя негативно кэшировать, иначе бренды будут
+    пропущены надолго (NEGATIVE_CACHE_EXPIRATION).
+    """
+
+
+class AutopiterForbiddenException(Exception):
+    """Autopiter временно запретил доступ (403), требуется повторить позже."""
+
 # Пул драйверов для Armtek
 DRIVER_POOL: List[webdriver.Chrome] = []
 DRIVER_POOL_LOCK = threading.Lock()
@@ -581,9 +593,9 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
                 session.proxies.update(proxy_dict)
                 log_debug(f"АвтоПитер: использование прокси {proxy}")
 
-        # Autopiter чувствителен к параллельности: на `429` важно повторять запрос.
+        # Autopiter чувствителен к параллельности: на `429/403` важно повторять запрос.
         # Иначе в задачи улетает пустой результат, который затем кэшируется.
-        max_attempts = 3
+        max_attempts = 6
         for attempt in range(max_attempts):
             # Лёгкий джиттер перед запросом (не слишком длинный, но уже уменьшает 429)
             time.sleep(random.uniform(0.15, 0.35) if attempt == 0 else random.uniform(0.08, 0.18))
@@ -595,13 +607,36 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
                 return brands
 
             if response.status_code in (429, 403):
-                # Чуть более агрессивный backoff на rate-limit / forbidden
-                backoff = 1.2 * (attempt + 1)
-                log_debug(f"АвтоПитер: HTTP {response.status_code} для {artikul}, backoff {backoff:.1f}s (attempt {attempt + 1})")
+                # backoff зависит от `Retry-After`, если сервер его отдаёт.
+                retry_after = None
+                try:
+                    ra = response.headers.get("Retry-After")
+                    if ra is not None:
+                        retry_after = float(ra)
+                except Exception:
+                    retry_after = None
+
+                if retry_after is not None:
+                    backoff = max(0.2, min(18.0, retry_after))
+                else:
+                    # Экспоненциальный backoff с ограничением сверху
+                    backoff = max(0.8, min(18.0, 0.8 * (2 ** attempt) + 0.2 * attempt))
+
+                log_debug(
+                    f"АвтоПитер: HTTP {response.status_code} для {artikul}, backoff {backoff:.1f}s "
+                    f"(attempt {attempt + 1}/{max_attempts})"
+                )
                 try:
                     session.cookies.clear()
                 except Exception:
                     pass
+
+                # Если исчерпали попытки — прокидываем в tasks.py, чтобы не кэшировать пустое как "негативное"
+                if attempt == max_attempts - 1:
+                    if response.status_code == 429:
+                        raise AutopiterRateLimitException(f"Autopiter rate-limit 429 for {artikul}")
+                    raise AutopiterForbiddenException(f"Autopiter forbidden 403 for {artikul}")
+
                 time.sleep(backoff)
                 continue
 
@@ -611,6 +646,9 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
 
         return []
         
+    except (AutopiterRateLimitException, AutopiterForbiddenException):
+        # Пробрасываем выше, чтобы tasks.py не делал negative-cache.
+        raise
     except Exception as e:
         log_debug(f"Ошибка АвтоПитер для {artikul}: {str(e)}")
         return []
