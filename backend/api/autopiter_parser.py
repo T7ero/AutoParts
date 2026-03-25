@@ -595,10 +595,13 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
 
         # Autopiter чувствителен к параллельности: на `429/403` важно повторять запрос.
         # Иначе в задачи улетает пустой результат, который затем кэшируется.
-        max_attempts = 6
+        # Компромисс между полнотой и скоростью:
+        # при слишком долгом backoff поток(и) простаивают и скорость падает.
+        # Поэтому делаем ограниченное число попыток и cap на backoff.
+        max_attempts = 3
         for attempt in range(max_attempts):
             # Лёгкий джиттер перед запросом (не слишком длинный, но уже уменьшает 429)
-            time.sleep(random.uniform(0.15, 0.35) if attempt == 0 else random.uniform(0.08, 0.18))
+            time.sleep(random.uniform(0.08, 0.16) if attempt == 0 else random.uniform(0.04, 0.10))
 
             response = session.get(url, timeout=12, allow_redirects=True)
             if response.status_code == 200:
@@ -617,10 +620,11 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
                     retry_after = None
 
                 if retry_after is not None:
-                    backoff = max(0.2, min(18.0, retry_after))
+                    # Если сервер шлёт Retry-After — уважаем, но ограничиваем сверху
+                    backoff = max(0.2, min(6.0, retry_after))
                 else:
-                    # Экспоненциальный backoff с ограничением сверху
-                    backoff = max(0.8, min(18.0, 0.8 * (2 ** attempt) + 0.2 * attempt))
+                    # Экспоненциальный backoff, но с жёстким cap
+                    backoff = max(0.4, min(6.0, 0.8 * (2 ** attempt)))
 
                 log_debug(
                     f"АвтоПитер: HTTP {response.status_code} для {artikul}, backoff {backoff:.1f}s "
