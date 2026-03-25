@@ -580,18 +580,35 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
                 }
                 session.proxies.update(proxy_dict)
                 log_debug(f"АвтоПитер: использование прокси {proxy}")
-        
-        # Минимальный джиттер вместо 1–3 с (раньше сильно тормозило тысячи позиций)
-        time.sleep(random.uniform(0, 0.12))
-        
-        response = session.get(url, timeout=12)
-        
-        if response.status_code == 200:
-            brands = parse_autopiter_response(response.text, artikul)
-            log_debug(f"АвтоПитер requests: найдено {len(brands)} брендов")
-            return brands
-        
-        log_debug(f"АвтоПитер: HTTP {response.status_code} для {artikul}")
+
+        # Autopiter чувствителен к параллельности: на `429` важно повторять запрос.
+        # Иначе в задачи улетает пустой результат, который затем кэшируется.
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            # Лёгкий джиттер перед запросом (не слишком длинный, но уже уменьшает 429)
+            time.sleep(random.uniform(0.15, 0.35) if attempt == 0 else random.uniform(0.08, 0.18))
+
+            response = session.get(url, timeout=12, allow_redirects=True)
+            if response.status_code == 200:
+                brands = parse_autopiter_response(response.text, artikul)
+                log_debug(f"АвтоПитер requests: найдено {len(brands)} брендов (attempt {attempt + 1})")
+                return brands
+
+            if response.status_code in (429, 403):
+                # Чуть более агрессивный backoff на rate-limit / forbidden
+                backoff = 1.2 * (attempt + 1)
+                log_debug(f"АвтоПитер: HTTP {response.status_code} для {artikul}, backoff {backoff:.1f}s (attempt {attempt + 1})")
+                try:
+                    session.cookies.clear()
+                except Exception:
+                    pass
+                time.sleep(backoff)
+                continue
+
+            # Для других HTTP кодов не делаем много повторов
+            log_debug(f"АвтоПитер: HTTP {response.status_code} для {artikul} (attempt {attempt + 1})")
+            break
+
         return []
         
     except Exception as e:

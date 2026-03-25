@@ -765,9 +765,10 @@ def process_parsing_task(self, task_id):
                 cpu_n = os.cpu_count() or 4
             except Exception:
                 cpu_n = 4
-            # Autopiter — сетевой I/O: несколько артикулов одновременно на строку
+            # Autopiter очень легко триггерит rate-limit, поэтому ограничиваем параллелизм,
+            # иначе получаем `HTTP 429` и пустые результаты (которые потом кэшируются).
             nnums = len(numbers)
-            AUTOPITER_MAX_WORKERS = max(1, min(nnums, max(4, min(cpu_n * 2, 16))))
+            AUTOPITER_MAX_WORKERS = max(1, min(nnums, 2))
 
             def parse_one(site, parser_func, max_retries=1):
                 def inner(num, proxy=None):
