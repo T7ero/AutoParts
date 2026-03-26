@@ -692,7 +692,19 @@ def process_parsing_task(self, task_id):
                 if not numbers_source_value:
                     continue
                 nums = [n.strip() for n in str(numbers_source_value).split(';') if n and str(n).strip()]
-                total_cross += len(nums)
+                # Прогресс должен совпадать с реальной обработкой: мы дедуплим артикули
+                # через normalize_article_for_compare(), поэтому здесь тоже делаем дедупликацию.
+                deduped_numbers: list = []
+                seen_norm_articles: set = set()
+                for num in nums:
+                    norm = normalize_article_for_compare(num)
+                    if not norm:
+                        continue
+                    if norm in seen_norm_articles:
+                        continue
+                    seen_norm_articles.add(norm)
+                    deduped_numbers.append(num)
+                total_cross += len(deduped_numbers)
             task._total_cross_numbers = total_cross
         except Exception as e:
             log(f"Ошибка подсчёта общего количества кросс-номеров: {e}")
