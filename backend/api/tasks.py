@@ -985,6 +985,20 @@ def process_parsing_task(self, task_id):
                 
                 # Создаем список кросс-номеров для парсинга (только из столбца G)
                 numbers_to_parse = [n.strip() for n in numbers_source_value.split(';') if n.strip()]
+                # В исходных файлах иногда встречаются дубли одного и того же артикула в разных форматах
+                # (например, "D-129942" и "D129942"). Это удваивает запросы и провоцирует Autopiter 429,
+                # из-за чего итоговое число брендов резко падает.
+                deduped_numbers: list = []
+                seen_norm_articles: set = set()
+                for num in numbers_to_parse:
+                    norm = normalize_article_for_compare(num)
+                    if not norm:
+                        continue
+                    if norm in seen_norm_articles:
+                        continue
+                    seen_norm_articles.add(norm)
+                    deduped_numbers.append(num)
+                numbers_to_parse = deduped_numbers
                 
                 # Если нет артикулов для парсинга, пропускаем
                 if not numbers_to_parse:

@@ -98,6 +98,50 @@ class AutopiterRateLimitException(Exception):
 class AutopiterForbiddenException(Exception):
     """Autopiter временно запретил доступ (403), требуется повторить позже."""
 
+# Autopiter очень чувствителен к burst-нагрузке.
+# Даже при небольшом ThreadPoolExecutor легко ловится 429/403, что приводит к пустым результатам.
+# Этот лимитер делает "плавный" поток запросов в рамках одного процесса celery-worker.
+class _AutopiterAdaptiveLimiter:
+    def __init__(self, min_interval: float = 0.25, max_interval: float = 2.5) -> None:
+        self._min_interval = float(min_interval)
+        self._max_interval = float(max_interval)
+        self._interval = float(min_interval)
+        self._next_allowed = 0.0
+        self._lock = threading.Lock()
+
+    def wait(self) -> None:
+        """Ждём до разрешённого времени и резервируем следующий слот."""
+        while True:
+            with self._lock:
+                now = time.time()
+                wait_for = self._next_allowed - now
+                if wait_for <= 0:
+                    # резервируем следующий слот прямо сейчас
+                    self._next_allowed = now + self._interval
+                    return
+            # sleep вне lock
+            time.sleep(min(0.25, max(0.01, wait_for)))
+
+    def penalize(self, cooldown: float) -> None:
+        """Увеличиваем интервал и добавляем cooldown после 429/403."""
+        try:
+            cooldown = float(cooldown)
+        except Exception:
+            cooldown = self._max_interval
+        cooldown = max(self._min_interval, min(self._max_interval, cooldown))
+        with self._lock:
+            self._interval = min(self._max_interval, max(self._interval, cooldown))
+            now = time.time()
+            self._next_allowed = max(self._next_allowed, now + cooldown)
+
+    def reward(self) -> None:
+        """Постепенно ускоряемся, если ответы успешные."""
+        with self._lock:
+            self._interval = max(self._min_interval, self._interval * 0.95)
+
+
+_AUTOPITER_LIMITER = _AutopiterAdaptiveLimiter()
+
 # Пул драйверов для Armtek
 DRIVER_POOL: List[webdriver.Chrome] = []
 DRIVER_POOL_LOCK = threading.Lock()
@@ -600,13 +644,15 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
         # Поэтому делаем ограниченное число попыток и cap на backoff.
         max_attempts = 3
         for attempt in range(max_attempts):
-            # Лёгкий джиттер перед запросом (не слишком длинный, но уже уменьшает 429)
-            time.sleep(random.uniform(0.08, 0.16) if attempt == 0 else random.uniform(0.04, 0.10))
+            # Лёгкий джиттер + глобальный лимитер, чтобы не стрелять бурстами и не ловить 429 пачками
+            time.sleep(random.uniform(0.0, 0.05))
+            _AUTOPITER_LIMITER.wait()
 
             response = session.get(url, timeout=12, allow_redirects=True)
             if response.status_code == 200:
                 brands = parse_autopiter_response(response.text, artikul)
                 log_debug(f"АвтоПитер requests: найдено {len(brands)} брендов (attempt {attempt + 1})")
+                _AUTOPITER_LIMITER.reward()
                 return brands
 
             if response.status_code in (429, 403):
@@ -630,6 +676,7 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
                     f"АвтоПитер: HTTP {response.status_code} для {artikul}, backoff {backoff:.1f}s "
                     f"(attempt {attempt + 1}/{max_attempts})"
                 )
+                _AUTOPITER_LIMITER.penalize(backoff)
                 try:
                     session.cookies.clear()
                 except Exception:
