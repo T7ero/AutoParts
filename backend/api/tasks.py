@@ -8,6 +8,7 @@ from .autopiter_parser import (
     get_brands_by_artikul_emex,
     AutopiterRateLimitException,
     AutopiterForbiddenException,
+    AutopiterNetworkException,
     cleanup_chrome_processes,
     cleanup_driver_pool,
     get_next_proxy,
@@ -807,8 +808,8 @@ def process_parsing_task(self, task_id):
                                 log(f"Failed to parse {site} for {num} after {max_retries} attempts")
                                 # При rate-limit/403 от Autopiter не кэшируем пустое,
                                 # иначе бренды "застревают" в NEGATIVE_CACHE_EXPIRATION.
-                                if isinstance(e, (AutopiterRateLimitException, AutopiterForbiddenException)):
-                                    log_debug(f"{site}: rate-limit/403, пропускаем negative cache для {num}")
+                                if isinstance(e, (AutopiterRateLimitException, AutopiterForbiddenException, AutopiterNetworkException)):
+                                    log_debug(f"{site}: rate-limit/403/network, пропускаем negative cache для {num}")
                                     return []
                                 set_cache(num, site, [], True)
                                 return []

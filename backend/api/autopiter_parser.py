@@ -103,6 +103,10 @@ class AutopiterRateLimitException(Exception):
 class AutopiterForbiddenException(Exception):
     """Autopiter временно запретил доступ (403), требуется повторить позже."""
 
+
+class AutopiterNetworkException(Exception):
+    """Сетевая ошибка/таймаут Autopiter. Нельзя негативно кэшировать надолго."""
+
 # Autopiter очень чувствителен к burst-нагрузке.
 # Даже при небольшом ThreadPoolExecutor легко ловится 429/403, что приводит к пустым результатам.
 # Этот лимитер делает "плавный" поток запросов в рамках одного процесса celery-worker.
@@ -145,7 +149,7 @@ class _AutopiterAdaptiveLimiter:
             self._interval = max(self._min_interval, self._interval * 0.95)
 
 
-_AUTOPITER_LIMITER = _AutopiterAdaptiveLimiter(min_interval=0.05, max_interval=1.0)
+_AUTOPITER_LIMITER = _AutopiterAdaptiveLimiter(min_interval=0.05, max_interval=3.0)
 
 
 # Глобальный throttle (на все процессы celery), чтобы избежать "волн" 429.
@@ -255,7 +259,7 @@ def _global_autopiter_penalize(cooldown: float) -> None:
         # Наша цель — уменьшить "волны" 429, но не убить скорость.
         mult = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_MULT", "1.8"))
         min_cooldown = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_MIN", "2.0"))
-        cap_cooldown = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_CAP", "20.0"))
+        cap_cooldown = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_CAP", "60.0"))
         enhanced = max(min_cooldown, cooldown * mult)
         enhanced = min(cap_cooldown, enhanced)
         new_until = now + enhanced
@@ -778,7 +782,44 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
             _global_autopiter_throttle_wait()
             _AUTOPITER_LIMITER.wait()
 
-            response = session.get(url, timeout=12, allow_redirects=True)
+            try:
+                # Увеличенный timeout снижает количество "Read timed out"
+                response = session.get(url, timeout=18, allow_redirects=True)
+            except requests.exceptions.Timeout as e:
+                # Таймаут часто идет вслед за 429-волнами: нужно наказать глобально и повторить.
+                backoff = max(0.4, min(5.0, 0.6 * (2 ** attempt)))
+                global_penalty = min(120.0, max(6.0, 5.0 * (2 ** attempt)))
+                log_debug(
+                    f"АвтоПитер: timeout для {artikul}, backoff {backoff:.1f}s "
+                    f"(attempt {attempt + 1}/{max_attempts}), global_penalty {global_penalty:.1f}s: {e}"
+                )
+                _global_autopiter_penalize(global_penalty)
+                _AUTOPITER_LIMITER.penalize(backoff)
+                try:
+                    session.cookies.clear()
+                except Exception:
+                    pass
+                if attempt == max_attempts - 1:
+                    raise AutopiterNetworkException(f"Autopiter timeout for {artikul}")
+                time.sleep(backoff)
+                continue
+            except requests.exceptions.RequestException as e:
+                backoff = max(0.4, min(6.0, 0.8 * (2 ** attempt)))
+                global_penalty = min(120.0, max(6.0, 6.0 * (2 ** attempt)))
+                log_debug(
+                    f"АвтоПитер: network error для {artikul}, backoff {backoff:.1f}s "
+                    f"(attempt {attempt + 1}/{max_attempts}), global_penalty {global_penalty:.1f}s: {e}"
+                )
+                _global_autopiter_penalize(global_penalty)
+                _AUTOPITER_LIMITER.penalize(backoff)
+                try:
+                    session.cookies.clear()
+                except Exception:
+                    pass
+                if attempt == max_attempts - 1:
+                    raise AutopiterNetworkException(f"Autopiter network error for {artikul}: {e}")
+                time.sleep(backoff)
+                continue
             if response.status_code == 200:
                 brands = parse_autopiter_response(response.text, artikul)
                 log_debug(f"АвтоПитер requests: найдено {len(brands)} брендов (attempt {attempt + 1})")
@@ -799,13 +840,13 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
                     # Если сервер шлёт Retry-After — уважаем, но ограничиваем сверху
                     backoff = max(0.2, min(2.0, retry_after))
                     # Для глобального отката нужно сильнее, чем локальный backoff.
-                    global_penalty = min(60.0, max(4.0, retry_after * 2.0))
+                    global_penalty = min(120.0, max(6.0, retry_after * 4.0))
                 else:
                     # Экспоненциальный backoff локально, но кап ограничен,
                     # а "длинный перерыв" обеспечивает глобальный кулдаун (Redis).
                     backoff = max(0.2, min(2.0, 0.3 * (2 ** attempt)))
                     # Глобальная penalty должна расти быстрее, иначе 429-волны не успевают "схлынуть".
-                    global_penalty = min(60.0, max(4.0, 2.0 * (2 ** attempt)))
+                    global_penalty = min(120.0, max(6.0, 5.0 * (2 ** attempt)))
 
                 log_debug(
                     f"АвтоПитер: HTTP {response.status_code} для {artikul}, backoff {backoff:.1f}s "
@@ -837,6 +878,8 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
         
     except (AutopiterRateLimitException, AutopiterForbiddenException):
         # Пробрасываем выше, чтобы tasks.py не делал negative-cache.
+        raise
+    except AutopiterNetworkException:
         raise
     except Exception as e:
         log_debug(f"Ошибка АвтоПитер для {artikul}: {str(e)}")
