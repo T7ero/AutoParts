@@ -216,7 +216,9 @@ def _global_autopiter_throttle_wait() -> None:
         # Возвращает wait_for в секундах (может быть 0)
         wait_for = float(client.eval(lua, 2, _REDIS_THROTTLE_COOLDOWN_KEY, _REDIS_THROTTLE_LAST_TS_KEY, now, _AUTOPITER_GLOBAL_MIN_INTERVAL))
         if wait_for > 0:
-            time.sleep(min(0.5, wait_for))
+            # Важно: не ограничиваем сон до 0.5s, иначе мы нарушаем рассчитанный лимит
+            # и снова получаем "волны" 429.
+            time.sleep(min(5.0, wait_for))
     except Exception:
         # Если Redis недоступен — просто работаем локально.
         return
