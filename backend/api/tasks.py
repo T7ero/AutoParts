@@ -802,6 +802,20 @@ def process_parsing_task(self, task_id):
             # На Autopiter возвращаемся к 1 потоку: так меньше burst'ов и волн 429.
             AUTOPITER_MAX_WORKERS = 1
 
+            # Опционально: пробовать Autopiter через прокси, если лимит 429 привязан к IP.
+            # По умолчанию выключено, чтобы не ухудшать качество/стабильность.
+            autopiter_use_proxy = (os.getenv("AUTOPITER_USE_PROXY", "0").strip() == "1")
+            try:
+                autopiter_has_proxies = len(PROXY_LIST) > 0
+            except Exception:
+                autopiter_has_proxies = False
+            autopiter_proxy_enabled = autopiter_use_proxy and autopiter_has_proxies
+            try:
+                autopiter_proxy_retries = int(os.getenv("AUTOPITER_PROXY_RETRIES", "2"))
+            except Exception:
+                autopiter_proxy_retries = 2
+            autopiter_proxy_retries = max(1, min(3, autopiter_proxy_retries))
+
             def parse_one(site, parser_func, max_retries=1):
                 def inner(num, proxy=None):
                     cached_result = get_from_cache(num, site)
@@ -811,7 +825,12 @@ def process_parsing_task(self, task_id):
 
                     for attempt in range(max_retries):
                         try:
-                            if attempt == 0:
+                            if site == 'autopiter' and autopiter_proxy_enabled:
+                                # Для Autopiter: всегда ходим через прокси (и ротируем при ретрае),
+                                # иначе смысла в retry нет — лимит останется на том же IP.
+                                proxy = get_proxy_string()
+                                log_debug(f"{site}: попытка {attempt+1} с прокси для {num}")
+                            elif attempt == 0:
                                 if site == 'emex' and proxy:
                                     log_debug(f"{site}: попытка {attempt+1} с прокси для {num}")
                                 else:
@@ -849,7 +868,8 @@ def process_parsing_task(self, task_id):
             def worker(num):
                 local = {'autopiter': [], 'emex': []}
                 if 'autopiter' in selected_sources:
-                    local['autopiter'].extend(parse_one('autopiter', get_brands_by_artikul)(num))
+                    ap_retries = autopiter_proxy_retries if autopiter_proxy_enabled else 1
+                    local['autopiter'].extend(parse_one('autopiter', get_brands_by_artikul, max_retries=ap_retries)(num))
                 if 'emex' in selected_sources and not state['emex_disabled']:
                     with emex_semaphore:
                         proxy = get_proxy_string()
