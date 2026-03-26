@@ -759,7 +759,9 @@ def process_parsing_task(self, task_id):
                 total_proxies = 0
             # Emex: до 8 параллельных HTTP при наличии прокси; без прокси — 2 (осторожно с rate limit)
             if total_proxies > 0:
-                emex_parallel = min(total_proxies, 8)
+                # Фиксируем 2 параллельных потока для Emex, чтобы не менять нагрузку
+                # и не провоцировать лишние сбои при смене прокси/окружения.
+                emex_parallel = 2
             else:
                 emex_parallel = 2
             emex_semaphore = threading.Semaphore(emex_parallel)
@@ -771,7 +773,8 @@ def process_parsing_task(self, task_id):
             # Autopiter очень легко триггерит rate-limit, поэтому ограничиваем параллелизм,
             # иначе получаем `HTTP 429` и пустые результаты (которые потом кэшируются).
             nnums = len(numbers)
-            AUTOPITER_MAX_WORKERS = max(1, min(nnums, 2))
+            # На Autopiter возвращаемся к 1 потоку: так меньше burst'ов и волн 429.
+            AUTOPITER_MAX_WORKERS = 1
 
             def parse_one(site, parser_func, max_retries=1):
                 def inner(num, proxy=None):
@@ -904,12 +907,19 @@ def process_parsing_task(self, task_id):
                             set_cache(num, 'armtek', [], True)
                             return []
 
-            for num in numbers:
-                try:
-                    for res in parse_one_armtek(num):
-                        results.append(res)
-                except Exception as e:
-                    log(f"Error processing armtek result for {num}: {str(e)}")
+            # Armtek запускаем параллельно на 2 потоках.
+            # Selenium здесь упирается в сеть/тайминги, поэтому небольшая параллельность ускоряет.
+            armtek_workers = 2
+            with concurrent.futures.ThreadPoolExecutor(max_workers=armtek_workers) as executor:
+                future_map = {executor.submit(parse_one_armtek, num): num for num in numbers}
+                for future in concurrent.futures.as_completed(future_map):
+                    num = future_map[future]
+                    try:
+                        res_list = future.result()
+                        for res in res_list:
+                            results.append(res)
+                    except Exception as e:
+                        log(f"Error processing armtek result for {num}: {str(e)}")
 
             log(f"Armtek: завершена обработка для строки {row_index + 1}, найдено {len(results)} результатов")
             return results
