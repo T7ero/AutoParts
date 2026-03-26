@@ -685,6 +685,7 @@ def process_parsing_task(self, task_id):
         # Быстрый проход по DataFrame, чтобы посчитать общее количество кросс-номеров.
         try:
             total_cross = 0
+            total_cross_raw = 0
             for _, src_row in df.iterrows():
                 cross_from_g = safe_cell_to_str(src_row.iloc[6]) if len(src_row) > 6 else ''
                 part_from_f = safe_cell_to_str(src_row.iloc[5]) if len(src_row) > 5 else ''
@@ -692,6 +693,7 @@ def process_parsing_task(self, task_id):
                 if not numbers_source_value:
                     continue
                 nums = [n.strip() for n in str(numbers_source_value).split(';') if n and str(n).strip()]
+                total_cross_raw += len(nums)
                 # Прогресс должен совпадать с реальной обработкой: мы дедуплим артикули
                 # через normalize_article_for_compare(), поэтому здесь тоже делаем дедупликацию.
                 deduped_numbers: list = []
@@ -706,6 +708,7 @@ def process_parsing_task(self, task_id):
                     deduped_numbers.append(num)
                 total_cross += len(deduped_numbers)
             task._total_cross_numbers = total_cross
+            task._total_cross_numbers_raw = total_cross_raw
         except Exception as e:
             log(f"Ошибка подсчёта общего количества кросс-номеров: {e}")
             task._total_cross_numbers = 0
@@ -718,6 +721,7 @@ def process_parsing_task(self, task_id):
             'processed_rows': 0,
             'current_row': 0,
             'total_cross_numbers': getattr(task, '_total_cross_numbers', 0),
+            'total_cross_numbers_raw': getattr(task, '_total_cross_numbers_raw', 0),
             'processed_cross_numbers': 0,
             'current_number': ''
         }
@@ -751,6 +755,16 @@ def process_parsing_task(self, task_id):
             log(f"Ошибка чтения источников из задачи: {e}")
 
         log(f"Выбранные источники: {sorted(selected_sources)}")
+        try:
+            raw_total = int(getattr(task, "_total_cross_numbers_raw", 0) or 0)
+            dedup_total = int(getattr(task, "_total_cross_numbers", 0) or 0)
+            if raw_total and dedup_total and raw_total != dedup_total:
+                log(
+                    f"Кросс-номера: в файле всего {raw_total}, после дедупликации (нормализация артикула) осталось {dedup_total}. "
+                    f"Прогресс считается по {dedup_total}, чтобы совпадало с реальной обработкой."
+                )
+        except Exception:
+            pass
 
         log(f"Начинаем обработку {total_rows} строк")
         ws_send()

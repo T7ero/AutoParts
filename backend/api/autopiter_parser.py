@@ -773,8 +773,10 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
         # Компромисс между полнотой и скоростью:
         # при слишком долгом backoff поток(и) простаивают и скорость падает.
         # Поэтому делаем ограниченное число попыток и cap на backoff.
-        # 429/403: ретраи нужны, чтобы достать бренды, но слишком много попыток убивает скорость.
-        # Поэтому максимум 3 попытки на один артикул.
+        # Практика показала: при волнах 429 повторные попытки по ТОМУ ЖЕ артикулу почти всегда снова 429
+        # и просто съедают время. Поэтому:
+        # - сеть/таймауты: пробуем до 3 раз
+        # - 429/403: 1 попытка (сильный глобальный cooldown), дальше переходим к следующему артикулу
         max_attempts = 3
         for attempt in range(max_attempts):
             # Лёгкий джиттер + глобальный лимитер, чтобы не стрелять бурстами и не ловить 429 пачками
@@ -861,14 +863,11 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
                 except Exception:
                     pass
 
-                # Если исчерпали попытки — прокидываем в tasks.py, чтобы не кэшировать пустое как "негативное"
-                if attempt == max_attempts - 1:
-                    if response.status_code == 429:
-                        raise AutopiterRateLimitException(f"Autopiter rate-limit 429 for {artikul}")
-                    raise AutopiterForbiddenException(f"Autopiter forbidden 403 for {artikul}")
-
-                time.sleep(backoff)
-                continue
+                # ВАЖНО: на 429/403 не тратим время на повторные попытки по этому же артикулу.
+                # Пробрасываем исключение в tasks.py, там negative-cache не ставится.
+                if response.status_code == 429:
+                    raise AutopiterRateLimitException(f"Autopiter rate-limit 429 for {artikul}")
+                raise AutopiterForbiddenException(f"Autopiter forbidden 403 for {artikul}")
 
             # Для других HTTP кодов не делаем много повторов
             log_debug(f"АвтоПитер: HTTP {response.status_code} для {artikul} (attempt {attempt + 1})")
