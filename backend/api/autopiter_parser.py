@@ -153,7 +153,7 @@ _AUTOPITER_LIMITER = _AutopiterAdaptiveLimiter()
 _REDIS_THROTTLE_COOLDOWN_KEY = "autopiter:cooldown_until"
 _REDIS_THROTTLE_LAST_TS_KEY = "autopiter:last_ts"
 _REDIS_THROTTLE_EXPIRE_SECONDS = 120
-_AUTOPITER_GLOBAL_MIN_INTERVAL = float(os.getenv("AUTOPITER_GLOBAL_MIN_INTERVAL", "0.35"))
+_AUTOPITER_GLOBAL_MIN_INTERVAL = float(os.getenv("AUTOPITER_GLOBAL_MIN_INTERVAL", "0.15"))
 
 _redis_local = threading.local()
 
@@ -229,8 +229,15 @@ def _global_autopiter_penalize(cooldown: float) -> None:
     try:
         cooldown = float(cooldown)
         now = time.time()
-        # Cooldown не меньше минимального шага, чтобы точно разорвать "волну".
-        new_until = now + max(0.2, cooldown)
+        # Важно: реальный серверный cooldown после 429 часто заметно выше backoff,
+        # который мы считаем локально. Поэтому делаем "усиление" кулдауна,
+        # чтобы волна 429 действительно схлопнулась и другие worker'ы не добивали сайт.
+        mult = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_MULT", "2.5"))
+        min_cooldown = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_MIN", "5.0"))
+        cap_cooldown = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_CAP", "30.0"))
+        enhanced = max(min_cooldown, cooldown * mult)
+        enhanced = min(cap_cooldown, enhanced)
+        new_until = now + enhanced
         existing = client.get(_REDIS_THROTTLE_COOLDOWN_KEY)
         try:
             existing_val = float(existing) if existing is not None else 0.0
@@ -769,8 +776,9 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
                     # Если сервер шлёт Retry-After — уважаем, но ограничиваем сверху
                     backoff = max(0.2, min(6.0, retry_after))
                 else:
-                    # Экспоненциальный backoff, но с жёстким cap
-                    backoff = max(0.4, min(6.0, 0.8 * (2 ** attempt)))
+                    # Экспоненциальный backoff локально, но кап ограничен,
+                    # а "длинный перерыв" обеспечивает глобальный кулдаун (Redis).
+                    backoff = max(0.2, min(6.0, 0.5 * (2 ** attempt)))
 
                 log_debug(
                     f"АвтоПитер: HTTP {response.status_code} для {artikul}, backoff {backoff:.1f}s "
