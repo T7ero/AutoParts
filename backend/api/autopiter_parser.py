@@ -192,11 +192,30 @@ def _global_autopiter_throttle_wait() -> None:
         local min_interval = tonumber(ARGV[2])
 
         local cooldown_until = tonumber(redis.call('GET', KEYS[1]) or '0')
+        local last_ts = tonumber(redis.call('GET', KEYS[2]) or '0')
+
+        -- Важно: даже если мы сейчас в глобальном кулдауне,
+        -- нужно РЕЗЕРВИРОВАТЬ следующий слот через last_ts,
+        -- иначе несколько потоков проснутся одновременно и дадут новый burst 429.
         if now < cooldown_until then
-          return cooldown_until - now
+          local next_allowed = cooldown_until
+          if last_ts ~= nil and last_ts > 0 then
+            -- Если last_ts уже сдвинут (другой поток зарезервировал слот),
+            -- то следующий слот ставим строго дальше.
+            local staggered = last_ts + min_interval
+            if staggered > next_allowed then
+              next_allowed = staggered
+            end
+          end
+          redis.call('SET', KEYS[2], next_allowed)
+          redis.call('EXPIRE', KEYS[2], 10)
+          local wait_for = next_allowed - now
+          if wait_for < 0 then
+            wait_for = 0
+          end
+          return wait_for
         end
 
-        local last_ts = tonumber(redis.call('GET', KEYS[2]) or '0')
         local next_allowed = now
         if last_ts ~= nil and last_ts > 0 then
           next_allowed = last_ts + min_interval
