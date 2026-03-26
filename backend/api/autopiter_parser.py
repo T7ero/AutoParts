@@ -24,6 +24,11 @@ from selenium.common.exceptions import TimeoutException
 from concurrent.futures import ThreadPoolExecutor
 import gc
 
+try:
+    import redis  # type: ignore
+except Exception:
+    redis = None
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -141,6 +146,100 @@ class _AutopiterAdaptiveLimiter:
 
 
 _AUTOPITER_LIMITER = _AutopiterAdaptiveLimiter()
+
+
+# Глобальный throttle (на все процессы celery), чтобы избежать "волн" 429.
+# Redis у вас уже включен для Celery, поэтому используем его.
+_REDIS_THROTTLE_COOLDOWN_KEY = "autopiter:cooldown_until"
+_REDIS_THROTTLE_LAST_TS_KEY = "autopiter:last_ts"
+_REDIS_THROTTLE_EXPIRE_SECONDS = 120
+_AUTOPITER_GLOBAL_MIN_INTERVAL = float(os.getenv("AUTOPITER_GLOBAL_MIN_INTERVAL", "0.35"))
+
+_redis_local = threading.local()
+
+
+def _get_redis_client():
+    if redis is None:
+        return None
+    client = getattr(_redis_local, "client", None)
+    if client is not None:
+        return client
+    try:
+        # host "redis" подходит для docker-compose.
+        host = os.getenv("REDIS_HOST", "redis")
+        port = int(os.getenv("REDIS_PORT", "6379"))
+        db = int(os.getenv("REDIS_DB", "0"))
+        client = redis.Redis(host=host, port=port, db=db, decode_responses=True)
+        _redis_local.client = client
+        return client
+    except Exception:
+        return None
+
+
+def _global_autopiter_throttle_wait() -> None:
+    """
+    Резервирует слот для следующего запроса к Autopiter.
+    За счет Lua скрипта это атомарно между процессами.
+    """
+    client = _get_redis_client()
+    if client is None:
+        return
+
+    try:
+        now = time.time()
+        lua = """
+        local now = tonumber(ARGV[1])
+        local min_interval = tonumber(ARGV[2])
+
+        local cooldown_until = tonumber(redis.call('GET', KEYS[1]) or '0')
+        if now < cooldown_until then
+          return cooldown_until - now
+        end
+
+        local last_ts = tonumber(redis.call('GET', KEYS[2]) or '0')
+        local next_allowed = now
+        if last_ts ~= nil and last_ts > 0 then
+          next_allowed = last_ts + min_interval
+          if now >= next_allowed then
+            next_allowed = now
+          end
+        end
+
+        redis.call('SET', KEYS[2], next_allowed)
+        redis.call('EXPIRE', KEYS[2], 10)
+        local wait_for = next_allowed - now
+        if wait_for < 0 then
+          wait_for = 0
+        end
+        return wait_for
+        """
+        # Возвращает wait_for в секундах (может быть 0)
+        wait_for = float(client.eval(lua, 2, _REDIS_THROTTLE_COOLDOWN_KEY, _REDIS_THROTTLE_LAST_TS_KEY, now, _AUTOPITER_GLOBAL_MIN_INTERVAL))
+        if wait_for > 0:
+            time.sleep(min(0.5, wait_for))
+    except Exception:
+        # Если Redis недоступен — просто работаем локально.
+        return
+
+
+def _global_autopiter_penalize(cooldown: float) -> None:
+    client = _get_redis_client()
+    if client is None:
+        return
+    try:
+        cooldown = float(cooldown)
+        now = time.time()
+        # Cooldown не меньше минимального шага, чтобы точно разорвать "волну".
+        new_until = now + max(0.2, cooldown)
+        existing = client.get(_REDIS_THROTTLE_COOLDOWN_KEY)
+        try:
+            existing_val = float(existing) if existing is not None else 0.0
+        except Exception:
+            existing_val = 0.0
+        final_until = max(existing_val, new_until)
+        client.set(_REDIS_THROTTLE_COOLDOWN_KEY, final_until, ex=_REDIS_THROTTLE_EXPIRE_SECONDS)
+    except Exception:
+        return
 
 # Пул драйверов для Armtek
 DRIVER_POOL: List[webdriver.Chrome] = []
@@ -646,6 +745,7 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
         for attempt in range(max_attempts):
             # Лёгкий джиттер + глобальный лимитер, чтобы не стрелять бурстами и не ловить 429 пачками
             time.sleep(random.uniform(0.0, 0.05))
+            _global_autopiter_throttle_wait()
             _AUTOPITER_LIMITER.wait()
 
             response = session.get(url, timeout=12, allow_redirects=True)
@@ -676,6 +776,9 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
                     f"АвтоПитер: HTTP {response.status_code} для {artikul}, backoff {backoff:.1f}s "
                     f"(attempt {attempt + 1}/{max_attempts})"
                 )
+                # Удлиняем общий cooldown по всем процессам, чтобы другие worker'ы не добивали Autopiter.
+                if response.status_code in (429, 403):
+                    _global_autopiter_penalize(backoff)
                 _AUTOPITER_LIMITER.penalize(backoff)
                 try:
                     session.cookies.clear()
