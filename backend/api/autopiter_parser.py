@@ -218,7 +218,8 @@ def _global_autopiter_throttle_wait() -> None:
         if wait_for > 0:
             # Важно: не ограничиваем сон до 0.5s, иначе мы нарушаем рассчитанный лимит
             # и снова получаем "волны" 429.
-            time.sleep(min(5.0, wait_for))
+            # Кулдауны после 429 могут быть > 5s, поэтому лимит на сон должен быть выше.
+            time.sleep(min(20.0, wait_for))
     except Exception:
         # Если Redis недоступен — просто работаем локально.
         return
@@ -235,7 +236,7 @@ def _global_autopiter_penalize(cooldown: float) -> None:
         # Наша цель — уменьшить "волны" 429, но не убить скорость.
         mult = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_MULT", "1.8"))
         min_cooldown = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_MIN", "2.0"))
-        cap_cooldown = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_CAP", "12.0"))
+        cap_cooldown = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_CAP", "20.0"))
         enhanced = max(min_cooldown, cooldown * mult)
         enhanced = min(cap_cooldown, enhanced)
         new_until = now + enhanced
@@ -778,18 +779,22 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
                 if retry_after is not None:
                     # Если сервер шлёт Retry-After — уважаем, но ограничиваем сверху
                     backoff = max(0.2, min(2.0, retry_after))
+                    # Для глобального отката нужно сильнее, чем локальный backoff.
+                    global_penalty = min(60.0, max(4.0, retry_after * 2.0))
                 else:
                     # Экспоненциальный backoff локально, но кап ограничен,
                     # а "длинный перерыв" обеспечивает глобальный кулдаун (Redis).
                     backoff = max(0.2, min(2.0, 0.3 * (2 ** attempt)))
+                    # Глобальная penalty должна расти быстрее, иначе 429-волны не успевают "схлынуть".
+                    global_penalty = min(60.0, max(4.0, 2.0 * (2 ** attempt)))
 
                 log_debug(
                     f"АвтоПитер: HTTP {response.status_code} для {artikul}, backoff {backoff:.1f}s "
-                    f"(attempt {attempt + 1}/{max_attempts})"
+                    f"(attempt {attempt + 1}/{max_attempts}), global_penalty {global_penalty:.1f}s"
                 )
                 # Удлиняем общий cooldown по всем процессам, чтобы другие worker'ы не добивали Autopiter.
                 if response.status_code in (429, 403):
-                    _global_autopiter_penalize(backoff)
+                    _global_autopiter_penalize(global_penalty)
                 _AUTOPITER_LIMITER.penalize(backoff)
                 try:
                     session.cookies.clear()
