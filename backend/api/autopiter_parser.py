@@ -145,7 +145,7 @@ class _AutopiterAdaptiveLimiter:
             self._interval = max(self._min_interval, self._interval * 0.95)
 
 
-_AUTOPITER_LIMITER = _AutopiterAdaptiveLimiter()
+_AUTOPITER_LIMITER = _AutopiterAdaptiveLimiter(min_interval=0.05, max_interval=1.0)
 
 
 # Глобальный throttle (на все процессы celery), чтобы избежать "волн" 429.
@@ -153,7 +153,7 @@ _AUTOPITER_LIMITER = _AutopiterAdaptiveLimiter()
 _REDIS_THROTTLE_COOLDOWN_KEY = "autopiter:cooldown_until"
 _REDIS_THROTTLE_LAST_TS_KEY = "autopiter:last_ts"
 _REDIS_THROTTLE_EXPIRE_SECONDS = 120
-_AUTOPITER_GLOBAL_MIN_INTERVAL = float(os.getenv("AUTOPITER_GLOBAL_MIN_INTERVAL", "0.15"))
+_AUTOPITER_GLOBAL_MIN_INTERVAL = float(os.getenv("AUTOPITER_GLOBAL_MIN_INTERVAL", "0.25"))
 
 _redis_local = threading.local()
 
@@ -229,12 +229,11 @@ def _global_autopiter_penalize(cooldown: float) -> None:
     try:
         cooldown = float(cooldown)
         now = time.time()
-        # Важно: реальный серверный cooldown после 429 часто заметно выше backoff,
-        # который мы считаем локально. Поэтому делаем "усиление" кулдауна,
-        # чтобы волна 429 действительно схлопнулась и другие worker'ы не добивали сайт.
-        mult = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_MULT", "2.5"))
-        min_cooldown = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_MIN", "5.0"))
-        cap_cooldown = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_CAP", "30.0"))
+        # Не делаем слишком длинные кулдауны, иначе резко падает throughput.
+        # Наша цель — уменьшить "волны" 429, но не убить скорость.
+        mult = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_MULT", "1.8"))
+        min_cooldown = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_MIN", "2.0"))
+        cap_cooldown = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_CAP", "12.0"))
         enhanced = max(min_cooldown, cooldown * mult)
         enhanced = min(cap_cooldown, enhanced)
         new_until = now + enhanced
@@ -748,7 +747,9 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
         # Компромисс между полнотой и скоростью:
         # при слишком долгом backoff поток(и) простаивают и скорость падает.
         # Поэтому делаем ограниченное число попыток и cap на backoff.
-        max_attempts = 3
+        # 429/403: ретраи нужны, чтобы достать бренды, но слишком много попыток убивает скорость.
+        # Поэтому максимум 2 попытки на один артикул.
+        max_attempts = 2
         for attempt in range(max_attempts):
             # Лёгкий джиттер + глобальный лимитер, чтобы не стрелять бурстами и не ловить 429 пачками
             time.sleep(random.uniform(0.0, 0.05))
@@ -774,11 +775,11 @@ def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str
 
                 if retry_after is not None:
                     # Если сервер шлёт Retry-After — уважаем, но ограничиваем сверху
-                    backoff = max(0.2, min(6.0, retry_after))
+                    backoff = max(0.2, min(2.0, retry_after))
                 else:
                     # Экспоненциальный backoff локально, но кап ограничен,
                     # а "длинный перерыв" обеспечивает глобальный кулдаун (Redis).
-                    backoff = max(0.2, min(6.0, 0.5 * (2 ** attempt)))
+                    backoff = max(0.2, min(2.0, 0.3 * (2 ** attempt)))
 
                 log_debug(
                     f"АвтоПитер: HTTP {response.status_code} для {artikul}, backoff {backoff:.1f}s "
