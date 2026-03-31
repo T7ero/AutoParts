@@ -642,15 +642,29 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
         except TimeoutException:
             log_debug(f"АвтоПитер: таймаут ожидания #main-content для {artikul}")
         
-        # Дополнительное ожидание для полной загрузки
-        time.sleep(2)
+        # Короткая пауза после первичной загрузки
+        time.sleep(0.6)
         
         # Прокручиваем страницу для подгрузки ВСЕХ данных
         last_height = driver.execute_script("return document.body.scrollHeight")
         last_row_count = 0
         
-        # Увеличиваем количество прокруток и время ожидания
-        max_scrolls = 30  # Увеличено с 10 до 30
+        # Ускоренный цикл прокрутки: меньше "жестких" sleep, но оставляем догрузку данных.
+        try:
+            max_scrolls = int(os.getenv("AUTOPITER_SELENIUM_MAX_SCROLLS", "8"))
+        except Exception:
+            max_scrolls = 8
+        max_scrolls = max(3, min(20, max_scrolls))
+        try:
+            scroll_pause = float(os.getenv("AUTOPITER_SELENIUM_SCROLL_PAUSE", "1.0"))
+        except Exception:
+            scroll_pause = 1.0
+        scroll_pause = max(0.3, min(2.0, scroll_pause))
+        try:
+            no_change_limit = int(os.getenv("AUTOPITER_SELENIUM_NO_CHANGE_LIMIT", "2"))
+        except Exception:
+            no_change_limit = 2
+        no_change_limit = max(1, min(4, no_change_limit))
         scroll_attempts = 0
         no_change_count = 0
         
@@ -658,7 +672,7 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
             scroll_attempts += 1
             # Прокручиваем вниз
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(2)  # Увеличено с 1.5 до 2 секунд для подгрузки данных
+            time.sleep(scroll_pause)
             
             # Проверяем количество строк в таблице
             try:
@@ -684,31 +698,21 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
                 no_change_count = 0
             
             # Если несколько раз подряд ничего не изменилось, прекращаем прокрутку
-            if no_change_count >= 3:
+            if no_change_count >= no_change_limit:
                 log_debug(f"АвтоПитер: прекращаем прокрутку после {scroll_attempts} попыток (нет изменений)")
                 break
         
-        # Дополнительная прокрутка: вверх, затем постепенно вниз для гарантированной загрузки
+        # Быстрый финальный "пинг" прокрутки вместо медленного прохода по всей странице.
         driver.execute_script("window.scrollTo(0, 0);")
-        time.sleep(1)
-        
-        # Постепенная прокрутка вниз для загрузки всех элементов
-        scroll_step = 500
-        current_position = 0
-        max_position = driver.execute_script("return document.body.scrollHeight")
-        
-        while current_position < max_position:
-            current_position += scroll_step
-            driver.execute_script(f"window.scrollTo(0, {current_position});")
-            time.sleep(0.3)
-        
-        # Финальная прокрутка в самый низ
+        time.sleep(0.2)
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(2)
+        time.sleep(0.6)
         
         # Явное ожидание появления всех строк таблицы
         try:
-            wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')) > 0)
+            WebDriverWait(driver, 3).until(
+                lambda d: len(d.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')) > 0
+            )
         except TimeoutException:
             log_debug(f"АвтоПитер: таймаут ожидания строк таблицы для {artikul}")
         

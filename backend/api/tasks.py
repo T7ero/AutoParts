@@ -796,11 +796,14 @@ def process_parsing_task(self, task_id):
                 cpu_n = os.cpu_count() or 4
             except Exception:
                 cpu_n = 4
-            # Autopiter очень легко триггерит rate-limit, поэтому ограничиваем параллелизм,
-            # иначе получаем `HTTP 429` и пустые результаты (которые потом кэшируются).
+            # Для Selenium-режима Autopiter можно безопасно держать 2 потока на строку.
+            # Значение можно переопределить переменной окружения AUTOPITER_MAX_WORKERS.
             nnums = len(numbers)
-            # На Autopiter возвращаемся к 1 потоку: так меньше burst'ов и волн 429.
-            AUTOPITER_MAX_WORKERS = 1
+            try:
+                autopiter_workers_cfg = int(os.getenv("AUTOPITER_MAX_WORKERS", "2"))
+            except Exception:
+                autopiter_workers_cfg = 2
+            AUTOPITER_MAX_WORKERS = max(1, min(nnums, autopiter_workers_cfg))
 
             # Опционально: пробовать Autopiter через прокси, если лимит 429 привязан к IP.
             # По умолчанию выключено, чтобы не ухудшать качество/стабильность.
