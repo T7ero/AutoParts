@@ -734,11 +734,18 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str]:
-    """Получает бренды с Autopiter по артикулу - ТОЛЬКО HTTP ЗАПРОСЫ (без Selenium)"""
+    """Получает бренды с Autopiter по артикулу.
+    По умолчанию работает через Selenium (стабильнее при волнах HTTP 429).
+    Для отката на HTTP можно выставить AUTOPITER_TRANSPORT=http.
+    """
     try:
+        transport = os.getenv("AUTOPITER_TRANSPORT", "selenium").strip().lower()
+        if transport in ("selenium", "sel"):
+            return parse_autopiter_selenium(artikul, proxy)
+
         log_debug(f"АвтоПитер: начинаем парсинг {artikul}")
         
-        # Используем только HTTP-запросы (без Selenium)
+        # HTTP-режим (включается только при AUTOPITER_TRANSPORT=http)
         url = f"https://autopiter.ru/goods/{quote(artikul)}"
         
         # Пул соединений на поток (не создаём новую Session на каждый артикул)
