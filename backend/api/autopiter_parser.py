@@ -626,132 +626,147 @@ def make_request(
     log_debug(f"Все попытки исчерпаны для {url}")
     return None
 def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[str]:
-    """Selenium-парсинг АвтоПитер с полной загрузкой страницы"""
-    driver = None
-    driver_broken = False
-    temp_dir = tempfile.mkdtemp(prefix=f"chrome_autopiter_")
-    
-    try:
-        # Используем драйвер из пула или создаем новый
-        driver = get_driver_from_pool()
-        if not driver:
-            driver = _create_chrome_driver_robust(temp_dir, proxy)
-        
-        # Очищаем cookies перед загрузкой для предотвращения проблем с кэшем
+    """Selenium-парсинг АвтоПитер с полной загрузкой страницы и самовосстановлением сессии."""
+    last_error = None
+
+    # Иногда драйвер "залипает": первые артикулы отдает, потом стабильно 0 строк.
+    # В таком случае делаем один повтор с ПОЛНОЙ пересборкой драйвера (без пула).
+    for selenium_attempt in range(2):
+        driver = None
+        driver_broken = False
+        force_fresh_driver = selenium_attempt > 0
+        temp_dir = tempfile.mkdtemp(prefix=f"chrome_autopiter_")
+
         try:
-            driver.delete_all_cookies()
-        except Exception as e:
-            log_debug(f"Не удалось очистить cookies: {str(e)}")
-        
-        url = f"https://autopiter.ru/goods/{quote(artikul)}"
-        driver.get(url)
-        
-        # Ждем полной загрузки страницы
-        wait = WebDriverWait(driver, SELENIUM_TIMEOUT)
-        try:
-            # Ждем появления основного контента
-            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#main-content")))
-        except TimeoutException:
-            log_debug(f"АвтоПитер: таймаут ожидания #main-content для {artikul}")
-        
-        # Дополнительное ожидание для полной загрузки
-        time.sleep(2)
-        
-        # Прокручиваем страницу для подгрузки ВСЕХ данных
-        last_height = driver.execute_script("return document.body.scrollHeight")
-        last_row_count = 0
-        
-        # Более надежный цикл прокрутки (быстрее 429-сценария, но без агрессивного раннего выхода)
-        max_scrolls = 30
-        scroll_attempts = 0
-        no_change_count = 0
-        
-        for _ in range(max_scrolls):
-            scroll_attempts += 1
-            # Прокручиваем вниз
+            if not force_fresh_driver:
+                driver = get_driver_from_pool()
+            if not driver:
+                driver = _create_chrome_driver_robust(temp_dir, proxy)
+            if not driver:
+                log_debug(f"АвтоПитер: не удалось создать Selenium-драйвер для {artikul}")
+                return []
+
+            # Очищаем cookies перед загрузкой для предотвращения проблем с кэшем
+            try:
+                driver.delete_all_cookies()
+            except Exception as e:
+                log_debug(f"Не удалось очистить cookies: {str(e)}")
+
+            url = f"https://autopiter.ru/goods/{quote(artikul)}"
+            driver.get(url)
+
+            # Ждем полной загрузки страницы
+            wait = WebDriverWait(driver, SELENIUM_TIMEOUT)
+            try:
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#main-content")))
+            except TimeoutException:
+                log_debug(f"АвтоПитер: таймаут ожидания #main-content для {artikul}")
+
+            # Дополнительное ожидание для полной загрузки
+            time.sleep(2)
+
+            # Прокручиваем страницу для подгрузки ВСЕХ данных
+            last_height = driver.execute_script("return document.body.scrollHeight")
+            last_row_count = 0
+
+            max_scrolls = 30
+            scroll_attempts = 0
+            no_change_count = 0
+
+            for _ in range(max_scrolls):
+                scroll_attempts += 1
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(2)
+
+                try:
+                    rows = driver.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')
+                    current_row_count = len(rows)
+                    if current_row_count > last_row_count:
+                        last_row_count = current_row_count
+                        no_change_count = 0
+                        log_debug(f"АвтоПитер: найдено {current_row_count} строк после прокрутки {scroll_attempts}")
+                    else:
+                        no_change_count += 1
+                except Exception as e:
+                    log_debug(f"Ошибка проверки строк: {str(e)}")
+
+                new_height = driver.execute_script("return document.body.scrollHeight")
+                if new_height == last_height:
+                    no_change_count += 1
+                else:
+                    last_height = new_height
+                    no_change_count = 0
+
+                if no_change_count >= 3:
+                    log_debug(f"АвтоПитер: прекращаем прокрутку после {scroll_attempts} попыток (нет изменений)")
+                    break
+
+            # Дополнительная прокрутка: вверх, затем постепенно вниз для гарантированной загрузки.
+            driver.execute_script("window.scrollTo(0, 0);")
+            time.sleep(1)
+
+            scroll_step = 500
+            current_position = 0
+            max_position = driver.execute_script("return document.body.scrollHeight")
+
+            while current_position < max_position:
+                current_position += scroll_step
+                driver.execute_script(f"window.scrollTo(0, {current_position});")
+                time.sleep(0.3)
+
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(2)
-            
-            # Проверяем количество строк в таблице
+
             try:
-                rows = driver.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')
-                current_row_count = len(rows)
-                
-                # Если количество строк увеличилось, продолжаем прокрутку
-                if current_row_count > last_row_count:
-                    last_row_count = current_row_count
-                    no_change_count = 0
-                    log_debug(f"АвтоПитер: найдено {current_row_count} строк после прокрутки {scroll_attempts}")
-                else:
-                    no_change_count += 1
+                wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')) > 0)
+            except TimeoutException:
+                log_debug(f"АвтоПитер: таймаут ожидания строк таблицы для {artikul}")
+
+            final_rows_count = 0
+            try:
+                final_rows = driver.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')
+                final_rows_count = len(final_rows)
+                log_debug(f"АвтоПитер: итоговое количество строк в таблице: {final_rows_count}")
             except Exception as e:
-                log_debug(f"Ошибка проверки строк: {str(e)}")
-            
-            # Проверяем, появились ли новые данные по высоте страницы
-            new_height = driver.execute_script("return document.body.scrollHeight")
-            if new_height == last_height:
-                no_change_count += 1
-            else:
-                last_height = new_height
-                no_change_count = 0
-            
-            # Если несколько раз подряд ничего не изменилось, прекращаем прокрутку
-            if no_change_count >= 3:
-                log_debug(f"АвтоПитер: прекращаем прокрутку после {scroll_attempts} попыток (нет изменений)")
-                break
-        
-        # Дополнительная прокрутка: вверх, затем постепенно вниз для гарантированной загрузки.
-        driver.execute_script("window.scrollTo(0, 0);")
-        time.sleep(1)
-        
-        scroll_step = 500
-        current_position = 0
-        max_position = driver.execute_script("return document.body.scrollHeight")
-        
-        while current_position < max_position:
-            current_position += scroll_step
-            driver.execute_script(f"window.scrollTo(0, {current_position});")
-            time.sleep(0.3)
-        
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(2)
-        
-        # Явное ожидание появления всех строк таблицы
-        try:
-            wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')) > 0)
-        except TimeoutException:
-            log_debug(f"АвтоПитер: таймаут ожидания строк таблицы для {artikul}")
-        
-        # Финальная проверка количества строк
-        try:
-            final_rows = driver.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')
-            log_debug(f"АвтоПитер: итоговое количество строк в таблице: {len(final_rows)}")
+                log_debug(f"Ошибка подсчета строк: {str(e)}")
+
+            full_html = driver.page_source
+            brands = parse_autopiter_response(full_html, artikul)
+            if brands:
+                return brands
+
+            # Если страницы явно "пустые" (0 строк и 0 брендов) — лечим пересозданием драйвера.
+            if final_rows_count == 0 and selenium_attempt == 0:
+                log_debug(f"АвтоПитер: пустая страница для {artikul}, пересоздаем драйвер и повторяем")
+                driver_broken = True
+                continue
+            return brands
+
         except Exception as e:
-            log_debug(f"Ошибка подсчета строк: {str(e)}")
-        
-        # Получаем ПОЛНЫЙ HTML после всех подгрузок
-        full_html = driver.page_source
-        
-        # Парсим бренды из полного HTML
-        return parse_autopiter_response(full_html, artikul)
-        
-    except Exception as e:
-        msg = str(e).lower()
-        if "tab crashed" in msg or "invalid session id" in msg:
-            driver_broken = True
-        log_debug(f"Ошибка Selenium парсинга АвтоПитер: {str(e)}")
-        return []
-    finally:
-        if driver:
-            if driver_broken:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
-                DRIVER_LAST_USED.pop(id(driver), None)
-            else:
-                return_driver_to_pool(driver)
-        shutil.rmtree(temp_dir, ignore_errors=True)
+            last_error = e
+            msg = str(e).lower()
+            if "tab crashed" in msg or "invalid session id" in msg:
+                driver_broken = True
+            log_debug(f"Ошибка Selenium парсинга АвтоПитер: {str(e)}")
+            if selenium_attempt == 0:
+                driver_broken = True
+                continue
+            return []
+        finally:
+            if driver:
+                if driver_broken:
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
+                    DRIVER_LAST_USED.pop(id(driver), None)
+                else:
+                    return_driver_to_pool(driver)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    if last_error:
+        log_debug(f"АвтоПитер: не удалось восстановить Selenium-сессию для {artikul}: {last_error}")
+    return []
 
 def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str]:
     """Получает бренды с Autopiter по артикулу.
