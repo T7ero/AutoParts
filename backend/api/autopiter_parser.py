@@ -654,29 +654,15 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
         except TimeoutException:
             log_debug(f"АвтоПитер: таймаут ожидания #main-content для {artikul}")
         
-        # Короткая пауза после первичной загрузки
-        time.sleep(0.6)
+        # Дополнительное ожидание для полной загрузки
+        time.sleep(2)
         
         # Прокручиваем страницу для подгрузки ВСЕХ данных
         last_height = driver.execute_script("return document.body.scrollHeight")
         last_row_count = 0
         
-        # Ускоренный цикл прокрутки: меньше "жестких" sleep, но оставляем догрузку данных.
-        try:
-            max_scrolls = int(os.getenv("AUTOPITER_SELENIUM_MAX_SCROLLS", "8"))
-        except Exception:
-            max_scrolls = 8
-        max_scrolls = max(3, min(20, max_scrolls))
-        try:
-            scroll_pause = float(os.getenv("AUTOPITER_SELENIUM_SCROLL_PAUSE", "1.0"))
-        except Exception:
-            scroll_pause = 1.0
-        scroll_pause = max(0.3, min(2.0, scroll_pause))
-        try:
-            no_change_limit = int(os.getenv("AUTOPITER_SELENIUM_NO_CHANGE_LIMIT", "2"))
-        except Exception:
-            no_change_limit = 2
-        no_change_limit = max(1, min(4, no_change_limit))
+        # Более надежный цикл прокрутки (быстрее 429-сценария, но без агрессивного раннего выхода)
+        max_scrolls = 30
         scroll_attempts = 0
         no_change_count = 0
         
@@ -684,10 +670,9 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
             scroll_attempts += 1
             # Прокручиваем вниз
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(scroll_pause)
+            time.sleep(2)
             
             # Проверяем количество строк в таблице
-            unchanged = True
             try:
                 rows = driver.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')
                 current_row_count = len(rows)
@@ -695,38 +680,45 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
                 # Если количество строк увеличилось, продолжаем прокрутку
                 if current_row_count > last_row_count:
                     last_row_count = current_row_count
-                    unchanged = False
+                    no_change_count = 0
                     log_debug(f"АвтоПитер: найдено {current_row_count} строк после прокрутки {scroll_attempts}")
+                else:
+                    no_change_count += 1
             except Exception as e:
                 log_debug(f"Ошибка проверки строк: {str(e)}")
             
             # Проверяем, появились ли новые данные по высоте страницы
             new_height = driver.execute_script("return document.body.scrollHeight")
-            if new_height != last_height:
-                last_height = new_height
-                unchanged = False
-
-            if unchanged:
+            if new_height == last_height:
                 no_change_count += 1
             else:
+                last_height = new_height
                 no_change_count = 0
             
             # Если несколько раз подряд ничего не изменилось, прекращаем прокрутку
-            if no_change_count >= no_change_limit:
+            if no_change_count >= 3:
                 log_debug(f"АвтоПитер: прекращаем прокрутку после {scroll_attempts} попыток (нет изменений)")
                 break
         
-        # Быстрый финальный "пинг" прокрутки вместо медленного прохода по всей странице.
+        # Дополнительная прокрутка: вверх, затем постепенно вниз для гарантированной загрузки.
         driver.execute_script("window.scrollTo(0, 0);")
-        time.sleep(0.2)
+        time.sleep(1)
+        
+        scroll_step = 500
+        current_position = 0
+        max_position = driver.execute_script("return document.body.scrollHeight")
+        
+        while current_position < max_position:
+            current_position += scroll_step
+            driver.execute_script(f"window.scrollTo(0, {current_position});")
+            time.sleep(0.3)
+        
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(0.6)
+        time.sleep(2)
         
         # Явное ожидание появления всех строк таблицы
         try:
-            WebDriverWait(driver, 3).until(
-                lambda d: len(d.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')) > 0
-            )
+            wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')) > 0)
         except TimeoutException:
             log_debug(f"АвтоПитер: таймаут ожидания строк таблицы для {artikul}")
         
