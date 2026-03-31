@@ -314,6 +314,17 @@ def return_driver_to_pool(driver: webdriver.Chrome):
         return
     
     try:
+        # Крашнутый/битый драйвер нельзя возвращать в пул.
+        try:
+            _ = driver.title
+        except Exception:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            DRIVER_LAST_USED.pop(id(driver), None)
+            return
+
         # Проверяем, не слишком ли старый драйвер
         driver_id = id(driver)
         if driver_id in DRIVER_LAST_USED:
@@ -617,6 +628,7 @@ def make_request(
 def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[str]:
     """Selenium-парсинг АвтоПитер с полной загрузкой страницы"""
     driver = None
+    driver_broken = False
     temp_dir = tempfile.mkdtemp(prefix=f"chrome_autopiter_")
     
     try:
@@ -675,6 +687,7 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
             time.sleep(scroll_pause)
             
             # Проверяем количество строк в таблице
+            unchanged = True
             try:
                 rows = driver.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')
                 current_row_count = len(rows)
@@ -682,19 +695,20 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
                 # Если количество строк увеличилось, продолжаем прокрутку
                 if current_row_count > last_row_count:
                     last_row_count = current_row_count
-                    no_change_count = 0
+                    unchanged = False
                     log_debug(f"АвтоПитер: найдено {current_row_count} строк после прокрутки {scroll_attempts}")
-                else:
-                    no_change_count += 1
             except Exception as e:
                 log_debug(f"Ошибка проверки строк: {str(e)}")
             
             # Проверяем, появились ли новые данные по высоте страницы
             new_height = driver.execute_script("return document.body.scrollHeight")
-            if new_height == last_height:
+            if new_height != last_height:
+                last_height = new_height
+                unchanged = False
+
+            if unchanged:
                 no_change_count += 1
             else:
-                last_height = new_height
                 no_change_count = 0
             
             # Если несколько раз подряд ничего не изменилось, прекращаем прокрутку
@@ -730,11 +744,21 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
         return parse_autopiter_response(full_html, artikul)
         
     except Exception as e:
+        msg = str(e).lower()
+        if "tab crashed" in msg or "invalid session id" in msg:
+            driver_broken = True
         log_debug(f"Ошибка Selenium парсинга АвтоПитер: {str(e)}")
         return []
     finally:
         if driver:
-            return_driver_to_pool(driver)
+            if driver_broken:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                DRIVER_LAST_USED.pop(id(driver), None)
+            else:
+                return_driver_to_pool(driver)
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str]:

@@ -799,10 +799,13 @@ def process_parsing_task(self, task_id):
             # Для Selenium-режима Autopiter можно безопасно держать 2 потока на строку.
             # Значение можно переопределить переменной окружения AUTOPITER_MAX_WORKERS.
             nnums = len(numbers)
+            # Для Selenium слишком агрессивный параллелизм может приводить к tab crashed.
+            transport_mode = os.getenv("AUTOPITER_TRANSPORT", "selenium").strip().lower()
+            default_ap_workers = "1" if transport_mode in ("selenium", "sel") else "2"
             try:
-                autopiter_workers_cfg = int(os.getenv("AUTOPITER_MAX_WORKERS", "2"))
+                autopiter_workers_cfg = int(os.getenv("AUTOPITER_MAX_WORKERS", default_ap_workers))
             except Exception:
-                autopiter_workers_cfg = 2
+                autopiter_workers_cfg = int(default_ap_workers)
             AUTOPITER_MAX_WORKERS = max(1, min(nnums, autopiter_workers_cfg))
 
             # Опционально: пробовать Autopiter через прокси, если лимит 429 привязан к IP.
