@@ -745,7 +745,12 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
         except Exception as e:
             last_error = e
             msg = str(e).lower()
-            if "tab crashed" in msg or "invalid session id" in msg:
+            if (
+                "tab crashed" in msg
+                or "invalid session id" in msg
+                or "timed out receiving message from renderer" in msg
+                or "timeout: timed out receiving message from renderer" in msg
+            ):
                 driver_broken = True
             log_debug(f"Ошибка Selenium парсинга АвтоПитер: {str(e)}")
             if selenium_attempt == 0:
@@ -1761,7 +1766,7 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
     for attempt in range(DRIVER_CREATION_RETRIES):
         try:
             chrome_options = Options()
-            chrome_options.add_argument('--headless')
+            chrome_options.add_argument('--headless=new')
             chrome_options.add_argument('--no-sandbox')
             chrome_options.add_argument('--disable-dev-shm-usage')
             chrome_options.add_argument('--disable-gpu')
@@ -1843,10 +1848,14 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             if service is None:
                 service = Service()  # Автоопределение
             
+            # Для тяжелых страниц (Autopiter) не ждем загрузки всех sub-resources,
+            # иначе чаще ловим renderer timeout в контейнере.
+            chrome_options.page_load_strategy = 'eager'
             driver = webdriver.Chrome(service=service, options=chrome_options)
             
             # Устанавливаем таймауты
             driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+            driver.set_script_timeout(max(20, PAGE_LOAD_TIMEOUT))
             driver.implicitly_wait(1)  # Еще больше уменьшаем для ускорения
             
             return driver
