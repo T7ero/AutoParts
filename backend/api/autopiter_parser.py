@@ -1072,60 +1072,68 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
         main_content = soup.select_one('#main-content')
         if not main_content:
             log_debug(f"Autopiter: не найден #main-content для {artikul}")
-            return []
-        
-        # Ищем таблицу с классом, содержащим Table__table
+            main_content = soup
+
+        # Основной путь через таблицу (может меняться из-за хэшей классов/AB-тестов)
         table = main_content.select_one('div[class*="Table__table"]')
-        if not table:
-            log_debug(f"Autopiter: не найдена таблица Table__table для {artikul}")
-            return []
-        
-        # Ищем строки IndividualTableRow
-        rows = table.select('div[class*="IndividualTableRow"]')
-        if not rows:
-            log_debug(f"Autopiter: не найдены строки IndividualTableRow для {artikul}")
-            return []
-        
-        log_debug(f"Autopiter: найдено {len(rows)} строк IndividualTableRow для {artikul}")
-        
-        # Проходим по всем строкам и ищем infoColumn с точным селектором
-        for row_idx, row in enumerate(rows):
-            info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
-            if info_column:
-                # Собираем все возможные тексты из строки для поиска бренда
-                all_texts_in_row = []
-                
-                # 1. Используем точный селектор: span > span > span > span
-                brand_spans = info_column.select('span > span > span > span')
-                for span in brand_spans:
-                    brand_text = span.get_text(strip=True)
-                    if brand_text:
-                        all_texts_in_row.append(brand_text)
-        
-                # 2. Пробуем через title
-                brand_spans_title = info_column.select('span[title]')
-                for span in brand_spans_title:
-                    title_text = span.get('title')
-                    if title_text:
-                        all_texts_in_row.append(title_text)
-                
-                # 3. Пробуем все span внутри infoColumn
-                all_spans = info_column.select('span')
-                for span in all_spans:
-                    span_text = span.get_text(strip=True)
-                    if span_text and len(span_text) > 1 and len(span_text) < 50:
-                        all_texts_in_row.append(span_text)
-                
-                # 4. Пробуем получить текст напрямую из infoColumn
-                direct_text = info_column.get_text(strip=True, separator=' ')
-                if direct_text:
-                    # ВАЖНО: не разбиваем на слова — иначе многословные бренды ("Carville Racing", "Golden Asia")
-                    # превращаются в отдельные "Carville" и "Racing".
-                    all_texts_in_row.append(direct_text)
-                
-                # Регистрируем все найденные тексты как потенциальные бренды
-                for text in all_texts_in_row:
-                    register_brand(text, f"строка {row_idx + 1}")
+        rows = table.select('div[class*="IndividualTableRow"]') if table else []
+        if table and rows:
+            log_debug(f"Autopiter: найдено {len(rows)} строк IndividualTableRow для {artikul}")
+
+            # Проходим по всем строкам и ищем infoColumn с точным селектором
+            for row_idx, row in enumerate(rows):
+                info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
+                if info_column:
+                    # Собираем все возможные тексты из строки для поиска бренда
+                    all_texts_in_row = []
+
+                    # 1. Используем точный селектор: span > span > span > span
+                    brand_spans = info_column.select('span > span > span > span')
+                    for span in brand_spans:
+                        brand_text = span.get_text(strip=True)
+                        if brand_text:
+                            all_texts_in_row.append(brand_text)
+
+                    # 2. Пробуем через title
+                    brand_spans_title = info_column.select('span[title]')
+                    for span in brand_spans_title:
+                        title_text = span.get('title')
+                        if title_text:
+                            all_texts_in_row.append(title_text)
+
+                    # 3. Пробуем все span внутри infoColumn
+                    all_spans = info_column.select('span')
+                    for span in all_spans:
+                        span_text = span.get_text(strip=True)
+                        if span_text and len(span_text) > 1 and len(span_text) < 50:
+                            all_texts_in_row.append(span_text)
+
+                    # 4. Пробуем получить текст напрямую из infoColumn
+                    direct_text = info_column.get_text(strip=True, separator=' ')
+                    if direct_text:
+                        # ВАЖНО: не разбиваем на слова — иначе многословные бренды ("Carville Racing", "Golden Asia")
+                        # превращаются в отдельные "Carville" и "Racing".
+                        all_texts_in_row.append(direct_text)
+
+                    # Регистрируем все найденные тексты как потенциальные бренды
+                    for text in all_texts_in_row:
+                        register_brand(text, f"строка {row_idx + 1}")
+        else:
+            if not table:
+                log_debug(f"Autopiter: не найдена таблица Table__table для {artikul}")
+            else:
+                log_debug(f"Autopiter: не найдены строки IndividualTableRow для {artikul}")
+
+        # Fallback: если таблица не найдена/пустая, берем бренды напрямую из ссылок брендов.
+        # Это покрывает случаи, когда структура таблицы изменилась, но href /brands/... остался.
+        brand_link_selectors = [
+            "#main-content a[href*='/brands/']",
+            "a[href*='/brands/']",
+            "#main-content [class*='IndividualTableRow__infoColumn'] a",
+        ]
+        for selector in brand_link_selectors:
+            for a_tag in soup.select(selector):
+                register_brand(a_tag.get_text(strip=True), f"fallback-link {selector}")
 
         # Дополнительно собираем бренды из блока "Производители" (чипы над таблицей)
         brand_chip_selectors = [
