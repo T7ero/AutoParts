@@ -819,6 +819,9 @@ def process_parsing_task(self, task_id):
                 "timed out",
                 "timeout",
                 "read timed out",
+                "readtimeout",
+                "httpconnectionpool",
+                "connection broken",
                 "renderer",
                 "tab crashed",
                 "message from renderer",
@@ -966,7 +969,8 @@ def process_parsing_task(self, task_id):
                                 return []
                 return inner
 
-            log(f"Начинаем парсинг {len(numbers)} артикулов для строки {row_index + 1} (потоков Autopiter/строка: {AUTOPITER_MAX_WORKERS}, Emex параллельно: {emex_parallel})")
+            _emex_note = f", Emex параллельно: {emex_parallel}" if 'emex' in selected_sources else ""
+            log(f"Начинаем парсинг {len(numbers)} артикулов для строки {row_index + 1} (потоков Autopiter/строка: {AUTOPITER_MAX_WORKERS}{_emex_note})")
 
             def worker(num):
                 local = {'autopiter': [], 'emex': []}
@@ -1003,6 +1007,8 @@ def process_parsing_task(self, task_id):
                         results['emex'].extend(res.get('emex', []))
                     except Exception as e:
                         log(f"Ошибка обработки артикула {num}: {str(e)}")
+                        if 'autopiter' in selected_sources:
+                            _record_autopiter_event(_is_timeout_like_autopiter_error(e), row_index)
                     finally:
                         if callable(on_article_done):
                             try:
