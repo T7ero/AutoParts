@@ -630,8 +630,13 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
     last_error = None
 
     # Иногда драйвер "залипает": первые артикулы отдает, потом стабильно 0 строк.
-    # В таком случае делаем один повтор с ПОЛНОЙ пересборкой драйвера (без пула).
-    for selenium_attempt in range(2):
+    # По умолчанию делаем 1 попытку (быстрее), повтор можно включить env-переменной.
+    try:
+        selenium_attempts = int(os.getenv("AUTOPITER_SELENIUM_ATTEMPTS", "1"))
+    except Exception:
+        selenium_attempts = 1
+    selenium_attempts = max(1, min(2, selenium_attempts))
+    for selenium_attempt in range(selenium_attempts):
         driver = None
         driver_broken = False
         force_fresh_driver = selenium_attempt > 0
@@ -736,7 +741,7 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
                 return brands
 
             # Если страницы явно "пустые" (0 строк и 0 брендов) — лечим пересозданием драйвера.
-            if final_rows_count == 0 and selenium_attempt == 0:
+            if final_rows_count == 0 and selenium_attempt < (selenium_attempts - 1):
                 log_debug(f"АвтоПитер: пустая страница для {artikul}, пересоздаем драйвер и повторяем")
                 driver_broken = True
                 continue
@@ -753,7 +758,7 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
             ):
                 driver_broken = True
             log_debug(f"Ошибка Selenium парсинга АвтоПитер: {str(e)}")
-            if selenium_attempt == 0:
+            if selenium_attempt < (selenium_attempts - 1):
                 driver_broken = True
                 continue
             return []
