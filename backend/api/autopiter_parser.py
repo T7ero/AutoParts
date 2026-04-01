@@ -55,42 +55,6 @@ DRIVER_POOL_SIZE = 3
 DRIVER_CREATION_RETRIES = 3
 DRIVER_TIMEOUT_RETRIES = 3  # Увеличиваем количество попыток
 
-
-def _selenium_remote_http_timeout_seconds() -> float:
-    """Таймаут HTTP к локальному chromedriver (Selenium Wire Protocol).
-
-    По умолчанию в Selenium ~120s на read + retries urllib3: при «мёртвом» Chrome
-    воркер зависает на минуты на вызовах вроде driver.title / return_driver_to_pool.
-    Задаётся env AUTOPITER_SELENIUM_HTTP_TIMEOUT (секунды).
-    """
-    try:
-        v = float(os.getenv("AUTOPITER_SELENIUM_HTTP_TIMEOUT", "30"))
-    except Exception:
-        v = 30.0
-    return max(10.0, min(120.0, v))
-
-
-def _selenium_pool_health_check_timeout_seconds() -> float:
-    """Короткий таймаут только для проверки живости перед возвратом в пул."""
-    try:
-        v = float(os.getenv("AUTOPITER_SELENIUM_POOL_HEALTH_TIMEOUT", "5"))
-    except Exception:
-        v = 5.0
-    return max(2.0, min(30.0, v))
-
-
-def _set_selenium_remote_command_timeout(driver, seconds: Optional[float]) -> None:
-    """Ограничивает длительность HTTP-запросов к chromedriver (не путать с page load timeout)."""
-    if driver is None:
-        return
-    ce = getattr(driver, "command_executor", None)
-    if ce is None or not hasattr(ce, "set_timeout"):
-        return
-    try:
-        ce.set_timeout(seconds)
-    except Exception:
-        pass
-
 # Кеширование
 REQUEST_CACHE = {}
 CACHE_EXPIRATION = 600
@@ -351,27 +315,9 @@ def return_driver_to_pool(driver: webdriver.Chrome):
     
     try:
         # Крашнутый/битый драйвер нельзя возвращать в пул.
-        # Важно: проверку делаем с коротким HTTP-timeout к chromedriver, иначе при зависшем
-        # процессе Chrome один вызов driver.title может занять минуты (дефолт Selenium + retries).
-        ce = getattr(driver, "command_executor", None)
-        old_http_timeout = None
-        health_ok = False
         try:
-            if ce is not None and hasattr(ce, "get_timeout"):
-                old_http_timeout = ce.get_timeout()
-                ce.set_timeout(_selenium_pool_health_check_timeout_seconds())
             _ = driver.title
-            health_ok = True
         except Exception:
-            health_ok = False
-        finally:
-            if ce is not None and hasattr(ce, "set_timeout"):
-                try:
-                    ce.set_timeout(old_http_timeout)
-                except Exception:
-                    pass
-
-        if not health_ok:
             try:
                 driver.quit()
             except Exception:
@@ -1941,8 +1887,7 @@ def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> 
             # иначе чаще ловим renderer timeout в контейнере.
             chrome_options.page_load_strategy = 'eager'
             driver = webdriver.Chrome(service=service, options=chrome_options)
-            _set_selenium_remote_command_timeout(driver, _selenium_remote_http_timeout_seconds())
-
+            
             # Устанавливаем таймауты
             driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
             driver.set_script_timeout(max(20, PAGE_LOAD_TIMEOUT))
@@ -1996,7 +1941,6 @@ def _create_chrome_driver_minimal(temp_dir: str, proxy: Optional[str] = None):
         
         service = Service()
         driver = webdriver.Chrome(service=service, options=chrome_options)
-        _set_selenium_remote_command_timeout(driver, _selenium_remote_http_timeout_seconds())
         
         # Устанавливаем таймауты
         driver.set_page_load_timeout(15)
@@ -2554,7 +2498,6 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             tmp_dir = tempfile.mkdtemp(prefix=f"chrome_emex_{uuid.uuid4().hex[:8]}_")
             opts.add_argument(f'--user-data-dir={tmp_dir}')
             drv = webdriver.Chrome(options=opts)
-            _set_selenium_remote_command_timeout(drv, _selenium_remote_http_timeout_seconds())
             drv.set_page_load_timeout(15)
             try:
                 search_url = f"https://emex.ru/search?detailNum={quote(artikul)}"
@@ -2656,7 +2599,6 @@ def _create_chrome_driver_minimal():
     
     try:
         driver = webdriver.Chrome(options=options)
-        _set_selenium_remote_command_timeout(driver, _selenium_remote_http_timeout_seconds())
         driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
         driver.implicitly_wait(2)
         return driver

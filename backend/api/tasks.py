@@ -25,7 +25,6 @@ import time
 import gc
 import threading
 import queue
-from collections import deque
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from typing import List, Dict, Optional, Set
@@ -772,107 +771,9 @@ def process_parsing_task(self, task_id):
         # Батч-обработка: по 25 строк с промежуточным сохранением результатов
         batch_size = 25
         cross_progress_lock = threading.Lock()
-        autopiter_adaptive_lock = threading.Lock()
-        autopiter_adaptive_state = {
-            'timeout_events': deque(maxlen=30),
-            'force_single_until_row': -1,
-            'is_degraded': False,
-        }
-
-        try:
-            autopiter_adaptive_enabled = os.getenv("AUTOPITER_ADAPTIVE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
-        except Exception:
-            autopiter_adaptive_enabled = True
-        try:
-            autopiter_timeout_window = int(os.getenv("AUTOPITER_TIMEOUT_WINDOW", "30"))
-        except Exception:
-            autopiter_timeout_window = 30
-        try:
-            autopiter_timeout_threshold = float(os.getenv("AUTOPITER_TIMEOUT_THRESHOLD", "0.35"))
-        except Exception:
-            autopiter_timeout_threshold = 0.35
-        try:
-            autopiter_recover_threshold = float(os.getenv("AUTOPITER_TIMEOUT_RECOVER_THRESHOLD", "0.15"))
-        except Exception:
-            autopiter_recover_threshold = 0.15
-        try:
-            autopiter_degrade_min_samples = int(os.getenv("AUTOPITER_TIMEOUT_MIN_SAMPLES", "10"))
-        except Exception:
-            autopiter_degrade_min_samples = 10
-        try:
-            autopiter_degrade_cooldown_rows = int(os.getenv("AUTOPITER_DEGRADE_COOLDOWN_ROWS", "8"))
-        except Exception:
-            autopiter_degrade_cooldown_rows = 8
-
-        autopiter_timeout_window = max(10, min(200, autopiter_timeout_window))
-        autopiter_timeout_threshold = max(0.05, min(0.95, autopiter_timeout_threshold))
-        autopiter_recover_threshold = max(0.01, min(0.90, autopiter_recover_threshold))
-        autopiter_degrade_min_samples = max(5, min(100, autopiter_degrade_min_samples))
-        autopiter_degrade_cooldown_rows = max(2, min(100, autopiter_degrade_cooldown_rows))
-        autopiter_adaptive_state['timeout_events'] = deque(maxlen=autopiter_timeout_window)
-
-        def _is_timeout_like_autopiter_error(exc: Exception) -> bool:
-            if isinstance(exc, AutopiterNetworkException):
-                return True
-            text = str(exc).lower()
-            timeout_markers = (
-                "timed out",
-                "timeout",
-                "read timed out",
-                "readtimeout",
-                "httpconnectionpool",
-                "connection broken",
-                "renderer",
-                "tab crashed",
-                "message from renderer",
-            )
-            return any(marker in text for marker in timeout_markers)
-
-        def _record_autopiter_event(is_timeout: bool, row_idx: int):
-            if not autopiter_adaptive_enabled:
-                return
-            with autopiter_adaptive_lock:
-                events = autopiter_adaptive_state['timeout_events']
-                events.append(1 if is_timeout else 0)
-                samples = len(events)
-                if samples < autopiter_degrade_min_samples:
-                    return
-                timeout_ratio = (sum(events) / samples) if samples else 0.0
-                if (not autopiter_adaptive_state['is_degraded']) and timeout_ratio >= autopiter_timeout_threshold:
-                    autopiter_adaptive_state['is_degraded'] = True
-                    autopiter_adaptive_state['force_single_until_row'] = row_idx + autopiter_degrade_cooldown_rows
-                    log(
-                        f"Autopiter adaptive: рост таймаутов ({timeout_ratio:.0%}, {samples} событий), "
-                        f"временно снижаем до 1 потока до строки {autopiter_adaptive_state['force_single_until_row'] + 1}"
-                    )
-
-        def _resolve_autopiter_workers(nnums: int, configured_workers: int, row_idx: int) -> int:
-            if not autopiter_adaptive_enabled:
-                return max(1, min(nnums, configured_workers))
-            with autopiter_adaptive_lock:
-                is_degraded = autopiter_adaptive_state['is_degraded']
-                force_until = autopiter_adaptive_state['force_single_until_row']
-                events = autopiter_adaptive_state['timeout_events']
-                samples = len(events)
-                timeout_ratio = (sum(events) / samples) if samples else 0.0
-
-                if is_degraded and row_idx > force_until:
-                    if samples >= autopiter_degrade_min_samples and timeout_ratio <= autopiter_recover_threshold:
-                        autopiter_adaptive_state['is_degraded'] = False
-                        log(
-                            f"Autopiter adaptive: таймауты снизились ({timeout_ratio:.0%}, {samples} событий), "
-                            "возвращаем 2 потока (или значение AUTOPITER_MAX_WORKERS)"
-                        )
-                    else:
-                        autopiter_adaptive_state['force_single_until_row'] = row_idx + autopiter_degrade_cooldown_rows
-
-                use_single = autopiter_adaptive_state['is_degraded'] and row_idx <= autopiter_adaptive_state['force_single_until_row']
-
-            selected = 1 if use_single else configured_workers
-            return max(1, min(nnums, selected))
         
         # Параллельный парсинг по всем кросс-номерам строки сразу (раньше — по одному, пул потоков не использовался)
-        def parse_all_parallel(numbers, brand, part_number, name, row_index, on_article_done=None):
+        def parse_all_parallel(numbers, brand, part_number, name, on_article_done=None):
             results = {'autopiter': [], 'emex': []}
             state = {"emex_disabled": False, "emex_failures": 0}
             if not numbers:
@@ -895,16 +796,17 @@ def process_parsing_task(self, task_id):
                 cpu_n = os.cpu_count() or 4
             except Exception:
                 cpu_n = 4
-            # Дефолт для Autopiter — 2 потока (через env, без хардкода в UI).
-            # При росте таймаутов adaptive-логика временно откатит до 1.
+            # Для Selenium-режима Autopiter можно безопасно держать 2 потока на строку.
+            # Значение можно переопределить переменной окружения AUTOPITER_MAX_WORKERS.
             nnums = len(numbers)
-            default_ap_workers = "2"
+            # Для Selenium слишком агрессивный параллелизм может приводить к tab crashed.
+            transport_mode = os.getenv("AUTOPITER_TRANSPORT", "selenium").strip().lower()
+            default_ap_workers = "1" if transport_mode in ("selenium", "sel") else "2"
             try:
                 autopiter_workers_cfg = int(os.getenv("AUTOPITER_MAX_WORKERS", default_ap_workers))
             except Exception:
                 autopiter_workers_cfg = int(default_ap_workers)
-            autopiter_workers_cfg = max(1, min(8, autopiter_workers_cfg))
-            AUTOPITER_MAX_WORKERS = _resolve_autopiter_workers(nnums, autopiter_workers_cfg, row_index)
+            AUTOPITER_MAX_WORKERS = max(1, min(nnums, autopiter_workers_cfg))
 
             # Опционально: пробовать Autopiter через прокси, если лимит 429 привязан к IP.
             # По умолчанию выключено, чтобы не ухудшать качество/стабильность.
@@ -954,8 +856,6 @@ def process_parsing_task(self, task_id):
                             return [(brand, part_number, name, b, num, site) for b in brands]
                         except Exception as e:
                             log(f"Error parsing {site} for {num} (attempt {attempt + 1}): {str(e)}")
-                            if site == 'autopiter':
-                                _record_autopiter_event(_is_timeout_like_autopiter_error(e), row_index)
                             if attempt < max_retries - 1:
                                 time.sleep(0.1)
                             else:
@@ -969,8 +869,7 @@ def process_parsing_task(self, task_id):
                                 return []
                 return inner
 
-            _emex_note = f", Emex параллельно: {emex_parallel}" if 'emex' in selected_sources else ""
-            log(f"Начинаем парсинг {len(numbers)} артикулов для строки {row_index + 1} (потоков Autopiter/строка: {AUTOPITER_MAX_WORKERS}{_emex_note})")
+            log(f"Начинаем парсинг {len(numbers)} артикулов для строки {index + 1} (потоков Autopiter/строка: {AUTOPITER_MAX_WORKERS}, Emex параллельно: {emex_parallel})")
 
             def worker(num):
                 local = {'autopiter': [], 'emex': []}
@@ -1002,13 +901,9 @@ def process_parsing_task(self, task_id):
                     try:
                         res = future.result()
                         results['autopiter'].extend(res.get('autopiter', []))
-                        if 'autopiter' in selected_sources:
-                            _record_autopiter_event(False, row_index)
                         results['emex'].extend(res.get('emex', []))
                     except Exception as e:
                         log(f"Ошибка обработки артикула {num}: {str(e)}")
-                        if 'autopiter' in selected_sources:
-                            _record_autopiter_event(_is_timeout_like_autopiter_error(e), row_index)
                     finally:
                         if callable(on_article_done):
                             try:
@@ -1203,7 +1098,6 @@ def process_parsing_task(self, task_id):
                         brand_from_e,
                         part_number_from_f,
                         name_from_b,
-                        index,
                         on_article_done=on_cross_article_done,
                     )
 
