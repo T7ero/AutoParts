@@ -773,15 +773,29 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
         log_debug(f"АвтоПитер: не удалось восстановить Selenium-сессию для {artikul}: {last_error}")
     return []
 
-def get_brands_by_artikul(artikul: str, proxy: Optional[str] = None) -> List[str]:
+def get_brands_by_artikul(
+    artikul: str,
+    proxy: Optional[str] = None,
+    force_http: bool = False,
+) -> List[str]:
     """Получает бренды с Autopiter по артикулу.
     По умолчанию работает через Selenium (стабильнее при волнах HTTP 429).
     Для отката на HTTP можно выставить AUTOPITER_TRANSPORT=http.
     """
     try:
         transport = os.getenv("AUTOPITER_TRANSPORT", "selenium").strip().lower()
-        if transport in ("selenium", "sel"):
-            return parse_autopiter_selenium(artikul, proxy)
+        if not force_http and transport in ("selenium", "sel"):
+            brands = parse_autopiter_selenium(artikul, proxy)
+            if brands:
+                return brands
+
+            # Circuit-breaker: при деградации Selenium сразу пробуем HTTP для ЭТОГО артикула.
+            # Это не меняет глобальный transport, но спасает "дыры" по брендам.
+            use_http_fallback = os.getenv("AUTOPITER_SELENIUM_HTTP_FALLBACK", "1").strip().lower()
+            if use_http_fallback in ("1", "true", "yes", "on"):
+                log_debug(f"АвтоПитер: Selenium вернул 0 для {artikul}, пробуем HTTP fallback")
+                return get_brands_by_artikul(artikul, proxy, force_http=True)
+            return []
 
         log_debug(f"АвтоПитер: начинаем парсинг {artikul}")
         
