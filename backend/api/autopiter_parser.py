@@ -843,7 +843,10 @@ def get_brands_by_artikul(
         # и просто съедают время. Поэтому:
         # - сеть/таймауты: пробуем до 3 раз
         # - 429/403: 1 попытка (сильный глобальный cooldown), дальше переходим к следующему артикулу
-        max_attempts = 3
+        # Для fast-fallback после Selenium используем более "короткий" HTTP-профиль,
+        # чтобы не зависать по 40-60 секунд на одном артикуле.
+        max_attempts = 1 if force_http else 3
+        request_timeout = 10 if force_http else 18
         for attempt in range(max_attempts):
             # Лёгкий джиттер + глобальный лимитер, чтобы не стрелять бурстами и не ловить 429 пачками
             time.sleep(random.uniform(0.0, 0.05))
@@ -852,7 +855,7 @@ def get_brands_by_artikul(
 
             try:
                 # Увеличенный timeout снижает количество "Read timed out"
-                response = session.get(url, timeout=18, allow_redirects=True)
+                response = session.get(url, timeout=request_timeout, allow_redirects=True)
             except requests.exceptions.Timeout as e:
                 # Таймаут часто идет вслед за 429-волнами: нужно наказать глобально и повторить.
                 backoff = max(0.4, min(5.0, 0.6 * (2 ** attempt)))
@@ -980,6 +983,16 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             'свеча', 'накаливания', 'накала'
         ]
 
+        # Чтобы не спамить одинаковыми debug-строками для одного бренда
+        # (основной селектор + fallback-селекторы), логируем каждую пару
+        # (бренд, source-группа) один раз.
+        logged_pairs = set()
+
+        def _source_group(source_text: str) -> str:
+            if source_text.startswith("fallback-link"):
+                return "fallback-link"
+            return source_text
+
         def register_brand(value: Optional[str], source: str = '') -> None:
             brand = (value or '').strip()
             if not brand or len(brand) <= 1 or len(brand) >= 50:
@@ -1087,7 +1100,10 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                 if split_brand and len(split_brand) >= 2:
                     brands.add(split_brand)
                     if source:
-                        log_debug(f"Autopiter: найден бренд '{split_brand}' ({source}) для {artikul} (из '{brand}')")
+                        key = (split_brand, _source_group(source))
+                        if key not in logged_pairs:
+                            logged_pairs.add(key)
+                            log_debug(f"Autopiter: найден бренд '{split_brand}' ({source}) для {artikul} (из '{brand}')")
         
         # Используем ТОЧНЫЙ селектор из DevTools пользователя
         # #main-content > div > div > div.Table__table____693a7dea7e60fe92 > div > div.IndividualTableRow__infoColumn___b7ecc9b28c9245b4 > span > span > span > span
