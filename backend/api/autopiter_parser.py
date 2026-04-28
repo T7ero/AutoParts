@@ -1502,6 +1502,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 	"""
 	brands: Set[str] = set()
 	driver = None
+	driver_broken = False
 	
 	try:
 		log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
@@ -1532,8 +1533,18 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 				log_debug(f"Попытка {page_attempt + 1} загрузки страницы: {error_msg}")
 				
 				# Если произошла критическая ошибка (tab crashed), пересоздаем драйвер
-				if "tab crashed" in error_msg.lower() or "chrome not reachable" in error_msg.lower() or "connection refused" in error_msg.lower():
+				lower_msg = error_msg.lower()
+				if (
+					"tab crashed" in lower_msg
+					or "chrome not reachable" in lower_msg
+					or "connection refused" in lower_msg
+					or "timed out receiving message from renderer" in lower_msg
+					or "script timeout" in lower_msg
+					or "httpconnectionpool" in lower_msg
+					or "read timed out" in lower_msg
+				):
 					log_debug("Критическая ошибка Chrome, пересоздаем драйвер")
+					driver_broken = True
 					try:
 						# Закрываем сломанный драйвер
 						if driver:
@@ -1550,12 +1561,14 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 						# Создаем новый драйвер
 						driver = _create_chrome_driver_robust(None, proxy)
 						log_debug("Создан новый драйвер после критической ошибки")
+						driver_broken = False
 						
 						# Пробуем загрузить страницу с новым драйвером
 						driver.get(url)
 						break
 					except Exception as recovery_error:
 						log_debug(f"Не удалось восстановить драйвер: {str(recovery_error)}")
+						driver_broken = True
 						return []
 				
 				if page_attempt < DRIVER_TIMEOUT_RETRIES - 1:
@@ -1814,9 +1827,15 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		
 		return list(brands)
 	finally:
-		# Возвращаем драйвер в пул вместо закрытия
+		# Битый драйвер нельзя возвращать в пул — иначе он будет «заражать» следующие запросы.
 		if driver:
-			return_driver_to_pool(driver)
+			if driver_broken:
+				try:
+					driver.quit()
+				except Exception:
+					pass
+			else:
+				return_driver_to_pool(driver)
 	
 	# Fallback: если Selenium не сработал, пробуем API
 	if not brands:

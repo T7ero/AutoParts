@@ -59,6 +59,47 @@ until python3 manage.py migrate --noinput; do
     sleep 5
 done
 
+# Защита: если в базе остался дефолтный admin/admin — отключаем или меняем пароль.
+# Это закрывает дыру даже если пользователь был создан ранее.
+python3 manage.py shell -c "
+from django.contrib.auth import get_user_model
+import os
+
+User = get_user_model()
+username = os.getenv('ADMIN_USERNAME', 'admin')
+disable_default = os.getenv('DISABLE_DEFAULT_ADMIN', '1').strip().lower() in ('1','true','yes','on')
+new_password = os.getenv('ADMIN_PASSWORD', '')
+force_set = os.getenv('FORCE_ADMIN_PASSWORD', '0').strip().lower() in ('1','true','yes','on')
+
+try:
+    u = User.objects.filter(username=username).first()
+    if not u:
+        print('ℹ️ Default-admin check: user not found')
+    else:
+        if u.check_password('admin'):
+            if new_password:
+                u.set_password(new_password)
+                u.is_active = True
+                u.save(update_fields=['password','is_active'])
+                print('✅ Default-admin check: insecure password replaced from ADMIN_PASSWORD')
+            elif disable_default:
+                u.set_unusable_password()
+                u.is_active = False
+                u.save(update_fields=['password','is_active'])
+                print('✅ Default-admin check: insecure admin disabled (set unusable password + inactive)')
+            else:
+                print('⚠️ Default-admin check: insecure admin/admin still enabled (DISABLE_DEFAULT_ADMIN=0)')
+        elif force_set and new_password:
+            u.set_password(new_password)
+            u.is_active = True
+            u.save(update_fields=['password','is_active'])
+            print('✅ Default-admin check: admin password force-updated from ADMIN_PASSWORD')
+        else:
+            print('ℹ️ Default-admin check: admin password is not default')
+except Exception as e:
+    print(f'⚠️ Default-admin check error: {e}')
+"
+
 # Создаем суперпользователя только по явному флагу (без дефолтного admin/admin)
 if [ "${CREATE_SUPERUSER:-0}" = "1" ]; then
     echo "👤 Создание суперпользователя (CREATE_SUPERUSER=1)..."

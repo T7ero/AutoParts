@@ -1064,9 +1064,13 @@ def process_parsing_task(self, task_id):
                             set_cache(num, 'armtek', [], True)
                             return []
 
-            # Armtek запускаем параллельно на 2 потоках.
-            # Selenium здесь упирается в сеть/тайминги, поэтому небольшая параллельность ускоряет.
-            armtek_workers = 2
+            # Armtek Selenium часто ловит renderer timeout при параллелизме.
+            # По умолчанию 1 поток (можно поднять до 2 через env).
+            try:
+                armtek_workers_cfg = int(os.getenv("ARMTEK_MAX_WORKERS", "1"))
+            except Exception:
+                armtek_workers_cfg = 1
+            armtek_workers = max(1, min(2, armtek_workers_cfg))
             with concurrent.futures.ThreadPoolExecutor(max_workers=armtek_workers) as executor:
                 future_map = {executor.submit(parse_one_armtek, num): num for num in numbers}
                 for future in concurrent.futures.as_completed(future_map):
