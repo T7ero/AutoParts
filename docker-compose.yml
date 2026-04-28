@@ -43,6 +43,8 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DATABASE_URL=postgres://postgres:postgres@db:5432/autoparts
+      - ALLOWED_HOSTS=87.228.101.164,localhost,127.0.0.1,backend
+      - CORS_ALLOWED_ORIGINS=http://87.228.101.164,http://localhost:3000,http://127.0.0.1:3000
       - POSTGRES_DB=autoparts
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
@@ -80,6 +82,8 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DATABASE_URL=postgres://postgres:postgres@db:5432/autoparts
+      - ALLOWED_HOSTS=87.228.101.164,localhost,127.0.0.1,backend
+      - CORS_ALLOWED_ORIGINS=http://87.228.101.164,http://localhost:3000,http://127.0.0.1:3000
       - POSTGRES_DB=autoparts
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
