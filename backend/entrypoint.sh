@@ -68,7 +68,7 @@ import os
 User = get_user_model()
 username = os.getenv('ADMIN_USERNAME', 'admin')
 disable_default = os.getenv('DISABLE_DEFAULT_ADMIN', '1').strip().lower() in ('1','true','yes','on')
-new_password = os.getenv('ADMIN_PASSWORD', 'FmHDnE,$$c0Jziw')
+new_password = os.getenv('ADMIN_PASSWORD', 'FPL1rC.ZpW2TA–b')
 force_set = os.getenv('FORCE_ADMIN_PASSWORD', '0').strip().lower() in ('1','true','yes','on')
 
 try:
@@ -108,7 +108,7 @@ from django.contrib.auth.models import User
 import os
 username = os.getenv('ADMIN_USERNAME', 'admin')
 email = os.getenv('ADMIN_EMAIL', 'admin@example.com')
-password = os.getenv('ADMIN_PASSWORD', 'FmHDnE,$$c0Jziw')
+password = os.getenv('ADMIN_PASSWORD', 'FPL1rC.ZpW2TA–b')
 if not password:
     print('❌ ADMIN_PASSWORD пустой — суперпользователь не создан')
 else:
