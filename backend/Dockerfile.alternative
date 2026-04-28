@@ -34,8 +34,7 @@ RUN ln -sf /usr/bin/chromium /usr/bin/google-chrome && \
 RUN groupadd -r appuser && \
     useradd -r -g appuser -G audio,video appuser && \
     mkdir -p /home/appuser && \
-    chown -R appuser:appuser /home/appuser && \
-    echo "appuser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+    chown -R appuser:appuser /home/appuser
 
 # Устанавливаем дополнительные зависимости
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -110,4 +109,4 @@ RUN python manage.py collectstatic --noinput
 EXPOSE 8000
 
 # Устанавливаем entrypoint
-ENTRYPOINT ["/usr/local/bin/entrypoint_simple.sh"] 
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
