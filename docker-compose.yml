@@ -33,6 +33,8 @@ services:
       - ./backend:/app
       - ./backend/media:/app/media
       - ./backend/static:/app/static
+    env_file:
+      - ./secret.env
     depends_on:
       db:
         condition: service_healthy
@@ -45,6 +47,8 @@ services:
       - DATABASE_URL=postgres://postgres:postgres@db:5432/autoparts
       - ALLOWED_HOSTS=87.228.101.164,localhost,127.0.0.1,backend
       - CORS_ALLOWED_ORIGINS=http://87.228.101.164,http://localhost:3000,http://127.0.0.1:3000
+      # Если нужно принудительно переустановить пароль admin из secret.env:
+      # - FORCE_ADMIN_PASSWORD=1
       - POSTGRES_DB=autoparts
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
@@ -70,6 +74,8 @@ services:
     volumes:
       - ./backend:/app
       - ./backend/media:/app/media
+    env_file:
+      - ./secret.env
     depends_on:
       backend:
         condition: service_started
@@ -84,6 +90,8 @@ services:
       - DATABASE_URL=postgres://postgres:postgres@db:5432/autoparts
       - ALLOWED_HOSTS=87.228.101.164,localhost,127.0.0.1,backend
       - CORS_ALLOWED_ORIGINS=http://87.228.101.164,http://localhost:3000,http://127.0.0.1:3000
+      # Если нужно принудительно переустановить пароль admin из secret.env:
+      # - FORCE_ADMIN_PASSWORD=1
       - POSTGRES_DB=autoparts
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
