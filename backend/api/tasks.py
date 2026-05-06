@@ -870,6 +870,103 @@ def process_parsing_task(self, task_id):
 
             selected = 1 if use_single else configured_workers
             return max(1, min(nnums, selected))
+
+        # --- Armtek adaptive parallelism (Selenium stability vs speed) ---
+        armtek_adaptive_lock = threading.Lock()
+        armtek_adaptive_state = {
+            'timeout_events': deque(maxlen=20),
+            'force_single_until_row': -1,
+            'is_degraded': False,
+        }
+        try:
+            armtek_adaptive_enabled = os.getenv("ARMTEK_ADAPTIVE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+        except Exception:
+            armtek_adaptive_enabled = True
+        try:
+            armtek_timeout_window = int(os.getenv("ARMTEK_TIMEOUT_WINDOW", "20"))
+        except Exception:
+            armtek_timeout_window = 20
+        try:
+            armtek_timeout_threshold = float(os.getenv("ARMTEK_TIMEOUT_THRESHOLD", "0.30"))
+        except Exception:
+            armtek_timeout_threshold = 0.30
+        try:
+            armtek_recover_threshold = float(os.getenv("ARMTEK_TIMEOUT_RECOVER_THRESHOLD", "0.12"))
+        except Exception:
+            armtek_recover_threshold = 0.12
+        try:
+            armtek_degrade_min_samples = int(os.getenv("ARMTEK_TIMEOUT_MIN_SAMPLES", "8"))
+        except Exception:
+            armtek_degrade_min_samples = 8
+        try:
+            armtek_degrade_cooldown_rows = int(os.getenv("ARMTEK_DEGRADE_COOLDOWN_ROWS", "8"))
+        except Exception:
+            armtek_degrade_cooldown_rows = 8
+
+        armtek_timeout_window = max(10, min(200, armtek_timeout_window))
+        armtek_timeout_threshold = max(0.05, min(0.95, armtek_timeout_threshold))
+        armtek_recover_threshold = max(0.01, min(0.90, armtek_recover_threshold))
+        armtek_degrade_min_samples = max(5, min(100, armtek_degrade_min_samples))
+        armtek_degrade_cooldown_rows = max(2, min(100, armtek_degrade_cooldown_rows))
+        armtek_adaptive_state['timeout_events'] = deque(maxlen=armtek_timeout_window)
+
+        def _is_timeout_like_armtek_error(exc: Exception) -> bool:
+            text = str(exc).lower()
+            markers = (
+                "timed out",
+                "timeout",
+                "read timed out",
+                "renderer",
+                "tab crashed",
+                "message from renderer",
+                "httpconnectionpool",
+                "connection broken",
+                "max retries exceeded",
+                "script timeout",
+            )
+            return any(m in text for m in markers)
+
+        def _record_armtek_event(is_timeout: bool, row_idx: int):
+            if not armtek_adaptive_enabled:
+                return
+            with armtek_adaptive_lock:
+                events = armtek_adaptive_state['timeout_events']
+                events.append(1 if is_timeout else 0)
+                samples = len(events)
+                if samples < armtek_degrade_min_samples:
+                    return
+                ratio = (sum(events) / samples) if samples else 0.0
+                if (not armtek_adaptive_state['is_degraded']) and ratio >= armtek_timeout_threshold:
+                    armtek_adaptive_state['is_degraded'] = True
+                    armtek_adaptive_state['force_single_until_row'] = row_idx + armtek_degrade_cooldown_rows
+                    log(
+                        f"Armtek adaptive: рост таймаутов ({ratio:.0%}, {samples} событий), "
+                        f"временно снижаем до 1 потока до строки {armtek_adaptive_state['force_single_until_row'] + 1}"
+                    )
+
+        def _resolve_armtek_workers(nnums: int, configured_workers: int, row_idx: int) -> int:
+            if not armtek_adaptive_enabled:
+                return max(1, min(nnums, configured_workers))
+            with armtek_adaptive_lock:
+                is_degraded = armtek_adaptive_state['is_degraded']
+                force_until = armtek_adaptive_state['force_single_until_row']
+                events = armtek_adaptive_state['timeout_events']
+                samples = len(events)
+                ratio = (sum(events) / samples) if samples else 0.0
+
+                if is_degraded and row_idx > force_until:
+                    if samples >= armtek_degrade_min_samples and ratio <= armtek_recover_threshold:
+                        armtek_adaptive_state['is_degraded'] = False
+                        log(
+                            f"Armtek adaptive: таймауты снизились ({ratio:.0%}, {samples} событий), "
+                            "возвращаем 2 потока (или значение ARMTEK_MAX_WORKERS)"
+                        )
+                    else:
+                        armtek_adaptive_state['force_single_until_row'] = row_idx + armtek_degrade_cooldown_rows
+
+                use_single = armtek_adaptive_state['is_degraded'] and row_idx <= armtek_adaptive_state['force_single_until_row']
+            selected = 1 if use_single else configured_workers
+            return max(1, min(nnums, selected))
         
         # Параллельный парсинг по всем кросс-номерам строки сразу (раньше — по одному, пул потоков не использовался)
         def parse_all_parallel(numbers, brand, part_number, name, row_index, on_article_done=None):
@@ -1057,6 +1154,7 @@ def process_parsing_task(self, task_id):
                         return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
                     except Exception as e:
                         log(f"Error parsing armtek for {num} (attempt {attempt + 1}): {str(e)}")
+                        _record_armtek_event(_is_timeout_like_armtek_error(e), row_index)
                         if attempt < max_retries - 1:
                             time.sleep(0.1)
                         else:
@@ -1064,13 +1162,14 @@ def process_parsing_task(self, task_id):
                             set_cache(num, 'armtek', [], True)
                             return []
 
-            # Armtek Selenium часто ловит renderer timeout при параллелизме.
-            # По умолчанию 1 поток (можно поднять до 2 через env).
+            # Armtek: стараемся держать 2 потока для скорости,
+            # но adaptive-логика откатывает до 1 при волне renderer/timeout.
             try:
-                armtek_workers_cfg = int(os.getenv("ARMTEK_MAX_WORKERS", "1"))
+                armtek_workers_cfg = int(os.getenv("ARMTEK_MAX_WORKERS", "2"))
             except Exception:
-                armtek_workers_cfg = 1
-            armtek_workers = max(1, min(2, armtek_workers_cfg))
+                armtek_workers_cfg = 2
+            armtek_workers_cfg = max(1, min(2, armtek_workers_cfg))
+            armtek_workers = _resolve_armtek_workers(len(numbers), armtek_workers_cfg, row_index)
             with concurrent.futures.ThreadPoolExecutor(max_workers=armtek_workers) as executor:
                 future_map = {executor.submit(parse_one_armtek, num): num for num in numbers}
                 for future in concurrent.futures.as_completed(future_map):
@@ -1079,8 +1178,10 @@ def process_parsing_task(self, task_id):
                         res_list = future.result()
                         for res in res_list:
                             results.append(res)
+                        _record_armtek_event(False, row_index)
                     except Exception as e:
                         log(f"Error processing armtek result for {num}: {str(e)}")
+                        _record_armtek_event(_is_timeout_like_armtek_error(e), row_index)
 
             log(f"Armtek: завершена обработка для строки {row_index + 1}, найдено {len(results)} результатов")
             return results
