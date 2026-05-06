@@ -1658,6 +1658,41 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		except Exception:
 			pass
 
+		# Ранний выход: нам нужен именно раздел/вкладка "Искомый товар".
+		# Если на странице есть только "Возможные замены" (без "Искомый товар") — такой артикул нам не нужен.
+		try:
+			has_replacements = False
+			has_target_item = False
+
+			# "Возможные замены"
+			repl_headers = driver.find_elements(
+				By.XPATH,
+				"//p[contains(@class,'font__headline6') and contains(normalize-space(.), 'Возможные замены')]"
+			)
+			if repl_headers:
+				has_replacements = True
+
+			# "Искомый товар" — проверяем и как вкладку, и как заголовок/метку на странице
+			target_markers = driver.find_elements(
+				By.XPATH,
+				"//*[contains(normalize-space(.), 'Искомый товар')]"
+			)
+			if target_markers:
+				has_target_item = True
+
+			if has_replacements and not has_target_item:
+				msg = f"Armtek Selenium: для {artikul} найден только блок 'Возможные замены' без 'Искомый товар' — пропускаем"
+				log_debug(msg)
+				if logger:
+					try:
+						logger(msg)
+					except Exception:
+						pass
+				return []
+		except Exception:
+			# Если проверка не сработала, продолжаем обычный парсинг
+			pass
+
 		# Сбор брендов по селекторам - сначала точные селекторы для карточек товаров
 		brand_selectors = [
 			# Новые селекторы для современного Armtek
