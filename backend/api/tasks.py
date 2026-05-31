@@ -1128,7 +1128,7 @@ def process_parsing_task(self, task_id):
                         return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in cached_result]
                     return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
 
-                max_retries = 1
+                max_retries = 2
                 for attempt in range(max_retries):
                     try:
                         if attempt == 0:
@@ -1143,6 +1143,8 @@ def process_parsing_task(self, task_id):
                         brands = get_brands_by_artikul_armtek(num, proxy)
 
                         is_empty = len(brands) == 0
+                        if is_empty and attempt < max_retries - 1:
+                            continue
                         set_cache(num, 'armtek', brands, is_empty)
 
                         if brands:
@@ -1165,9 +1167,9 @@ def process_parsing_task(self, task_id):
             # Armtek: стараемся держать 2 потока для скорости,
             # но adaptive-логика откатывает до 1 при волне renderer/timeout.
             try:
-                armtek_workers_cfg = int(os.getenv("ARMTEK_MAX_WORKERS", "2"))
+                armtek_workers_cfg = int(os.getenv("ARMTEK_MAX_WORKERS", "1"))
             except Exception:
-                armtek_workers_cfg = 2
+                armtek_workers_cfg = 1
             armtek_workers_cfg = max(1, min(2, armtek_workers_cfg))
             armtek_workers = _resolve_armtek_workers(len(numbers), armtek_workers_cfg, row_index)
             with concurrent.futures.ThreadPoolExecutor(max_workers=armtek_workers) as executor:

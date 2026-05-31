@@ -317,6 +317,41 @@ DRIVER_LAST_USED: Dict[int, float] = {}
 def log_debug(message):
     print(f"[DEBUG] {message}")
 
+
+def _is_selenium_fatal_error(exc: Exception) -> bool:
+	text = str(exc).lower()
+	markers = (
+		"tab crashed",
+		"chrome not reachable",
+		"connection refused",
+		"timed out receiving message from renderer",
+		"script timeout",
+		"httpconnectionpool",
+		"read timed out",
+		"failed to establish a new connection",
+		"remote end closed",
+		"invalid session id",
+		"session not created",
+		"no such window",
+	)
+	return any(marker in text for marker in markers)
+
+
+def _recover_armtek_driver(
+	old_driver: Optional[webdriver.Chrome],
+	proxy: Optional[str] = None,
+) -> Optional[webdriver.Chrome]:
+	"""Закрывает битый драйвер и создаёт новый с уникальным user-data-dir."""
+	if old_driver is not None:
+		try:
+			old_driver.quit()
+		except Exception:
+			pass
+	temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_{uuid.uuid4().hex[:8]}_")
+	effective_proxy = None if (proxy and "@" in proxy) else proxy
+	return _create_chrome_driver_robust(temp_dir, effective_proxy)
+
+
 def get_driver_from_pool() -> Optional[webdriver.Chrome]:
     """Получает драйвер из пула или создает новый"""
     global DRIVER_POOL, DRIVER_POOL_LOCK
@@ -1314,10 +1349,15 @@ def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None, logg
 	try:
 		log_debug(f"Armtek: начало обработки артикула {artikul}")
 
-		# 1) Selenium без прокси — самый быстрый путь
-		brands_sel = parse_armtek_selenium(artikul, None)
-		if brands_sel:
-			return filter_armtek_brands(split_combined_brands(brands_sel))
+		# 1) Selenium без прокси — до 2 попыток (после tab crashed пересоздаём Chrome)
+		for selenium_attempt in range(2):
+			brands_sel = parse_armtek_selenium(artikul, None)
+			if brands_sel:
+				return filter_armtek_brands(split_combined_brands(brands_sel))
+			if selenium_attempt == 0:
+				log_debug(f"Armtek: повтор Selenium для {artikul} после пустого/сбойного результата")
+				cleanup_driver_pool()
+				time.sleep(0.5)
 
 		# 2) Selenium с прокси — если без прокси пусто
 		if not proxy:
@@ -1528,6 +1568,7 @@ def _armtek_parse_results_sections(driver) -> Dict[str, object]:
 		"has_target": False,
 		"has_replacements": False,
 		"only_replacements": False,
+		"driver_crashed": False,
 		"brands": [],
 	}
 	try:
@@ -1561,6 +1602,8 @@ def _armtek_parse_results_sections(driver) -> Dict[str, object]:
 				'.font__caption1.brand--selectable',
 				'.brand-name',
 				'.pin-brand-name span',
+				'project-ui-article-card span.font__body2.brand--selecting',
+				'project-ui-article-card .brand--selecting',
 			].join(', ');
 			const brands = [];
 			for (const el of root.querySelectorAll(sel)) {
@@ -1587,6 +1630,8 @@ def _armtek_parse_results_sections(driver) -> Dict[str, object]:
 		}
 	except Exception as e:
 		log_debug(f"Armtek Selenium: ошибка чтения секций результатов: {e}")
+		if _is_selenium_fatal_error(e):
+			return {**default, "driver_crashed": True}
 		return default
 
 
@@ -1602,11 +1647,11 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 	try:
 		log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
 		
-		# Получаем драйвер из пула или создаем новый
+		# Получаем драйвер из пула или создаем новый (всегда с уникальным user-data-dir)
 		driver = get_driver_from_pool()
 		if driver is None:
 			log_debug("Armtek Selenium: создаем новый драйвер")
-			driver = _create_chrome_driver_robust(None, proxy)
+			driver = _recover_armtek_driver(None, proxy)
 			if driver is None:
 				log_debug("Armtek Selenium: не удалось создать драйвер")
 				return []
@@ -1641,24 +1686,12 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 					log_debug("Критическая ошибка Chrome, пересоздаем драйвер")
 					driver_broken = True
 					try:
-						# Закрываем сломанный драйвер
-						if driver:
-							try:
-								driver.quit()
-							except:
-								pass
-						
-						# Очищаем процессы Chrome
-						import subprocess
-						subprocess.run(['pkill', '-f', 'chrome'], capture_output=True)
-						subprocess.run(['pkill', '-f', 'chromedriver'], capture_output=True)
-						
-						# Создаем новый драйвер
-						driver = _create_chrome_driver_robust(None, proxy)
+						driver = _recover_armtek_driver(driver, proxy)
+						if driver is None:
+							log_debug("Не удалось пересоздать драйвер после критической ошибки")
+							return []
 						log_debug("Создан новый драйвер после критической ошибки")
 						driver_broken = False
-						
-						# Пробуем загрузить страницу с новым драйвером
 						driver.get(url)
 						break
 					except Exception as recovery_error:
@@ -1760,6 +1793,21 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			pass
 
 		section_state = _armtek_parse_results_sections(driver)
+		if section_state.get("driver_crashed"):
+			log_debug(f"Armtek Selenium: Chrome упал при чтении секций для {artikul}, пересоздаём драйвер")
+			driver_broken = True
+			driver = _recover_armtek_driver(driver, proxy)
+			if driver is None:
+				return []
+			driver_broken = False
+			try:
+				driver.get(url)
+				_armtek_wait_for_results(driver, max(12.0, float(SELENIUM_TIMEOUT) + 4.0))
+			except Exception as e:
+				if _is_selenium_fatal_error(e):
+					return []
+			section_state = _armtek_parse_results_sections(driver)
+
 		if not section_state.get("brands") and section_state.get("has_target"):
 			time.sleep(0.4)
 			section_state = _armtek_parse_results_sections(driver)
@@ -1933,9 +1981,12 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 					break
 			except Exception as e:
 				log_debug(f"Armtek Selenium: ошибка поиска по селектору {selector}: {str(e)}")
+				if _is_selenium_fatal_error(e):
+					driver_broken = True
+					break
 		
 		# Если точные селекторы не дали результатов, пробуем упрощенный поиск
-		if not brands:
+		if not brands and not driver_broken:
 			log_debug("Armtek Selenium: точные селекторы не дали результатов, пробуем упрощенный поиск")
 			# Упрощенный поиск - только основные селекторы для ускорения
 			simple_selectors = [
@@ -2032,8 +2083,10 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 	
 	return sorted(brands)
 
-def _create_chrome_driver_robust(temp_dir: str, proxy: Optional[str] = None) -> Optional[webdriver.Chrome]:
+def _create_chrome_driver_robust(temp_dir: Optional[str] = None, proxy: Optional[str] = None) -> Optional[webdriver.Chrome]:
     """Создает Chrome драйвер с улучшенной обработкой ошибок и retry логикой"""
+    if not temp_dir:
+        temp_dir = tempfile.mkdtemp(prefix=f"chrome_{uuid.uuid4().hex[:8]}_")
     for attempt in range(DRIVER_CREATION_RETRIES):
         try:
             chrome_options = Options()
