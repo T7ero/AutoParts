@@ -1495,6 +1495,101 @@ def parse_armtek_api_fallback(artikul: str, proxies: Optional[List[str]] = None)
 	
 	return list(brands)
 
+
+def _armtek_wait_for_results(driver, timeout: float = 15.0) -> bool:
+	"""Ждём появления списка результатов, заголовка секции или блока «ничего не найдено»."""
+	def _ready(d):
+		try:
+			return d.execute_script(
+				"""
+				if (document.querySelector('div.not-found__title')) return true;
+				const root = document.querySelector('.results-list__items');
+				if (!root) return false;
+				if (root.querySelector('div.results-list__divider p.font__headline6')) return true;
+				if (root.querySelector('span.font__body2.brand--selecting, .brand--selecting, .font__caption1.brand--selectable')) {
+					return true;
+				}
+				return false;
+				"""
+			)
+		except Exception:
+			return False
+
+	try:
+		WebDriverWait(driver, timeout).until(_ready)
+		return True
+	except Exception:
+		return False
+
+
+def _armtek_parse_results_sections(driver) -> Dict[str, object]:
+	"""Состояние секций Armtek: только заголовки внутри .results-list__items."""
+	default: Dict[str, object] = {
+		"has_target": False,
+		"has_replacements": False,
+		"only_replacements": False,
+		"brands": [],
+	}
+	try:
+		raw = driver.execute_script(
+			"""
+			const root = document.querySelector('.results-list__items');
+			if (!root) {
+				return {hasTarget: false, hasReplacements: false, onlyReplacements: false, brands: []};
+			}
+			const headers = [...root.querySelectorAll('div.results-list__divider p.font__headline6')];
+			let targetHeader = null;
+			let replHeader = null;
+			for (const h of headers) {
+				const t = (h.textContent || '').trim().toLowerCase();
+				if (t.includes('искомый товар')) targetHeader = h;
+				if (t.includes('возможные замены')) replHeader = h;
+			}
+			const hasTarget = !!targetHeader;
+			const hasReplacements = !!replHeader;
+			if (!hasTarget) {
+				return {
+					hasTarget: false,
+					hasReplacements,
+					onlyReplacements: hasReplacements,
+					brands: [],
+				};
+			}
+			const sel = [
+				'span.font__body2.brand--selecting',
+				'.brand--selecting',
+				'.font__caption1.brand--selectable',
+				'.brand-name',
+				'.pin-brand-name span',
+			].join(', ');
+			const brands = [];
+			for (const el of root.querySelectorAll(sel)) {
+				if (!(targetHeader.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+				if (replHeader && !(replHeader.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING)) continue;
+				const text = (el.textContent || '').trim();
+				if (text && text.length > 1 && text.length < 80) brands.push(text);
+			}
+			return {
+				hasTarget: true,
+				hasReplacements,
+				onlyReplacements: false,
+				brands: [...new Set(brands)],
+			};
+			"""
+		)
+		if not isinstance(raw, dict):
+			return default
+		return {
+			"has_target": bool(raw.get("hasTarget")),
+			"has_replacements": bool(raw.get("hasReplacements")),
+			"only_replacements": bool(raw.get("onlyReplacements")),
+			"brands": list(raw.get("brands") or []),
+		}
+	except Exception as e:
+		log_debug(f"Armtek Selenium: ошибка чтения секций результатов: {e}")
+		return default
+
+
 def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None) -> List[str]:
 	"""Selenium-парсинг Armtek: ждем появления элементов и собираем бренды.
 	Если на странице отображено сообщение "По вашему запросу ничего не найдено",
@@ -1658,40 +1753,41 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		except Exception:
 			pass
 
-		# Ранний выход: нам нужен именно раздел/вкладка "Искомый товар".
-		# Если на странице есть только "Возможные замены" (без "Искомый товар") — такой артикул нам не нужен.
+		# Секции «Искомый товар» / «Возможные замены» — только внутри списка результатов.
 		try:
-			has_replacements = False
-			has_target_item = False
-
-			# "Возможные замены"
-			repl_headers = driver.find_elements(
-				By.XPATH,
-				"//p[contains(@class,'font__headline6') and contains(normalize-space(.), 'Возможные замены')]"
-			)
-			if repl_headers:
-				has_replacements = True
-
-			# "Искомый товар" — проверяем и как вкладку, и как заголовок/метку на странице
-			target_markers = driver.find_elements(
-				By.XPATH,
-				"//*[contains(normalize-space(.), 'Искомый товар')]"
-			)
-			if target_markers:
-				has_target_item = True
-
-			if has_replacements and not has_target_item:
-				msg = f"Armtek Selenium: для {artikul} найден только блок 'Возможные замены' без 'Искомый товар' — пропускаем"
-				log_debug(msg)
-				if logger:
-					try:
-						logger(msg)
-					except Exception:
-						pass
-				return []
+			_armtek_wait_for_results(driver, max(12.0, float(SELENIUM_TIMEOUT) + 4.0))
 		except Exception:
-			# Если проверка не сработала, продолжаем обычный парсинг
 			pass
+
+		section_state = _armtek_parse_results_sections(driver)
+		if not section_state.get("brands") and section_state.get("has_target"):
+			time.sleep(0.4)
+			section_state = _armtek_parse_results_sections(driver)
+
+		if section_state.get("only_replacements"):
+			msg = (
+				f"Armtek Selenium: для {artikul} есть только 'Возможные замены' "
+				f"(без 'Искомый товар') — пропускаем"
+			)
+			log_debug(msg)
+			if logger:
+				try:
+					logger(msg)
+				except Exception:
+					pass
+			return []
+
+		for brand_text in section_state.get("brands") or []:
+			text = str(brand_text).strip()
+			if text:
+				brands.add(text)
+		if brands:
+			log_debug(
+				f"Armtek Selenium: в секции 'Искомый товар' найдено {len(brands)} брендов для {artikul}"
+			)
+			return sorted(brands)
+
+		has_target_section = bool(section_state.get("has_target"))
 
 		# Сбор брендов по селекторам - сначала точные селекторы для карточек товаров
 		brand_selectors = [
@@ -1725,23 +1821,53 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			'.item-card .font__caption1',
 		]
 
-		# Определяем границу секции "Возможные замены" и функцию проверки порядка элементов в DOM
+		# Границы секций в DOM: бренды только между «Искомый товар» и «Возможные замены».
+		target_header_el = None
 		replacements_header_el = None
-		def is_before_replacements(element) -> bool:
+
+		def is_in_target_section(element) -> bool:
 			try:
+				if target_header_el is None:
+					if replacements_header_el is None:
+						return True
+					pos_repl_only = driver.execute_script(
+						"return arguments[0].compareDocumentPosition(arguments[1]);",
+						replacements_header_el,
+						element,
+					)
+					return bool(int(pos_repl_only) & 2)
+				pos_target = driver.execute_script(
+					"return arguments[0].compareDocumentPosition(arguments[1]);",
+					target_header_el,
+					element,
+				)
+				if not (int(pos_target) & 4):
+					return False
 				if replacements_header_el is None:
 					return True
-				# element.compareDocumentPosition(header) & 4 => element находится перед header
-				pos = driver.execute_script("return arguments[0].compareDocumentPosition(arguments[1]);", element, replacements_header_el)
-				return bool(int(pos) & 4)
+				pos_repl = driver.execute_script(
+					"return arguments[0].compareDocumentPosition(arguments[1]);",
+					replacements_header_el,
+					element,
+				)
+				return bool(int(pos_repl) & 2)
 			except Exception:
 				return True
 
 		try:
-			# Ищем заголовок секции "Возможные замены"
+			target_headers = driver.find_elements(
+				By.XPATH,
+				"//div[contains(@class,'results-list__items')]//div[contains(@class,'results-list__divider')]"
+				"//p[contains(@class,'font__headline6') and contains(normalize-space(.), 'Искомый товар')]",
+			)
+			if target_headers:
+				target_header_el = target_headers[0]
+				log_debug("Armtek Selenium: найдена секция 'Искомый товар'")
+
 			repl_headers = driver.find_elements(
 				By.XPATH,
-				"//p[contains(@class,'font__headline6') and contains(normalize-space(.), 'Возможные замены')]"
+				"//div[contains(@class,'results-list__items')]//div[contains(@class,'results-list__divider')]"
+				"//p[contains(@class,'font__headline6') and contains(normalize-space(.), 'Возможные замены')]",
 			)
 			if repl_headers:
 				replacements_header_el = repl_headers[0]
@@ -1777,9 +1903,10 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 				for el in elements:
 					text = el.text.strip()
 					if text and len(text) > 1 and len(text) < 50:  # Ограничиваем длину
-						# Исключаем элементы, находящиеся после секции "Возможные замены"
-						if not is_before_replacements(el):
-							log_debug(f"Armtek Selenium: пропускаем элемент '{text}' - находится после секции замен")
+						if not is_in_target_section(el):
+							log_debug(
+								f"Armtek Selenium: пропускаем элемент '{text}' - вне секции 'Искомый товар'"
+							)
 							continue
 						# Дополнительная фильтрация мусора
 						if not any(garbage in text.lower() for garbage in [
@@ -1792,7 +1919,8 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 							'магазины', 'москва', 'мотозапчасти', 'моторные', 'мы', 'нет', 'новости', 'ооо',
 							'оплата', 'оптовым', 'партнерам', 'планировщик', 'по', 'подбор', 'пожалуйста',
 							'поиск', 'покупателям', 'поставщикам', 'правовая', 'программа', 'работа',
-							'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины'
+							'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины',
+							'возможные замены',
 						]):
 							brands.add(text)
 							log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
