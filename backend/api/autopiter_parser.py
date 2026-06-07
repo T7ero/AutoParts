@@ -1546,7 +1546,8 @@ def _armtek_wait_for_results(driver, timeout: float = 15.0) -> bool:
 				const root = document.querySelector('.results-list__items');
 				if (!root) return false;
 				if (root.querySelector('div.results-list__divider p.font__headline6')) return true;
-				if (root.querySelector('span.font__body2.brand--selecting, .brand--selecting, .font__caption1.brand--selectable')) {
+				if (root.querySelector('app-article-card-tile, project-ui-article-card')) return true;
+				if (root.querySelector('span.font__caption1.brand--selectable, span.font__body2.brand--selecting')) {
 					return true;
 				}
 				return false;
@@ -1560,6 +1561,33 @@ def _armtek_wait_for_results(driver, timeout: float = 15.0) -> bool:
 		return True
 	except Exception:
 		return False
+
+
+_ARMTEK_UI_GARBAGE = frozenset({
+	'гараж', 'подбор', 'выбор', 'корзина', 'каталог', 'поиск', 'войти', 'главная',
+	'искомый товар', 'возможные замены', 'нет в наличии', 'в корзину', 'бренды',
+	'результаты', 'сортировать', 'фильтры', 'фильтр', 'armtek', 'armtek.ru',
+})
+
+
+def _armtek_brand_text_is_valid(text: str) -> bool:
+	"""Проверка, что строка похожа на бренд, а не на UI/артикул."""
+	brand = (text or '').strip()
+	if not brand or len(brand) < 2 or len(brand) > 50:
+		return False
+	low = brand.lower()
+	if low in _ARMTEK_UI_GARBAGE:
+		return False
+	if brand.isdigit():
+		return False
+	if re.fullmatch(r'[\d\s\-./]+', brand):
+		return False
+	digits = sum(1 for c in brand if c.isdigit())
+	if digits >= 3 and digits / max(len(brand), 1) > 0.55:
+		return False
+	if brand[0].isdigit() and len(brand) > 4:
+		return False
+	return True
 
 
 def _armtek_parse_results_sections(driver) -> Dict[str, object]:
@@ -1596,21 +1624,45 @@ def _armtek_parse_results_sections(driver) -> Dict[str, object]:
 					brands: [],
 				};
 			}
-			const sel = [
-				'span.font__body2.brand--selecting',
-				'.brand--selecting',
-				'.font__caption1.brand--selectable',
-				'.brand-name',
-				'.pin-brand-name span',
-				'project-ui-article-card span.font__body2.brand--selecting',
-				'project-ui-article-card .brand--selecting',
-			].join(', ');
+			const garbage = new Set([
+				'гараж','подбор','выбор','корзина','каталог','поиск','войти','главная',
+				'искомый товар','возможные замены','нет в наличии','в корзину','бренды',
+				'результаты','сортировать','фильтры','фильтр','/','armtek','armtek.ru',
+			]);
+			function isBrandText(text) {
+				if (!text) return false;
+				const t = text.trim();
+				if (t.length < 2 || t.length > 50) return false;
+				const low = t.toLowerCase();
+				if (garbage.has(low)) return false;
+				if (/^\d+$/.test(t)) return false;
+				if (/^[\d\s\-./]+$/.test(t)) return false;
+				const digits = (t.match(/\d/g) || []).length;
+				if (digits >= 3 && digits / t.length > 0.55) return false;
+				if (/^\d/.test(t) && t.length > 4) return false;
+				return true;
+			}
+			function isBetween(el, start, end) {
+				if (start && !(start.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
+				if (end && !(end.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING)) return false;
+				return true;
+			}
 			const brands = [];
-			for (const el of root.querySelectorAll(sel)) {
-				if (!(targetHeader.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
-				if (replHeader && !(replHeader.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING)) continue;
-				const text = (el.textContent || '').trim();
-				if (text && text.length > 1 && text.length < 80) brands.push(text);
+			const cardSelectors = [
+				'app-article-card-tile',
+				'project-ui-article-card',
+				'project-ui-article-card-with-suggestions',
+			];
+			for (const cardSel of cardSelectors) {
+				for (const card of root.querySelectorAll(cardSel)) {
+					if (!isBetween(card, targetHeader, replHeader)) continue;
+					for (const span of card.querySelectorAll(
+						'span.font__caption1.brand--selectable, span.font__body2.brand--selecting'
+					)) {
+						const text = (span.textContent || '').trim();
+						if (isBrandText(text)) brands.push(text);
+					}
+				}
 			}
 			return {
 				hasTarget: true,
@@ -1827,17 +1879,24 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 
 		for brand_text in section_state.get("brands") or []:
 			text = str(brand_text).strip()
-			if text:
+			if _armtek_brand_text_is_valid(text):
 				brands.add(text)
-		if brands:
+		filtered_early = filter_armtek_brands(list(brands))
+		if filtered_early:
 			log_debug(
-				f"Armtek Selenium: в секции 'Искомый товар' найдено {len(brands)} брендов для {artikul}"
+				f"Armtek Selenium: в секции 'Искомый товар' найдено {len(filtered_early)} брендов для {artikul}"
 			)
-			return sorted(brands)
+			return filtered_early
 
 		has_target_section = bool(section_state.get("has_target"))
+		if has_target_section:
+			log_debug(
+				f"Armtek Selenium: секция 'Искомый товар' есть для {artikul}, "
+				f"но валидные бренды в карточках не найдены"
+			)
+			return []
 
-		# Сбор брендов по селекторам - сначала точные селекторы для карточек товаров
+		# Сбор брендов по селекторам - только если секции «Искомый товар» нет
 		brand_selectors = [
 			# Новые селекторы для современного Armtek
 			'.font__caption1.brand--selectable',
@@ -1923,22 +1982,13 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		except Exception:
 			pass
 		
-		# Сначала пробуем точные селекторы карточек товаров
+		# Fallback только если секции «Искомый товар» нет — и только внутри карточек
 		exact_selectors = [
-			# Основные селекторы брендов (по скриншоту пользователя)
-			'span.font__body2.brand--selecting',
-			'.brand--selecting',
-			'.font__caption1.brand--selectable',
-			# Бренды в карточках товаров
-			'.product-card .brand-name',
-			'.catalog-item .brand-name',
-			'.item-card .brand-name',
+			'app-article-card-tile span.font__caption1.brand--selectable',
+			'app-article-card-tile span.font__body2.brand--selecting',
+			'project-ui-article-card span.font__body2.brand--selecting',
+			'project-ui-article-card-with-suggestions span.font__body2.brand--selecting',
 			'.pin-brand-name span.font__caption1.brand--selectable',
-			'.product-card__content .pin-brand-name .brand--selectable',
-			# Более общие селекторы
-			'div.results-list__items span.font__body2.brand--selecting',
-			'[class*="brand"]',
-			'[data-brand]',
 		]
 		
 		log_debug(f"Armtek Selenium: начинаем поиск брендов по {len(exact_selectors)} точным селекторам")
@@ -1950,30 +2000,14 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 				
 				for el in elements:
 					text = el.text.strip()
-					if text and len(text) > 1 and len(text) < 50:  # Ограничиваем длину
+					if text and _armtek_brand_text_is_valid(text):
 						if not is_in_target_section(el):
 							log_debug(
 								f"Armtek Selenium: пропускаем элемент '{text}' - вне секции 'Искомый товар'"
 							)
 							continue
-						# Дополнительная фильтрация мусора
-						if not any(garbage in text.lower() for garbage in [
-							'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
-							'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
-							'автозапчасти', 'аккумуляторы', 'аксессуары', 'акции', 'бренды', 'ваш', 'возврат',
-							'войти', 'выбор', 'вывод', 'гараж', 'гарантийная', 'главная', 'госномеру',
-							'грузовые', 'дней', 'доставка', 'инструмент', 'интернет', 'искать', 'искомый',
-							'как', 'каталог', 'китайские', 'компании', 'контакты', 'корзина', 'легковые',
-							'магазины', 'москва', 'мотозапчасти', 'моторные', 'мы', 'нет', 'новости', 'ооо',
-							'оплата', 'оптовым', 'партнерам', 'планировщик', 'по', 'подбор', 'пожалуйста',
-							'поиск', 'покупателям', 'поставщикам', 'правовая', 'программа', 'работа',
-							'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины',
-							'возможные замены',
-						]):
-							brands.add(text)
-							log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
-						else:
-							log_debug(f"Armtek Selenium: пропускаем мусорный текст '{text}'")
+						brands.add(text)
+						log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
 				
 				# Ранний выход при нахождении достаточного количества брендов
 				if len(brands) >= 3:
@@ -1988,13 +2022,9 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		# Если точные селекторы не дали результатов, пробуем упрощенный поиск
 		if not brands and not driver_broken:
 			log_debug("Armtek Selenium: точные селекторы не дали результатов, пробуем упрощенный поиск")
-			# Упрощенный поиск - только основные селекторы для ускорения
 			simple_selectors = [
-				'span[class*="brand"]',
-				'div[class*="brand"]',
-				'[data-brand]',
-				'.font__body2',
-				'.font__caption1'
+				'app-article-card-tile span.font__caption1.brand--selectable',
+				'project-ui-article-card span.font__body2.brand--selecting',
 			]
 			
 			for selector in simple_selectors:
@@ -2004,8 +2034,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 					
 					for el in elements:
 						text = el.text.strip()
-						if text and len(text) > 1 and len(text) < 50:
-							# Простая фильтрация для ускорения
+						if text and _armtek_brand_text_is_valid(text):
 							if text.isalpha() or (len(text) <= 15 and any(c.isalpha() for c in text)):
 								brands.add(text)
 								log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
@@ -2021,10 +2050,15 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			log_debug("Armtek Selenium: селекторы не дали результатов, пробуем парсинг HTML/XPath")
 			# 1) XPath вариант извлечения брендов
 			try:
-				xpath_elems = driver.find_elements(By.XPATH, "//div[contains(@class,'results-list__items')]//span[contains(@class,'brand--selecting') or contains(@class,'brand-name')]")
+				xpath_elems = driver.find_elements(
+					By.XPATH,
+					"//app-article-card-tile//span[contains(@class,'brand--selectable')]"
+					" | //project-ui-article-card//span[contains(@class,'brand--selecting')]"
+					" | //project-ui-article-card-with-suggestions//span[contains(@class,'brand--selecting')]",
+				)
 				for el in xpath_elems:
 					text = (el.text or '').strip()
-					if text and 1 < len(text) < 50:
+					if _armtek_brand_text_is_valid(text):
 						brands.add(text)
 			except Exception:
 				pass
@@ -2039,7 +2073,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 				else:
 					log_debug("Armtek Selenium: HTML парсинг тоже не дал результатов")
 		
-		return list(brands)
+		return filter_armtek_brands(list(brands))
 	finally:
 		# Битый драйвер нельзя возвращать в пул — иначе он будет «заражать» следующие запросы.
 		if driver:
@@ -2370,44 +2404,31 @@ def parse_armtek_http(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] 
 def filter_armtek_brands(brands: List[str]) -> List[str]:
 	"""Фильтрация брендов Armtek с минимальной очисткой от мусора"""
 	filtered: List[str] = []
-	
-	# Минимальный список мусорных слов - только самые очевидные
-	garbage_words = {
+
+	extra_garbage = {
 		'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
 		'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
 		'armtekparts', 'armtekru', 'canvastext', 'roboto', 'ldwbs', 'oracj', 'twmh',
-		'brand', 'new', 'test', 'tag', 'date', 'end', 'error', 'function', 'manager',
-		# Только самые очевидные мусорные слова из интерфейса
+		'brand', 'new',
 		'главная', 'войти', 'корзина', 'каталог', 'поиск', 'новости', 'акции',
 		'контакты', 'о компании', 'правовая информация', 'программа лояльности',
-		# Паразитные фрагменты из SSR/шифрования
-		'nxmupi', 'wti'
+		'гараж', 'подбор', 'выбор', 'искомый товар', 'возможные замены',
+		'nxmupi', 'wti',
 	}
-	
+
 	for b in brands:
 		brand = b.strip()
-		if not brand:
+		if not brand or not _armtek_brand_text_is_valid(brand):
 			continue
-			
-		# Базовая фильтрация мусора
-		if len(brand) < 2 or len(brand) > 50:
-			continue
-		if brand.isdigit():
-			continue
-		if brand.lower() in garbage_words:
-			continue
-			
-		# Убираем только очевидные артикулы (начинающиеся с цифр)
-		if brand[0].isdigit() and len(brand) > 3:
+		if brand.lower() in extra_garbage:
 			continue
 
-		# Убираем строки с непонятной смесью регистров типа NxMUPi, WtI
 		letters_only = re.sub(r'[^A-Za-zА-Яа-яЁё]', '', brand)
 		if 2 <= len(letters_only) <= 6 and re.search(r'[A-Z][a-z][A-Z]', brand):
 			continue
-			
+
 		filtered.append(brand)
-		
+
 	return sorted(set(filtered))
 
 def parse_armtek_http_response(html: str, artikul: str) -> List[str]:
