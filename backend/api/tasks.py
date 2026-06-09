@@ -45,6 +45,46 @@ class TaskCancelledException(Exception):
     """Специальное исключение для остановки задачи по запросу пользователя"""
 
 
+@shared_task
+def cleanup_old_media_results():
+    """Ежедневная очистка media/results и ротация больших логов."""
+    from .maintenance import run_media_maintenance
+    return run_media_maintenance()
+
+
+def compute_armtek_quality_metrics(results_armtek: list) -> dict:
+    """Метрики качества Armtek: not found, garbage, valid."""
+    from .autopiter_parser import _ARMTEK_UI_GARBAGE, _armtek_brand_text_is_valid
+
+    not_found_label = 'Бренды не найдены'
+    total = len(results_armtek)
+    not_found = 0
+    garbage = 0
+    valid = 0
+
+    for row in results_armtek:
+        brand = str(row.get('Бренд № 2', '')).strip()
+        if not brand or brand == not_found_label:
+            not_found += 1
+        elif brand.lower() in _ARMTEK_UI_GARBAGE or not _armtek_brand_text_is_valid(brand):
+            garbage += 1
+        else:
+            valid += 1
+
+    def _pct(n: int) -> float:
+        return round(100.0 * n / total, 1) if total else 0.0
+
+    return {
+        'total': total,
+        'not_found': not_found,
+        'not_found_pct': _pct(not_found),
+        'garbage': garbage,
+        'garbage_pct': _pct(garbage),
+        'valid': valid,
+        'valid_pct': _pct(valid),
+    }
+
+
 def mark_parsing_task_cancelled(task_id: int) -> None:
     with CANCELLED_TASKS_LOCK:
         CANCELLED_PARSING_TASKS.add(int(task_id))
@@ -614,6 +654,15 @@ def process_parsing_task(self, task_id):
             log(f"Ошибка ws_send: {str(e)}")
     
     try:
+        # Обслуживание media/results (очистка >7 дн., ротация логов)
+        try:
+            from .maintenance import run_media_maintenance
+            maint = run_media_maintenance()
+            if maint.get('deleted'):
+                print(f"[maintenance] Удалено старых файлов: {maint['deleted']}")
+        except Exception as maint_err:
+            print(f"[maintenance] Ошибка: {maint_err}")
+
         # Загружаем прокси при старте задачи
         load_proxies_from_file()
         
@@ -1626,6 +1675,23 @@ def process_parsing_task(self, task_id):
                 f"Уникальные бренды Emex: {len(stats['unique_brands']['emex'])}",
                 f"Уникальные бренды Armtek: {len(stats['unique_brands']['armtek'])}",
             ]
+
+            if results_armtek:
+                armtek_q = compute_armtek_quality_metrics(results_armtek)
+                summary_lines.extend([
+                    "",
+                    f"Armtek — всего записей брендов: {armtek_q['total']}",
+                    f"Armtek — «Бренды не найдены»: {armtek_q['not_found']} ({armtek_q['not_found_pct']}%)",
+                    f"Armtek — мусорные бренды: {armtek_q['garbage']} ({armtek_q['garbage_pct']}%)",
+                    f"Armtek — валидные бренды: {armtek_q['valid']} ({armtek_q['valid_pct']}%)",
+                ])
+                log(
+                    f"Armtek качество: not_found={armtek_q['not_found_pct']}%, "
+                    f"garbage={armtek_q['garbage_pct']}%, valid={armtek_q['valid_pct']}%"
+                )
+                if not isinstance(task.sources, dict):
+                    task.sources = {}
+                task.sources.setdefault('_meta', {})['armtek_quality'] = armtek_q
 
             # Сохраняем summary в Excel (чтобы Excel открывался без ошибок)
             summary_df = pd.DataFrame([line.split(': ', 1) for line in summary_lines if line],

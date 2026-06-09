@@ -16,6 +16,7 @@ urlpatterns = [
     path('proxies/status/', views.proxy_status, name='proxy_status'),
     path('proxies/reset/', views.reset_proxy_index, name='reset_proxy_index'),
     path('auth/token/', views.auth_token, name='auth_token'),
+    path('media/<path:file_path>', views.serve_media_file, name='serve_media_file'),
     
     # Price List Analysis URLs
     path('price-list-tasks/', price_list_views.get_price_list_tasks, name='get_price_list_tasks'),

@@ -2,6 +2,7 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { AuthProvider } from './contexts/AuthContext';
+import ProtectedRoute from './components/ProtectedRoute';
 import Navbar from './components/Navbar';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
@@ -20,11 +21,11 @@ function App() {
             <main className="container mx-auto px-4 py-8">
               <Routes>
                 <Route path="/login" element={<Login />} />
-                <Route path="/" element={<Dashboard />} />
-                <Route path="/upload" element={<Upload />} />
-                <Route path="/tasks" element={<Tasks />} />
-                <Route path="/logs" element={<Logs />} />
-                <Route path="/price-list-analysis" element={<PriceListAnalysis />} />
+                <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+                <Route path="/upload" element={<ProtectedRoute><Upload /></ProtectedRoute>} />
+                <Route path="/tasks" element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
+                <Route path="/logs" element={<ProtectedRoute><Logs /></ProtectedRoute>} />
+                <Route path="/price-list-analysis" element={<ProtectedRoute><PriceListAnalysis /></ProtectedRoute>} />
               </Routes>
             </main>
           </div>

@@ -1,66 +1,76 @@
-from django.shortcuts import render
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_http_methods
+import json
+import os
+
+from django.contrib.auth import authenticate
+from django.conf import settings
+from django.http import FileResponse, Http404
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.authtoken.views import ObtainAuthToken
-from django.contrib.auth import authenticate
+
 from core.models import ParsingTask
 from .serializers import ParsingTaskSerializer
 from .tasks import process_parsing_task, mark_parsing_task_cancelled
 from .autopiter_parser import load_proxies_from_file, get_next_proxy
-import json
-import os
+from .permissions import user_can_access_task
+
+
+def _get_task_or_404(task_id, user):
+    try:
+        task = ParsingTask.objects.get(id=task_id)
+    except ParsingTask.DoesNotExist:
+        return None, Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
+    if not user_can_access_task(user, task):
+        return None, Response({'error': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
+    return task, None
+
+
+def _resolve_media_path(relative_path: str) -> str:
+    normalized = os.path.normpath(relative_path).lstrip(os.sep)
+    if normalized.startswith('..') or os.path.isabs(normalized):
+        raise Http404('Invalid path')
+    full_path = os.path.join(settings.MEDIA_ROOT, normalized)
+    if not full_path.startswith(os.path.abspath(settings.MEDIA_ROOT)):
+        raise Http404('Invalid path')
+    if not os.path.isfile(full_path):
+        raise Http404('File not found')
+    return full_path
+
 
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def parsing_tasks(request):
     """Получить список задач парсинга"""
-    tasks = ParsingTask.objects.all().order_by('-created_at')
+    if request.user.is_staff:
+        tasks = ParsingTask.objects.all().order_by('-created_at')
+    else:
+        tasks = ParsingTask.objects.filter(user=request.user).order_by('-created_at')
     serializer = ParsingTaskSerializer(tasks, many=True)
     return Response(serializer.data)
 
+
 @api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def create_parsing_task(request):
     """Создать новую задачу парсинга"""
     try:
         if 'file' not in request.FILES:
             return Response({'error': 'Файл не найден'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         file = request.FILES['file']
         if not file.name.endswith('.xlsx'):
             return Response({'error': 'Поддерживаются только файлы .xlsx'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Получаем пользователя из токена аутентификации
-        from rest_framework.authtoken.models import Token
-        auth_header = request.META.get('HTTP_AUTHORIZATION', '')
-        if auth_header.startswith('Token '):
-            token_key = auth_header.split(' ')[1]
-            try:
-                token = Token.objects.get(key=token_key)
-                user = token.user
-            except Token.DoesNotExist:
-                return Response({'error': 'Неверный токен аутентификации'}, status=status.HTTP_401_UNAUTHORIZED)
-        else:
-            return Response({'error': 'Требуется токен аутентификации'}, status=status.HTTP_401_UNAUTHORIZED)
-        
-        # Получаем выбранные источники из POST данных
+
         sources = request.POST.get('sources')
         if sources:
             try:
-                # Пытаемся распарсить JSON
                 parsed_sources = json.loads(sources)
             except json.JSONDecodeError:
-                # Если не JSON, то это строка с разделителями
                 parsed_sources = [s.strip() for s in sources.split(',') if s.strip()]
         else:
-            # По умолчанию все источники
             parsed_sources = ['autopiter', 'emex', 'armtek']
 
-        # Нормализуем и сохраняем источники в виде словаря, чтобы можно было
-        # добавлять служебные данные (_meta), не теряя исходный выбор.
         if isinstance(parsed_sources, (list, tuple, set)):
             normalized_sources = [str(s).strip().lower() for s in parsed_sources if str(s).strip()]
         else:
@@ -69,115 +79,136 @@ def create_parsing_task(request):
         sources_data = {
             'sources': normalized_sources or ['autopiter', 'emex', 'armtek']
         }
-        
-        
+
         task = ParsingTask.objects.create(
-            user=user,
+            user=request.user,
             file=file,
             status='pending',
             sources=sources_data
         )
-        
-        # Запускаем задачу в фоне
+
         process_parsing_task.delay(task.id)
-        
+
         serializer = ParsingTaskSerializer(task)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
-        
+
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def task_status(request, task_id):
     """Получить статус задачи"""
-    try:
-        task = ParsingTask.objects.get(id=task_id)
-        serializer = ParsingTaskSerializer(task)
-        return Response(serializer.data)
-    except ParsingTask.DoesNotExist:
-        return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
+    task, err = _get_task_or_404(task_id, request.user)
+    if err:
+        return err
+    serializer = ParsingTaskSerializer(task)
+    return Response(serializer.data)
+
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def upload_proxies(request):
     """Загрузить новый список прокси"""
+    if not request.user.is_staff:
+        return Response({'error': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
     try:
         if 'file' not in request.FILES:
             return Response({'error': 'Файл прокси не найден'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         file = request.FILES['file']
         if not file.name.endswith('.txt'):
             return Response({'error': 'Поддерживаются только файлы .txt'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Сохраняем файл прокси
+
         with open('proxies.txt', 'wb') as f:
             for chunk in file.chunks():
                 f.write(chunk)
-        
-        # Перезагружаем прокси
+
         load_proxies_from_file()
-        
         return Response({'message': 'Прокси успешно загружены'}, status=status.HTTP_200_OK)
-        
+
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def proxy_status(request):
-    """Получить статус прокси"""
+    """Получить статус прокси (без паролей)"""
+    if not request.user.is_staff:
+        return Response({'error': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
     try:
         from .autopiter_parser import PROXY_LIST, PROXY_INDEX
-        
+
+        next_proxy = get_next_proxy() if PROXY_LIST else None
+        if isinstance(next_proxy, dict):
+            masked = {}
+            for key, val in next_proxy.items():
+                if key in ('http', 'https') and val and '@' in str(val):
+                    host_part = str(val).split('@', 1)[-1]
+                    masked[key] = f'***@{host_part}'
+                else:
+                    masked[key] = val
+            next_proxy = masked
+
         return Response({
             'total_proxies': len(PROXY_LIST),
             'current_index': PROXY_INDEX,
-            'next_proxy': get_next_proxy() if PROXY_LIST else None
+            'next_proxy': next_proxy,
         })
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def reset_proxy_index(request):
     """Сбросить индекс прокси"""
+    if not request.user.is_staff:
+        return Response({'error': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
     try:
-        # Меняем значение в модуле напрямую, без global
         from . import autopiter_parser as ap
         ap.PROXY_INDEX = 0
-        
         return Response({'message': 'Индекс прокси сброшен'}, status=status.HTTP_200_OK)
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
 @api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
 def delete_task(request, task_id):
     """Удалить задачу"""
+    task, err = _get_task_or_404(task_id, request.user)
+    if err:
+        return err
     try:
-        task = ParsingTask.objects.get(id=task_id)
         mark_parsing_task_cancelled(task_id)
         task.delete()
         return Response({'message': 'Задача удалена'}, status=status.HTTP_200_OK)
-    except ParsingTask.DoesNotExist:
-        return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 @api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
 def clear_all_tasks(request):
     """Очистить все задачи и сбросить счетчик ID"""
+    if not request.user.is_staff:
+        return Response({'error': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
     try:
         for task in ParsingTask.objects.all().only('id'):
             mark_parsing_task_cancelled(task.id)
-        # Удаляем все задачи
         ParsingTask.objects.all().delete()
-        
-        # Сбрасываем автоинкремент ID в базе данных
+
         from django.db import connection
         with connection.cursor() as cursor:
             cursor.execute("ALTER SEQUENCE core_parsingtask_id_seq RESTART WITH 1")
-        
+
         return Response({'message': 'Все задачи очищены, счетчик ID сброшен'}, status=status.HTTP_200_OK)
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -186,45 +217,43 @@ def auth_token(request):
     try:
         username = request.data.get('username')
         password = request.data.get('password')
-        
+
         if not username or not password:
             return Response({'error': 'Необходимы username и password'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         user = authenticate(username=username, password=password)
-        
+
         if user:
             from rest_framework.authtoken.models import Token
-            token, created = Token.objects.get_or_create(user=user)
+            token, _created = Token.objects.get_or_create(user=user)
             return Response({
                 'token': token.key,
                 'user_id': user.pk,
-                'username': user.username
+                'username': user.username,
+                'is_staff': user.is_staff,
             })
-        else:
-            return Response({'error': 'Неверные учетные данные'}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({'error': 'Неверные учетные данные'}, status=status.HTTP_401_UNAUTHORIZED)
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def task_logs(request, task_id):
     """Получить логи задачи"""
+    task, err = _get_task_or_404(task_id, request.user)
+    if err:
+        return err
     try:
-        task = ParsingTask.objects.get(id=task_id)
-        
-        # Получаем логи из Celery result backend
         from celery.result import AsyncResult
         celery_result = AsyncResult(str(task_id))
-        
+
         logs = []
-        
-        # Добавляем базовую информацию о задаче
         logs.append({
             'timestamp': task.created_at.isoformat(),
             'message': f"Задача #{task_id} создана. Файл: {task.file.name if task.file else 'Не указан'}"
         })
-        
-        # Добавляем информацию о статусе
+
         if task.status == 'pending':
             logs.append({
                 'timestamp': task.created_at.isoformat(),
@@ -233,29 +262,21 @@ def task_logs(request, task_id):
         elif task.status == 'processing':
             logs.append({
                 'timestamp': task.updated_at.isoformat(),
-                'message': f"Задача в процессе выполнения"
+                'message': "Задача в процессе выполнения"
             })
         elif task.status == 'completed':
             logs.append({
                 'timestamp': task.updated_at.isoformat(),
-                'message': f"Задача завершена успешно. Прогресс: 100%"
+                'message': "Задача завершена успешно. Прогресс: 100%"
             })
-            if hasattr(task, '_processed_rows') and task._processed_rows:
-                logs.append({
-                    'timestamp': task.updated_at.isoformat(),
-                    'message': f"Обработано строк: {task._processed_rows}"
-                })
         elif task.status == 'failed':
             logs.append({
                 'timestamp': task.updated_at.isoformat(),
                 'message': f"Задача завершена с ошибкой: {task.error_message or 'Неизвестная ошибка'}"
             })
-        
-        # Добавляем накопленные логи из файлового лога задачи (parsing_task_<id>.log),
-        # где во время исполнения мы пишем все события, в том числе ошибки Emex/Armtek.
+
         try:
             import re
-            from django.conf import settings
             log_file_path = os.path.join(settings.MEDIA_ROOT, 'results', f'parsing_task_{task_id}.log')
             if os.path.exists(log_file_path):
                 with open(log_file_path, 'r', encoding='utf-8') as f:
@@ -263,67 +284,30 @@ def task_logs(request, task_id):
                         line = line.strip()
                         if not line:
                             continue
-                        # Парсим время в формате [dd.mm.yyyy, HH:MM:SS]
-                        m = re.match(r"^\[(\d{2}\.\д{2}\.\д{4}), (\д{2}:\д{2}:\д{2})\]\s*(.*)$", line)
+                        m = re.match(r"^\[(\d{2}\.\d{2}\.\d{4}), (\d{2}:\d{2}:\d{2})\]\s*(.*)$", line)
                         if m:
                             dt = f"{m.group(1).split('.')[2]}-{m.group(1).split('.')[1]}-{m.group(1).split('.')[0]}T{m.group(2)}"
-                            msg = m.group(3)
-                            logs.append({'timestamp': dt, 'message': msg})
+                            logs.append({'timestamp': dt, 'message': m.group(3)})
                         else:
                             logs.append({'timestamp': task.updated_at.isoformat(), 'message': line})
         except Exception:
-            # В случае любой ошибки просто пропускаем файловые логи
             pass
 
-        # Пытаемся получить дополнительную информацию из Celery
-        if celery_result.info:
-            if isinstance(celery_result.info, dict):
-                # Добавляем информацию о результатах парсинга
-                if 'autopiter_results' in celery_result.info:
+        if celery_result.info and isinstance(celery_result.info, dict):
+            if 'detailed_logs' in celery_result.info:
+                for log_entry in celery_result.info['detailed_logs']:
                     logs.append({
-                        'timestamp': task.updated_at.isoformat(),
-                        'message': f"Autopiter: найдено {len(celery_result.info['autopiter_results'])} результатов"
+                        'timestamp': log_entry.get('timestamp', task.updated_at.isoformat()),
+                        'message': log_entry.get('message', 'Лог записи')
                     })
-                if 'emex_results' in celery_result.info:
-                    logs.append({
-                        'timestamp': task.updated_at.isoformat(),
-                        'message': f"Emex: найдено {len(celery_result.info['emex_results'])} результатов"
-                    })
-                if 'armtek_results' in celery_result.info:
-                    logs.append({
-                        'timestamp': task.updated_at.isoformat(),
-                        'message': f"Armtek: найдено {len(celery_result.info['armtek_results'])} результатов"
-                    })
-                
-                # Добавляем информацию о текущей обрабатываемой строке
-                if 'current_row' in celery_result.info:
-                    current_row = celery_result.info['current_row']
-                    total_rows = celery_result.info.get('total_rows', 'неизвестно')
-                    logs.append({
-                        'timestamp': task.updated_at.isoformat(),
-                        'message': f"Обрабатывается строка {current_row} из {total_rows}"
-                    })
-                
-                # Добавляем детальные логи если есть
-                if 'detailed_logs' in celery_result.info:
-                    for log_entry in celery_result.info['detailed_logs']:
-                        logs.append({
-                            'timestamp': log_entry.get('timestamp', task.updated_at.isoformat()),
-                            'message': log_entry.get('message', 'Лог записи')
-                        })
-        
-        # Добавляем информацию о времени выполнения
+
         if task.status in ['completed', 'failed']:
             duration = task.updated_at - task.created_at
             logs.append({
                 'timestamp': task.updated_at.isoformat(),
                 'message': f"Время выполнения: {duration.total_seconds():.1f} секунд"
             })
-        
-        # Сортируем логи по времени (если timestamps отсутствуют, они будут в конце)
-        logs = [l for l in logs if l.get('timestamp')] + [l for l in logs if not l.get('timestamp')]
-        
-        # Дополнительные метаданные для фронтенда (прогресс, текущий кросс-номер)
+
         meta = {}
         if task.sources and isinstance(task.sources, dict):
             meta = task.sources.get('_meta', {})
@@ -339,126 +323,90 @@ def task_logs(request, task_id):
             response_payload['meta'] = meta
 
         return Response(response_payload)
-        
-    except ParsingTask.DoesNotExist:
-        return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
+
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def download_result(request, task_id):
     """Скачать результат задачи"""
+    task, err = _get_task_or_404(task_id, request.user)
+    if err:
+        return err
     try:
-        task = ParsingTask.objects.get(id=task_id)
-        
         if task.status != 'completed':
             return Response({'error': 'Задача не завершена'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Ищем файл результата
+
         result_file_path = None
-        
-        # Проверяем поле result_file
         if task.result_file:
             result_file_path = task.result_file.path
         else:
-            # Ищем в папке results по ID задачи
-            import os
-            from django.conf import settings
-            
             results_dir = os.path.join(settings.MEDIA_ROOT, 'results')
             for filename in os.listdir(results_dir):
                 if filename.startswith(f'result_{task_id}') and filename.endswith('.xlsx'):
                     result_file_path = os.path.join(results_dir, filename)
                     break
-        
+
         if not result_file_path or not os.path.exists(result_file_path):
             return Response({'error': 'Файл результата не найден'}, status=status.HTTP_404_NOT_FOUND)
-        
-        # Отправляем файл
-        from django.http import FileResponse
-        import os
-        
+
         filename = os.path.basename(result_file_path)
         response = FileResponse(open(result_file_path, 'rb'))
         response['Content-Type'] = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        
         return response
-        
-    except ParsingTask.DoesNotExist:
-        return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
+
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def download_site_result(request, task_id, site):
     """Скачать результат задачи по конкретному сайту"""
+    task, err = _get_task_or_404(task_id, request.user)
+    if err:
+        return err
     try:
-        task = ParsingTask.objects.get(id=task_id)
-        
         if task.status != 'completed':
             return Response({'error': 'Задача не завершена'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         if not task.result_files or site not in task.result_files:
             return Response({'error': f'Файл для сайта {site} не найден'}, status=status.HTTP_404_NOT_FOUND)
-        
+
         file_path = task.result_files[site]
-        
-        # Проверяем, что файл существует
-        import os
-        from django.conf import settings
-        
-        # Формируем правильный путь к файлу
         if file_path.startswith('media/'):
-            # Если путь начинается с media/, убираем его и добавляем MEDIA_ROOT
-            relative_path = file_path[6:]  # убираем 'media/'
-            full_path = os.path.join(settings.MEDIA_ROOT, relative_path)
+            full_path = os.path.join(settings.MEDIA_ROOT, file_path[6:])
         elif file_path.startswith('/'):
-            # Если абсолютный путь
             full_path = file_path
         else:
-            # Если относительный путь без media/
             full_path = os.path.join(settings.MEDIA_ROOT, file_path)
-        
+
         if not os.path.exists(full_path):
             return Response({'error': 'Файл не найден на диске'}, status=status.HTTP_404_NOT_FOUND)
-        
-        # Отправляем файл
-        from django.http import FileResponse
-        
-        # Определяем название сайта для файла
-        site_names = {
-            'autopiter': 'Autopiter',
-            'emex': 'Emex',
-            'armtek': 'Armtek'
-        }
+
+        site_names = {'autopiter': 'Autopiter', 'emex': 'Emex', 'armtek': 'Armtek'}
         site_name = site_names.get(site, site)
-        
+
         response = FileResponse(open(full_path, 'rb'))
         response['Content-Type'] = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         response['Content-Disposition'] = f'attachment; filename="{site_name}_result_{task_id}.xlsx"'
-        
         return response
-        
-    except ParsingTask.DoesNotExist:
-        return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
+
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def download_stats(request, task_id):
-    """
-    Скачать файлы статистики (summary и unique_brands) для задачи.
-    Возвращает один файл за запрос – summary или unique_brands,
-    в зависимости от параметра ?type=summary|unique_brands.
-    """
+    """Скачать файлы статистики (summary / unique_brands)."""
+    task, err = _get_task_or_404(task_id, request.user)
+    if err:
+        return err
     try:
-        task = ParsingTask.objects.get(id=task_id)
-
         if task.status != 'completed':
             return Response({'error': 'Задача не завершена'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -467,15 +415,8 @@ def download_stats(request, task_id):
             return Response({'error': f'Файл статистики {stats_type} не найден'}, status=status.HTTP_404_NOT_FOUND)
 
         file_path = task.result_files[stats_type]
-
-        import os
-        from django.conf import settings
-        from django.http import FileResponse
-
-        # Формируем полный путь
         if file_path.startswith('media/'):
-            relative_path = file_path[6:]
-            full_path = os.path.join(settings.MEDIA_ROOT, relative_path)
+            full_path = os.path.join(settings.MEDIA_ROOT, file_path[6:])
         elif file_path.startswith('/'):
             full_path = file_path
         else:
@@ -495,7 +436,37 @@ def download_stats(request, task_id):
         response['Content-Disposition'] = f'attachment; filename="{download_name}"'
         return response
 
-    except ParsingTask.DoesNotExist:
-        return Response({'error': 'Задача не найдена'}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def serve_media_file(request, file_path):
+    """Защищённая отдача файлов из MEDIA_ROOT (только uploads/results)."""
+    normalized = os.path.normpath(file_path).replace('\\', '/')
+    allowed_prefixes = ('uploads/', 'results/')
+    if not any(normalized.startswith(p) for p in allowed_prefixes):
+        return Response({'error': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
+
+    try:
+        full_path = _resolve_media_path(normalized)
+    except Http404:
+        return Response({'error': 'Файл не найден'}, status=status.HTTP_404_NOT_FOUND)
+
+    if normalized.startswith('uploads/') and not request.user.is_staff:
+        return Response({'error': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
+
+    if normalized.startswith('results/'):
+        parts = normalized.split('_')
+        for part in parts:
+            if part.isdigit():
+                task_id = int(part)
+                task, err = _get_task_or_404(task_id, request.user)
+                if err:
+                    return err
+                break
+
+    response = FileResponse(open(full_path, 'rb'))
+    response['Content-Disposition'] = f'inline; filename="{os.path.basename(full_path)}"'
+    return response

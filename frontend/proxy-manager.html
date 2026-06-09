@@ -164,6 +164,35 @@
 
     <script>
         const API_BASE = '/api';
+
+        function authHeaders(extra = {}) {
+            const token = localStorage.getItem('token');
+            if (!token) return null;
+            return { 'Authorization': `Token ${token}`, ...extra };
+        }
+
+        function requireAuth() {
+            if (!localStorage.getItem('token')) {
+                window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+                return false;
+            }
+            return true;
+        }
+
+        async function apiFetch(url, options = {}) {
+            const headers = authHeaders(options.headers || {});
+            if (!headers) {
+                requireAuth();
+                throw new Error('Требуется авторизация');
+            }
+            const response = await fetch(url, { ...options, headers });
+            if (response.status === 401) {
+                localStorage.removeItem('token');
+                window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+                throw new Error('Сессия истекла');
+            }
+            return response;
+        }
         
         async function uploadProxies() {
             const fileInput = document.getElementById('proxyFile');
@@ -182,7 +211,7 @@
             uploadBtn.textContent = 'Загрузка...';
             
             try {
-                const response = await fetch(`${API_BASE}/proxies/upload/`, {
+                const response = await apiFetch(`${API_BASE}/proxies/upload/`, {
                     method: 'POST',
                     body: formData
                 });
@@ -212,7 +241,7 @@
             statusBtn.textContent = 'Обновление...';
             
             try {
-                const response = await fetch(`${API_BASE}/proxies/status/`);
+                const response = await apiFetch(`${API_BASE}/proxies/status/`);
                 const data = await response.json();
                 
                 if (response.ok) {
@@ -252,7 +281,7 @@
             resetBtn.textContent = 'Сброс...';
             
             try {
-                const response = await fetch(`${API_BASE}/proxies/reset/`, {
+                const response = await apiFetch(`${API_BASE}/proxies/reset/`, {
                     method: 'POST'
                 });
                 
@@ -279,7 +308,9 @@
         
         // Загружаем статус при загрузке страницы
         document.addEventListener('DOMContentLoaded', function() {
-            getProxyStatus();
+            if (requireAuth()) {
+                getProxyStatus();
+            }
         });
     </script>
 </body>

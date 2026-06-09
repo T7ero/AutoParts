@@ -198,11 +198,20 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
-        # Важно: если хотите закрыть API, меняйте на IsAuthenticated и/или ставьте права на view'шки.
-        'rest_framework.permissions.AllowAny',
+        'rest_framework.permissions.IsAuthenticated',
     ],
+}
+
+from celery.schedules import crontab  # noqa: E402
+
+CELERY_BEAT_SCHEDULE = {
+    'cleanup-media-results-daily': {
+        'task': 'api.tasks.cleanup_old_media_results',
+        'schedule': crontab(hour=4, minute=0),
+    },
 }
 
 CORS_ALLOWED_ORIGINS = [

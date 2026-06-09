@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 
 function Login() {
@@ -8,7 +8,15 @@ function Login() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
   const { login } = useAuth();
+
+  const redirectTarget = () => {
+    const params = new URLSearchParams(location.search);
+    const next = params.get('next');
+    if (next && next.startsWith('/')) return next;
+    return location.state?.from || '/';
+  };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -29,8 +37,8 @@ function Login() {
 
       if (response.ok) {
         const data = await response.json();
-        login(data.token);
-        navigate('/');
+        login(data.token, { username: data.username, is_staff: data.is_staff });
+        navigate(redirectTarget());
       } else {
         setError('Неверное имя пользователя или пароль');
       }
