@@ -122,10 +122,17 @@ else
     echo "ℹ️ CREATE_SUPERUSER=0 — пропускаем создание суперпользователя"
 fi
 
-# Запускаем Xvfb
-echo "🖥️ Запуск Xvfb..."
-Xvfb :99 -screen 0 1280x720x24 &
-export DISPLAY=:99
+# Запускаем Xvfb (не нужен для celery beat)
+if [ "${SKIP_XVFB:-0}" = "1" ]; then
+    echo "ℹ️ SKIP_XVFB=1 — пропускаем Xvfb"
+else
+    echo "🖥️ Запуск Xvfb..."
+    if [ -f /tmp/.X99-lock ]; then
+        rm -f /tmp/.X99-lock
+    fi
+    Xvfb :99 -screen 0 1280x720x24 &
+    export DISPLAY=:99
+fi
 
 # Запускаем приложение
 echo "🚀 Запуск приложения..."

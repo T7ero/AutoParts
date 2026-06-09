@@ -241,6 +241,7 @@ CORS_ALLOW_HEADERS = [
 
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
+CELERY_BEAT_SCHEDULE_FILENAME = os.path.join(MEDIA_ROOT, 'temp', 'celerybeat-schedule')
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'

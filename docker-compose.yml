@@ -120,7 +120,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.alternative
-    command: celery -A backend beat -l info
+    command: celery -A backend beat -l info --pidfile=/app/media/temp/celerybeat.pid
     volumes:
       - ./backend:/app
       - ./backend/media:/app/media
@@ -135,6 +135,7 @@ services:
       - DJANGO_SETTINGS_MODULE=backend.settings
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - SKIP_XVFB=1
       - DEBUG=False
       - PYTHONUNBUFFERED=1
     restart: always

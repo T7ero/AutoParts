@@ -14,6 +14,12 @@ backend/media/uploads/
 backend/media/results/
 backend/media/temp/
 
+# Celery Beat runtime files
+celerybeat-schedule
+celerybeat-schedule.db
+celerybeat.pid
+**/celerybeat-schedule*
+
 # OS/editor
 .vscode/
 .DS_Store
