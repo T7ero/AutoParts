@@ -45,9 +45,7 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DATABASE_URL=postgres://postgres:postgres@db:5432/autoparts
-      - ALLOWED_HOSTS=87.228.101.164,localhost,127.0.0.1,backend,172.17.0.98
-      - CORS_ALLOWED_ORIGINS=http://87.228.101.164,http://localhost:3000,http://127.0.0.1:3000
-      # Если нужно принудительно переустановить пароль admin из secret.env:
+      # ALLOWED_HOSTS и CORS — только в secret.env (серверные значения, без правок git)
       # - FORCE_ADMIN_PASSWORD=1
       - POSTGRES_DB=autoparts
       - POSTGRES_USER=postgres
@@ -70,7 +68,7 @@ services:
     build: 
       context: ./backend
       dockerfile: Dockerfile.alternative
-    command: celery -A backend worker -l info --concurrency=4 --max-tasks-per-child=10 --prefetch-multiplier=1
+    command: celery -A backend worker -l info --concurrency=2 --max-tasks-per-child=5 --prefetch-multiplier=1
     volumes:
       - ./backend:/app
       - ./backend/media:/app/media
@@ -88,9 +86,7 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DATABASE_URL=postgres://postgres:postgres@db:5432/autoparts
-      - ALLOWED_HOSTS=87.228.101.164,localhost,127.0.0.1,backend,172.17.0.98
-      - CORS_ALLOWED_ORIGINS=http://87.228.101.164,http://localhost:3000,http://127.0.0.1:3000
-      # Если нужно принудительно переустановить пароль admin из secret.env:
+      # ALLOWED_HOSTS и CORS — только в secret.env (серверные значения, без правок git)
       # - FORCE_ADMIN_PASSWORD=1
       - POSTGRES_DB=autoparts
       - POSTGRES_USER=postgres
@@ -109,12 +105,17 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
-          cpus: '0.8'
+          memory: 1536M
+          cpus: '1.0'
         reservations:
-          memory: 512M
-          cpus: '0.4'
-    shm_size: '256mb'
+          memory: 768M
+          cpus: '0.5'
+    shm_size: '512mb'
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 65535
+        hard: 65535
 
   celery-beat:
     build:

@@ -25,9 +25,14 @@ from concurrent.futures import ThreadPoolExecutor
 import gc
 
 try:
-    import redis  # type: ignore
+	import fcntl  # Linux/Docker: межпроцессная блокировка создания Chrome
+except ImportError:
+	fcntl = None  # type: ignore
+
+try:
+	import redis  # type: ignore
 except Exception:
-    redis = None
+	redis = None
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -51,9 +56,67 @@ SELENIUM_TIMEOUT = 8  # Оптимизированное время для ус�
 PAGE_LOAD_TIMEOUT = 12  # Увеличиваем для стабильности
 
 # Настройки для пула драйверов
-DRIVER_POOL_SIZE = 3
+DRIVER_POOL_SIZE = 1
 DRIVER_CREATION_RETRIES = 3
 DRIVER_TIMEOUT_RETRIES = 3  # Увеличиваем количество попыток
+
+# Один Chrome на воркер — иначе в Docker ловим "failed to start a thread"
+CHROME_CREATE_SEMAPHORE = threading.Semaphore(1)
+_CHROME_CREATE_LOCK_PATH = os.path.join(tempfile.gettempdir(), "autoparts_chrome_create.lock")
+
+# Armtek Selenium: отключаем после серии ошибок ресурсов, чтобы не спамить chromedriver
+ARMTEK_SELENIUM_FAILURES = 0
+ARMTEK_SELENIUM_DISABLED = False
+MAX_ARMTEK_SELENIUM_FAILURES = 2
+
+
+class _ChromeCreateLock:
+	"""Сериализует запуск Chrome между потоками и celery fork-процессами."""
+
+	def __enter__(self):
+		CHROME_CREATE_SEMAPHORE.acquire()
+		self._fp = None
+		if fcntl is not None:
+			try:
+				self._fp = open(_CHROME_CREATE_LOCK_PATH, "a+", encoding="utf-8")
+				fcntl.flock(self._fp.fileno(), fcntl.LOCK_EX)
+			except Exception as e:
+				log_debug(f"Chrome lock (fcntl) недоступен: {e}")
+		return self
+
+	def __exit__(self, exc_type, exc, tb):
+		if self._fp is not None:
+			try:
+				fcntl.flock(self._fp.fileno(), fcntl.LOCK_UN)
+				self._fp.close()
+			except Exception:
+				pass
+		CHROME_CREATE_SEMAPHORE.release()
+		return False
+
+
+def reset_armtek_selenium_state() -> None:
+	"""Сброс счётчика ошибок Armtek Selenium (начало новой задачи парсинга)."""
+	global ARMTEK_SELENIUM_FAILURES, ARMTEK_SELENIUM_DISABLED
+	ARMTEK_SELENIUM_FAILURES = 0
+	ARMTEK_SELENIUM_DISABLED = False
+
+
+def _note_armtek_selenium_driver_failure() -> None:
+	global ARMTEK_SELENIUM_FAILURES, ARMTEK_SELENIUM_DISABLED
+	ARMTEK_SELENIUM_FAILURES += 1
+	if ARMTEK_SELENIUM_FAILURES >= MAX_ARMTEK_SELENIUM_FAILURES:
+		ARMTEK_SELENIUM_DISABLED = True
+		log_debug(
+			f"Armtek Selenium отключён после {ARMTEK_SELENIUM_FAILURES} ошибок Chrome "
+			f"(используем HTTP fallback)"
+		)
+
+_ARMTEK_BRAND_SPAN_SELECTOR = (
+	'span.font__body2.brand--selecting, span.font_body2.brand--selecting, '
+	'span.font__caption1.brand--selectable, span.brand--selecting, '
+	'span.brand--selectable, [class*="brand--selecting"], [class*="brand--selectable"]'
+)
 
 
 def _selenium_remote_http_timeout_seconds() -> float:
@@ -318,6 +381,42 @@ def log_debug(message):
     print(f"[DEBUG] {message}")
 
 
+def _is_chrome_resource_error(exc: Exception) -> bool:
+	text = str(exc).lower()
+	markers = (
+		"failed to start a thread",
+		"session not created",
+		"resource temporarily unavailable",
+		"cannot allocate memory",
+		"too many open files",
+		"errno 11",
+		"errno 12",
+		"errno 13",
+	)
+	return any(marker in text for marker in markers)
+
+
+def _normalize_proxy_arg(proxy: Optional[Union[str, Dict[str, str]]]) -> Optional[str]:
+	"""Приводит прокси к строке ip:port или login:pass@ip:port для Selenium/HTTP."""
+	if not proxy:
+		return None
+	if isinstance(proxy, dict):
+		proxy_url = proxy.get('http') or proxy.get('https') or ''
+		if isinstance(proxy_url, str) and proxy_url.startswith('http://'):
+			return proxy_url[7:]
+		if isinstance(proxy_url, str) and proxy_url.startswith('https://'):
+			return proxy_url[8:]
+		return None
+	if isinstance(proxy, str):
+		value = proxy.strip()
+		if value.startswith('http://'):
+			return value[7:]
+		if value.startswith('https://'):
+			return value[8:]
+		return value or None
+	return None
+
+
 def _is_selenium_fatal_error(exc: Exception) -> bool:
 	text = str(exc).lower()
 	markers = (
@@ -333,6 +432,7 @@ def _is_selenium_fatal_error(exc: Exception) -> bool:
 		"invalid session id",
 		"session not created",
 		"no such window",
+		"failed to start a thread",
 	)
 	return any(marker in text for marker in markers)
 
@@ -348,7 +448,9 @@ def _recover_armtek_driver(
 		except Exception:
 			pass
 	temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_{uuid.uuid4().hex[:8]}_")
-	effective_proxy = None if (proxy and "@" in proxy) else proxy
+	effective_proxy = _normalize_proxy_arg(proxy)
+	if effective_proxy and '@' in effective_proxy:
+		effective_proxy = None
 	return _create_chrome_driver_robust(temp_dir, effective_proxy)
 
 
@@ -450,6 +552,7 @@ def cleanup_driver_pool():
                 pass
         DRIVER_POOL.clear()
         DRIVER_LAST_USED.clear()
+    cleanup_chrome_processes()
 
 def load_proxies_from_file(file_path: str = "proxies.txt") -> List[str]:
     """Загружает список прокси из файла"""
@@ -1344,34 +1447,62 @@ def split_combined_brands(brands: List[str]) -> List[str]:
     
     return sorted(list(result))
 
-def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[str] = None, logger=None) -> List[str]:
-	"""Получает бренды с Armtek по артикулу, используя только Selenium (быстро и стабильно)."""
+def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] = None, logger=None) -> List[str]:
+	"""Получает бренды с Armtek по артикулу (Selenium + HTTP fallback)."""
 	try:
 		log_debug(f"Armtek: начало обработки артикула {artikul}")
+		proxy_str = _normalize_proxy_arg(proxy)
 
-		# 1) Selenium без прокси — до 2 попыток (после tab crashed пересоздаём Chrome)
-		for selenium_attempt in range(2):
-			brands_sel = parse_armtek_selenium(artikul, None)
-			if brands_sel:
-				return filter_armtek_brands(split_combined_brands(brands_sel))
-			if selenium_attempt == 0:
-				log_debug(f"Armtek: повтор Selenium для {artikul} после пустого/сбойного результата")
-				cleanup_driver_pool()
-				time.sleep(0.5)
+		if not ARMTEK_SELENIUM_DISABLED:
+			# 1) Selenium без прокси — одна попытка (+ повтор только если Chrome жив, но брендов нет)
+			driver_failed = False
+			for selenium_attempt in range(2):
+				brands_sel = parse_armtek_selenium(artikul, None)
+				if brands_sel is None:
+					driver_failed = True
+					_note_armtek_selenium_driver_failure()
+					log_debug(f"Armtek: Chrome недоступен для {artikul}, очистка процессов")
+					cleanup_chrome_processes()
+					time.sleep(3 + selenium_attempt * 2)
+					break
+				if brands_sel:
+					return filter_armtek_brands(split_combined_brands(brands_sel))
+				if selenium_attempt == 0:
+					log_debug(f"Armtek: повтор Selenium для {artikul} после пустого результата")
+					cleanup_driver_pool()
+					time.sleep(0.5)
 
-		# 2) Selenium с прокси — если без прокси пусто
-		if not proxy:
-			proxy_dict = get_next_proxy()
-			if proxy_dict:
-				proxy_url = proxy_dict.get('http', '')
-				if proxy_url.startswith('http://'):
-					proxy_url = proxy_url[7:]
-				proxy = proxy_url
-				log_debug(f"Armtek: автоматически получен прокси: {proxy}")
-		if proxy:
-			brands_sel = parse_armtek_selenium(artikul, proxy)
-			if brands_sel:
-				return filter_armtek_brands(split_combined_brands(brands_sel))
+			# 2) Selenium с прокси — только если Chrome жив
+			if not driver_failed and not ARMTEK_SELENIUM_DISABLED:
+				if not proxy_str:
+					proxy_dict = get_next_proxy()
+					proxy_str = _normalize_proxy_arg(proxy_dict)
+					if proxy_str:
+						log_debug(f"Armtek: автоматически получен прокси: {proxy_str}")
+				if proxy_str:
+					brands_sel = parse_armtek_selenium(artikul, proxy_str)
+					if brands_sel is None:
+						_note_armtek_selenium_driver_failure()
+						cleanup_chrome_processes()
+					elif brands_sel:
+						return filter_armtek_brands(split_combined_brands(brands_sel))
+
+		# 3) HTTP / API fallback — когда Selenium не поднял Chrome или страница пустая
+		for fallback_name, fallback_fn in (
+			("HTTP", lambda: parse_armtek_http(artikul, proxy_str)),
+			("API", lambda: parse_armtek_api_fallback(artikul, [proxy_str] if proxy_str else None)),
+		):
+			try:
+				fallback_brands = fallback_fn()
+				if fallback_brands:
+					filtered = filter_armtek_brands(split_combined_brands(fallback_brands))
+					if filtered:
+						log_debug(
+							f"Armtek {fallback_name} fallback: найдено {len(filtered)} брендов для {artikul}"
+						)
+						return filtered
+			except Exception as e:
+				log_debug(f"Armtek {fallback_name} fallback ошибка для {artikul}: {e}")
 
 		msg = f"Armtek: бренды не найдены для {artikul}"
 		log_debug(msg)
@@ -1617,11 +1748,33 @@ def _armtek_parse_results_sections(driver) -> Dict[str, object]:
 			const hasTarget = !!targetHeader;
 			const hasReplacements = !!replHeader;
 			if (!hasTarget) {
+				const brands = [];
+				const cardSelectors = [
+					'app-article-card-tile',
+					'project-ui-article-card',
+					'project-ui-article-card-with-suggestions',
+				];
+				for (const cardSel of cardSelectors) {
+					for (const card of root.querySelectorAll(cardSel)) {
+						for (const span of card.querySelectorAll(
+							'` + _ARMTEK_BRAND_SPAN_SELECTOR.replace("'", "\\'") + `'
+						)) {
+							const text = (span.textContent || '').trim();
+							if (isBrandText(text)) brands.push(text);
+						}
+					}
+				}
+				for (const span of root.querySelectorAll(
+					'div.item.item-mobile span.brand--selecting, div.item.item-mobile span.brand--selectable'
+				)) {
+					const text = (span.textContent || '').trim();
+					if (isBrandText(text)) brands.push(text);
+				}
 				return {
 					hasTarget: false,
 					hasReplacements,
-					onlyReplacements: hasReplacements,
-					brands: [],
+					onlyReplacements: hasReplacements && brands.length === 0,
+					brands: [...new Set(brands)],
 				};
 			}
 			const garbage = new Set([
@@ -1657,7 +1810,7 @@ def _armtek_parse_results_sections(driver) -> Dict[str, object]:
 				for (const card of root.querySelectorAll(cardSel)) {
 					if (!isBetween(card, targetHeader, replHeader)) continue;
 					for (const span of card.querySelectorAll(
-						'span.font__caption1.brand--selectable, span.font__body2.brand--selecting'
+						'` + _ARMTEK_BRAND_SPAN_SELECTOR.replace("'", "\\'") + `'
 					)) {
 						const text = (span.textContent || '').trim();
 						if (isBrandText(text)) brands.push(text);
@@ -1687,14 +1840,12 @@ def _armtek_parse_results_sections(driver) -> Dict[str, object]:
 		return default
 
 
-def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None) -> List[str]:
-	"""Selenium-парсинг Armtek: ждем появления элементов и собираем бренды.
-	Если на странице отображено сообщение "По вашему запросу ничего не найдено",
-	возвращаем пустой список и логируем событие.
-	"""
+def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] = None, logger=None) -> Optional[List[str]]:
+	"""Selenium-парсинг Armtek. None — Chrome не удалось запустить; [] — страница без брендов."""
 	brands: Set[str] = set()
 	driver = None
 	driver_broken = False
+	proxy_str = _normalize_proxy_arg(proxy)
 	
 	try:
 		log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
@@ -1703,13 +1854,13 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		driver = get_driver_from_pool()
 		if driver is None:
 			log_debug("Armtek Selenium: создаем новый драйвер")
-			driver = _recover_armtek_driver(None, proxy)
+			driver = _recover_armtek_driver(None, proxy_str)
 			if driver is None:
 				log_debug("Armtek Selenium: не удалось создать драйвер")
-				return []
+				return None
 		
-		# Если прокси содержит авторизацию, игнорируем его для Selenium (Chrome не поддерживает в CLI)
-		effective_proxy = None if (proxy and '@' in proxy) else proxy
+		# Chrome CLI не поддерживает proxy-auth; для Selenium используем только ip:port
+		effective_proxy = None if (proxy_str and '@' in proxy_str) else proxy_str
 		
 		url = f"https://armtek.ru/search?text={artikul}"
 		log_debug(f"Armtek Selenium: загружаем URL {url}")
@@ -1738,10 +1889,10 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 					log_debug("Критическая ошибка Chrome, пересоздаем драйвер")
 					driver_broken = True
 					try:
-						driver = _recover_armtek_driver(driver, proxy)
+						driver = _recover_armtek_driver(driver, proxy_str)
 						if driver is None:
 							log_debug("Не удалось пересоздать драйвер после критической ошибки")
-							return []
+							return None
 						log_debug("Создан новый драйвер после критической ошибки")
 						driver_broken = False
 						driver.get(url)
@@ -1766,6 +1917,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 			(By.CSS_SELECTOR, '.results-list__items'),
 			# Бренды - обновленные селекторы
 			(By.CSS_SELECTOR, 'span.font__body2.brand--selecting'),
+			(By.CSS_SELECTOR, 'span.font_body2.brand--selecting'),
 			(By.CSS_SELECTOR, '.brand--selecting'),
 			(By.CSS_SELECTOR, '.font__caption1.brand--selectable'),
 			# Карточки товаров
@@ -1848,9 +2000,9 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[str] = None, logger=None
 		if section_state.get("driver_crashed"):
 			log_debug(f"Armtek Selenium: Chrome упал при чтении секций для {artikul}, пересоздаём драйвер")
 			driver_broken = True
-			driver = _recover_armtek_driver(driver, proxy)
+			driver = _recover_armtek_driver(driver, proxy_str)
 			if driver is None:
-				return []
+				return None
 			driver_broken = False
 			try:
 				driver.get(url)
@@ -2121,112 +2273,119 @@ def _create_chrome_driver_robust(temp_dir: Optional[str] = None, proxy: Optional
     """Создает Chrome драйвер с улучшенной обработкой ошибок и retry логикой"""
     if not temp_dir:
         temp_dir = tempfile.mkdtemp(prefix=f"chrome_{uuid.uuid4().hex[:8]}_")
-    for attempt in range(DRIVER_CREATION_RETRIES):
-        try:
-            chrome_options = Options()
-            chrome_options.add_argument('--headless=new')
-            chrome_options.add_argument('--no-sandbox')
-            chrome_options.add_argument('--disable-dev-shm-usage')
-            chrome_options.add_argument('--disable-gpu')
-            chrome_options.add_argument('--window-size=1920,1080')
-            chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            chrome_options.add_experimental_option('useAutomationExtension', False)
-            
-            # Дополнительные настройки для стабильности
-            chrome_options.add_argument('--disable-extensions')
-            chrome_options.add_argument('--disable-plugins')
-            chrome_options.add_argument('--disable-images')
-            # Не отключаем JS/CSS для Armtek: часть структуры и видимости управляется Angular
-            chrome_options.add_argument('--disable-web-security')
-            chrome_options.add_argument('--disable-features=VizDisplayCompositor')
-            chrome_options.add_argument('--memory-pressure-off')
-            chrome_options.add_argument('--max_old_space_size=4096')
-            
-            # Добавляем user-data-dir для стабильности сессий
-            chrome_options.add_argument(f'--user-data-dir={temp_dir}')
-            
-            # Настройка прокси
-            if proxy:
-                if '@' in proxy:
-                    # Формат: login:password@ip:port
-                    auth_part, proxy_part = proxy.split('@', 1)
-                    if ':' in auth_part:
-                        username, password = auth_part.split(':', 1)
-                        # Для Chrome с аутентификацией прокси используем расширение
-                        chrome_options.add_argument(f'--proxy-server={proxy_part}')
-                        # Добавляем расширение для аутентификации прокси
-                        chrome_options.add_argument('--load-extension=/tmp/proxy-auth-extension')
-                    else:
-                        chrome_options.add_argument(f'--proxy-server={proxy}')
-                else:
-                    # Формат: ip:port
-                    chrome_options.add_argument(f'--proxy-server={proxy}')
-                
-                log_debug(f"Armtek Selenium: добавлен прокси {proxy}")
-            
-            # Дополнительные опции для стабильности и производительности
-            chrome_options.add_argument('--disable-extensions')
-            chrome_options.add_argument('--disable-plugins')
-            chrome_options.add_argument('--disable-images')
-            chrome_options.add_argument('--disable-web-security')
-            chrome_options.add_argument('--allow-running-insecure-content')
-            chrome_options.add_argument('--disable-background-timer-throttling')
-            chrome_options.add_argument('--disable-backgrounding-occluded-windows')
-            chrome_options.add_argument('--disable-renderer-backgrounding')
-            chrome_options.add_argument('--disable-features=TranslateUI')
-            chrome_options.add_argument('--disable-ipc-flooding-protection')
-            chrome_options.add_argument('--no-first-run')
-            chrome_options.add_argument('--no-default-browser-check')
-            chrome_options.add_argument('--disable-logging')
-            chrome_options.add_argument('--disable-gpu-logging')
-            chrome_options.add_argument('--silent')
-            chrome_options.add_argument('--disable-crash-reporter')
-            chrome_options.add_argument('--disable-in-process-stack-traces')
-            chrome_options.add_argument('--log-level=3')
-            chrome_options.add_argument('--disable-dev-tools')
-            chrome_options.add_argument('--disable-software-rasterizer')
-            
-            # Пытаемся найти ChromeDriver в разных местах
-            service = None
-            chrome_paths = [
-                '/usr/bin/chromedriver',
-                '/usr/local/bin/chromedriver',
-                'chromedriver',
-                './chromedriver'
-            ]
-            
-            for chrome_path in chrome_paths:
-                try:
-                    service = Service(executable_path=chrome_path)
-                    break
-                except Exception:
-                    continue
-            
-            if service is None:
-                service = Service()  # Автоопределение
-            
-            # Для тяжелых страниц (Autopiter) не ждем загрузки всех sub-resources,
-            # иначе чаще ловим renderer timeout в контейнере.
-            chrome_options.page_load_strategy = 'eager'
-            driver = webdriver.Chrome(service=service, options=chrome_options)
-            _set_selenium_remote_command_timeout(driver, _selenium_remote_http_timeout_seconds())
+    with _ChromeCreateLock():
+        for attempt in range(DRIVER_CREATION_RETRIES):
+            try:
+                chrome_options = Options()
+                chrome_options.add_argument('--headless=new')
+                chrome_options.add_argument('--no-sandbox')
+                chrome_options.add_argument('--disable-dev-shm-usage')
+                chrome_options.add_argument('--disable-gpu')
+                chrome_options.add_argument('--window-size=1920,1080')
+                chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+                chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+                chrome_options.add_experimental_option('useAutomationExtension', False)
 
-            # Устанавливаем таймауты
-            driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-            driver.set_script_timeout(max(20, PAGE_LOAD_TIMEOUT))
-            driver.implicitly_wait(1)  # Еще больше уменьшаем для ускорения
-            
-            return driver
-            
-        except Exception as e:
-            log_debug(f"Попытка {attempt + 1} создания Chrome драйвера: {str(e)}")
-            if attempt < DRIVER_CREATION_RETRIES - 1:
-                time.sleep(2 ** attempt)  # Экспоненциальная задержка
-            else:
-                log_debug(f"Не удалось создать Chrome драйвер после {DRIVER_CREATION_RETRIES} попыток")
-                return None
-    
+                # Дополнительные настройки для стабильности
+                chrome_options.add_argument('--disable-extensions')
+                chrome_options.add_argument('--disable-plugins')
+                chrome_options.add_argument('--disable-images')
+                # Не отключаем JS/CSS для Armtek: часть структуры и видимости управляется Angular
+                chrome_options.add_argument('--disable-web-security')
+                chrome_options.add_argument('--disable-features=VizDisplayCompositor')
+                chrome_options.add_argument('--memory-pressure-off')
+                chrome_options.add_argument('--max_old_space_size=4096')
+                chrome_options.add_argument('--disable-features=IsolateOrigins,site-per-process')
+                chrome_options.add_argument('--renderer-process-limit=2')
+
+                # Добавляем user-data-dir для стабильности сессий
+                chrome_options.add_argument(f'--user-data-dir={temp_dir}')
+
+                # Настройка прокси
+                if proxy:
+                    if '@' in proxy:
+                        # Формат: login:password@ip:port
+                        auth_part, proxy_part = proxy.split('@', 1)
+                        if ':' in auth_part:
+                            username, password = auth_part.split(':', 1)
+                            # Для Chrome с аутентификацией прокси используем расширение
+                            chrome_options.add_argument(f'--proxy-server={proxy_part}')
+                            # Добавляем расширение для аутентификации прокси
+                            chrome_options.add_argument('--load-extension=/tmp/proxy-auth-extension')
+                        else:
+                            chrome_options.add_argument(f'--proxy-server={proxy}')
+                    else:
+                        # Формат: ip:port
+                        chrome_options.add_argument(f'--proxy-server={proxy}')
+
+                    log_debug(f"Armtek Selenium: добавлен прокси {proxy}")
+
+                # Дополнительные опции для стабильности и производительности
+                chrome_options.add_argument('--disable-extensions')
+                chrome_options.add_argument('--disable-plugins')
+                chrome_options.add_argument('--disable-images')
+                chrome_options.add_argument('--disable-web-security')
+                chrome_options.add_argument('--allow-running-insecure-content')
+                chrome_options.add_argument('--disable-background-timer-throttling')
+                chrome_options.add_argument('--disable-backgrounding-occluded-windows')
+                chrome_options.add_argument('--disable-renderer-backgrounding')
+                chrome_options.add_argument('--disable-features=TranslateUI')
+                chrome_options.add_argument('--disable-ipc-flooding-protection')
+                chrome_options.add_argument('--no-first-run')
+                chrome_options.add_argument('--no-default-browser-check')
+                chrome_options.add_argument('--disable-logging')
+                chrome_options.add_argument('--disable-gpu-logging')
+                chrome_options.add_argument('--silent')
+                chrome_options.add_argument('--disable-crash-reporter')
+                chrome_options.add_argument('--disable-in-process-stack-traces')
+                chrome_options.add_argument('--log-level=3')
+                chrome_options.add_argument('--disable-dev-tools')
+                chrome_options.add_argument('--disable-software-rasterizer')
+
+                # Пытаемся найти ChromeDriver в разных местах
+                service = None
+                chrome_paths = [
+                    '/usr/bin/chromedriver',
+                    '/usr/local/bin/chromedriver',
+                    'chromedriver',
+                    './chromedriver'
+                ]
+
+                for chrome_path in chrome_paths:
+                    try:
+                        service = Service(executable_path=chrome_path)
+                        break
+                    except Exception:
+                        continue
+
+                if service is None:
+                    service = Service()  # Автоопределение
+
+                # Для тяжелых страниц (Autopiter) не ждем загрузки всех sub-resources,
+                # иначе чаще ловим renderer timeout в контейнере.
+                chrome_options.page_load_strategy = 'eager'
+                driver = webdriver.Chrome(service=service, options=chrome_options)
+                _set_selenium_remote_command_timeout(driver, _selenium_remote_http_timeout_seconds())
+
+                # Устанавливаем таймауты
+                driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+                driver.set_script_timeout(max(20, PAGE_LOAD_TIMEOUT))
+                driver.implicitly_wait(1)  # Еще больше уменьшаем для ускорения
+
+                return driver
+
+            except Exception as e:
+                log_debug(f"Попытка {attempt + 1} создания Chrome драйвера: {str(e)}")
+                if _is_chrome_resource_error(e):
+                    cleanup_chrome_processes()
+                    time.sleep(3 + attempt * 2)
+                    break
+                if attempt < DRIVER_CREATION_RETRIES - 1:
+                    time.sleep(2 ** attempt)  # Экспоненциальная задержка
+                else:
+                    log_debug(f"Не удалось создать Chrome драйвер после {DRIVER_CREATION_RETRIES} попыток")
+                    return None
+
     return None
 
 def _create_chrome_driver(temp_dir: str, with_user_data: bool = True, proxy: Optional[str] = None):
@@ -2363,7 +2522,13 @@ def parse_armtek_http(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] 
     
     # Поиск по CSS селекторам
     brand_selectors = [
-        # Точные и актуальные селекторы из интерфейса Armtek
+        # Список результатов (list view) — L-5800 и подобные
+        'span.font__body2.brand--selecting',
+        'span.font_body2.brand--selecting',
+        'div.item.item-mobile span.brand--selecting',
+        'project-ui-article-card-with-suggestions span.brand--selecting',
+        'project-ui-article-card span.brand--selecting',
+        # Плиточный вид / pin-brand
         '.pin-brand-name span.font__caption1.brand--selectable',
         '.font__caption1.brand--selectable',
         'div.pin-brand-name .brand--selectable',
@@ -2387,6 +2552,7 @@ def parse_armtek_http(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] 
     if not brands:
         try:
             regex_patterns = [
+                r'class=\"font__body2\s+brand--selecting\"[^>]*>([^<]+)</span>',
                 r'class=\"font__caption1\s+brand--selectable\"[^>]*>([^<]+)</span>',
                 r'pin-brand-name[^<]+class=\"font__caption1\s+brand--selectable\"[^>]*>([^<]+)</span>',
                 r'data-brand=\"([^\"]+)\"'

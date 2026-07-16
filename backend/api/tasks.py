@@ -16,6 +16,7 @@ from .autopiter_parser import (
     load_proxies_from_file,
     log_debug,
     filter_armtek_brands,
+    reset_armtek_selenium_state,
     PROXY_LIST,
 )
 import re
@@ -1167,6 +1168,7 @@ def process_parsing_task(self, task_id):
         def parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b, row_index: int):
             """Armtek (Selenium) — последовательно по артикулам, но один раз на строку."""
             results = []
+            reset_armtek_selenium_state()
             log(f"Armtek: начало обработки {len(numbers)} артикулов для строки {row_index + 1}")
 
             def parse_one_armtek(num):
