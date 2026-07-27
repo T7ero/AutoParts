@@ -12,7 +12,7 @@ from rest_framework import status
 from core.models import ParsingTask
 from .serializers import ParsingTaskSerializer
 from .tasks import process_parsing_task, mark_parsing_task_cancelled
-from .autopiter_parser import load_proxies_from_file, get_next_proxy
+from .autopiter_parser import load_proxies_from_file, get_next_proxy, get_proxies_file_path
 from .permissions import user_can_access_task
 
 
@@ -121,11 +121,13 @@ def upload_proxies(request):
         if not file.name.endswith('.txt'):
             return Response({'error': 'Поддерживаются только файлы .txt'}, status=status.HTTP_400_BAD_REQUEST)
 
-        with open('proxies.txt', 'wb') as f:
+        proxies_path = get_proxies_file_path()
+        os.makedirs(os.path.dirname(proxies_path), exist_ok=True)
+        with open(proxies_path, 'wb') as f:
             for chunk in file.chunks():
                 f.write(chunk)
 
-        load_proxies_from_file()
+        load_proxies_from_file(proxies_path)
         return Response({'message': 'Прокси успешно загружены'}, status=status.HTTP_200_OK)
 
     except Exception as e:

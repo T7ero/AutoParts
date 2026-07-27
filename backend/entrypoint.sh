@@ -6,8 +6,10 @@ if [ "$(id -u)" = "0" ]; then
     # Запускаем подготовку от root
     echo "🔧 Настройка прав доступа..."
     mkdir -p /app/media/uploads /app/media/results /app/media/temp /app/static
+    touch /app/media/temp/proxies.txt
     chown -R appuser:appuser /app/media
     chmod -R 775 /app/media
+    chmod 664 /app/media/temp/proxies.txt
 
     # Подготавливаем сокетную директорию X11 для Xvfb (иначе под appuser будет euid != 0)
     mkdir -p /tmp/.X11-unix

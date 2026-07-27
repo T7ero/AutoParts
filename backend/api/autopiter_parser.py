@@ -554,16 +554,35 @@ def cleanup_driver_pool():
         DRIVER_LAST_USED.clear()
     cleanup_chrome_processes()
 
-def load_proxies_from_file(file_path: str = "proxies.txt") -> List[str]:
+def get_proxies_file_path() -> str:
+	"""Путь к файлу прокси в writable media/temp (не /app/proxies.txt на volume mount)."""
+	backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+	return os.path.join(backend_dir, 'media', 'temp', 'proxies.txt')
+
+
+def _resolve_proxies_file_path(file_path: Optional[str] = None) -> str:
+	if file_path:
+		return file_path
+	primary = get_proxies_file_path()
+	if os.path.exists(primary):
+		return primary
+	legacy = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'proxies.txt')
+	if os.path.exists(legacy):
+		return legacy
+	return primary
+
+
+def load_proxies_from_file(file_path: Optional[str] = None) -> List[str]:
     """Загружает список прокси из файла"""
     global PROXY_LIST
+    resolved_path = _resolve_proxies_file_path(file_path)
     try:
-        if os.path.exists(file_path):
-            with open(file_path, 'r', encoding='utf-8') as f:
+        if os.path.exists(resolved_path):
+            with open(resolved_path, 'r', encoding='utf-8') as f:
                 PROXY_LIST = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
             log_debug(f"Загружено {len(PROXY_LIST)} прокси")
         else:
-            log_debug(f"Файл прокси {file_path} не найден")
+            log_debug(f"Файл прокси {resolved_path} не найден")
     except Exception as e:
         log_debug(f"Ошибка загрузки прокси: {e}")
     return PROXY_LIST
@@ -1733,49 +1752,10 @@ def _armtek_parse_results_sections(driver) -> Dict[str, object]:
 	try:
 		raw = driver.execute_script(
 			"""
+			const brandSelector = arguments[0];
 			const root = document.querySelector('.results-list__items');
 			if (!root) {
 				return {hasTarget: false, hasReplacements: false, onlyReplacements: false, brands: []};
-			}
-			const headers = [...root.querySelectorAll('div.results-list__divider p.font__headline6')];
-			let targetHeader = null;
-			let replHeader = null;
-			for (const h of headers) {
-				const t = (h.textContent || '').trim().toLowerCase();
-				if (t.includes('искомый товар')) targetHeader = h;
-				if (t.includes('возможные замены')) replHeader = h;
-			}
-			const hasTarget = !!targetHeader;
-			const hasReplacements = !!replHeader;
-			if (!hasTarget) {
-				const brands = [];
-				const cardSelectors = [
-					'app-article-card-tile',
-					'project-ui-article-card',
-					'project-ui-article-card-with-suggestions',
-				];
-				for (const cardSel of cardSelectors) {
-					for (const card of root.querySelectorAll(cardSel)) {
-						for (const span of card.querySelectorAll(
-							'` + _ARMTEK_BRAND_SPAN_SELECTOR.replace("'", "\\'") + `'
-						)) {
-							const text = (span.textContent || '').trim();
-							if (isBrandText(text)) brands.push(text);
-						}
-					}
-				}
-				for (const span of root.querySelectorAll(
-					'div.item.item-mobile span.brand--selecting, div.item.item-mobile span.brand--selectable'
-				)) {
-					const text = (span.textContent || '').trim();
-					if (isBrandText(text)) brands.push(text);
-				}
-				return {
-					hasTarget: false,
-					hasReplacements,
-					onlyReplacements: hasReplacements && brands.length === 0,
-					brands: [...new Set(brands)],
-				};
 			}
 			const garbage = new Set([
 				'гараж','подбор','выбор','корзина','каталог','поиск','войти','главная',
@@ -1788,11 +1768,11 @@ def _armtek_parse_results_sections(driver) -> Dict[str, object]:
 				if (t.length < 2 || t.length > 50) return false;
 				const low = t.toLowerCase();
 				if (garbage.has(low)) return false;
-				if (/^\d+$/.test(t)) return false;
-				if (/^[\d\s\-./]+$/.test(t)) return false;
-				const digits = (t.match(/\d/g) || []).length;
+				if (/^\\d+$/.test(t)) return false;
+				if (/^[\\d\\s\\-./]+$/.test(t)) return false;
+				const digits = (t.match(/\\d/g) || []).length;
 				if (digits >= 3 && digits / t.length > 0.55) return false;
-				if (/^\d/.test(t) && t.length > 4) return false;
+				if (/^\\d/.test(t) && t.length > 4) return false;
 				return true;
 			}
 			function isBetween(el, start, end) {
@@ -1800,30 +1780,63 @@ def _armtek_parse_results_sections(driver) -> Dict[str, object]:
 				if (end && !(end.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING)) return false;
 				return true;
 			}
-			const brands = [];
-			const cardSelectors = [
-				'app-article-card-tile',
-				'project-ui-article-card',
-				'project-ui-article-card-with-suggestions',
-			];
-			for (const cardSel of cardSelectors) {
-				for (const card of root.querySelectorAll(cardSel)) {
-					if (!isBetween(card, targetHeader, replHeader)) continue;
-					for (const span of card.querySelectorAll(
-						'` + _ARMTEK_BRAND_SPAN_SELECTOR.replace("'", "\\'") + `'
-					)) {
-						const text = (span.textContent || '').trim();
-						if (isBrandText(text)) brands.push(text);
+			function collectBrands(container, start, end) {
+				const brands = [];
+				const cardSelectors = [
+					'app-article-card-tile',
+					'project-ui-article-card',
+					'project-ui-article-card-with-suggestions',
+				];
+				for (const cardSel of cardSelectors) {
+					for (const card of container.querySelectorAll(cardSel)) {
+						if (start !== null || end !== null) {
+							if (!isBetween(card, start, end)) continue;
+						}
+						for (const span of card.querySelectorAll(brandSelector)) {
+							const text = (span.textContent || '').trim();
+							if (isBrandText(text)) brands.push(text);
+						}
 					}
 				}
+				for (const span of container.querySelectorAll(
+					'div.item.item-mobile span.brand--selecting, div.item.item-mobile span.brand--selectable'
+				)) {
+					if (start !== null || end !== null) {
+						if (!isBetween(span, start, end)) continue;
+					}
+					const text = (span.textContent || '').trim();
+					if (isBrandText(text)) brands.push(text);
+				}
+				return brands;
 			}
+			const headers = [...root.querySelectorAll('div.results-list__divider p.font__headline6')];
+			let targetHeader = null;
+			let replHeader = null;
+			for (const h of headers) {
+				const t = (h.textContent || '').trim().toLowerCase();
+				if (t.includes('искомый товар')) targetHeader = h;
+				if (t.includes('возможные замены')) replHeader = h;
+			}
+			const hasTarget = !!targetHeader;
+			const hasReplacements = !!replHeader;
+			if (!hasTarget) {
+				const brands = collectBrands(root, null, null);
+				return {
+					hasTarget: false,
+					hasReplacements,
+					onlyReplacements: hasReplacements && brands.length === 0,
+					brands: [...new Set(brands)],
+				};
+			}
+			const brands = collectBrands(root, targetHeader, replHeader);
 			return {
 				hasTarget: true,
 				hasReplacements,
 				onlyReplacements: false,
 				brands: [...new Set(brands)],
 			};
-			"""
+			""",
+			_ARMTEK_BRAND_SPAN_SELECTOR,
 		)
 		if not isinstance(raw, dict):
 			return default
