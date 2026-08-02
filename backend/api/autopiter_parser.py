@@ -587,6 +587,71 @@ def load_proxies_from_file(file_path: Optional[str] = None) -> List[str]:
         log_debug(f"Ошибка загрузки прокси: {e}")
     return PROXY_LIST
 
+
+def _looks_like_host_port(part: str) -> bool:
+	"""True, если строка похожа на host:port (порт — число)."""
+	if ':' not in part:
+		return False
+	host, port = part.rsplit(':', 1)
+	if not port.isdigit():
+		return False
+	if re.fullmatch(r'\d{1,3}(\.\d{1,3}){3}', host):
+		return True
+	return '.' in host
+
+
+def parse_proxy_line(proxy_str: str) -> Optional[Dict[str, str]]:
+	"""Парсит строку прокси в dict для requests.
+
+	Поддерживаемые форматы:
+	- ip:port@login:password (формат загрузки в UI)
+	- login:password@ip:port (стандартный URL-формат)
+	- ip:port
+	"""
+	proxy_str = (proxy_str or '').strip()
+	if not proxy_str or proxy_str.startswith('#'):
+		return None
+
+	if '@' not in proxy_str:
+		try:
+			host, port = proxy_str.rsplit(':', 1)
+			url = f'http://{host}:{port}'
+			return {'http': url, 'https': url}
+		except ValueError:
+			return None
+
+	left, right = proxy_str.split('@', 1)
+	if _looks_like_host_port(left):
+		host, port = left.rsplit(':', 1)
+		if ':' not in right:
+			return None
+		login, password = right.split(':', 1)
+	elif _looks_like_host_port(right):
+		if ':' not in left:
+			return None
+		login, password = left.split(':', 1)
+		host, port = right.rsplit(':', 1)
+	else:
+		try:
+			host, port = left.rsplit(':', 1)
+			login, password = right.split(':', 1)
+		except ValueError:
+			return None
+
+	url = f'http://{login}:{password}@{host}:{port}'
+	return {'http': url, 'https': url}
+
+
+def _proxy_url_to_host_port(proxy_url: str) -> str:
+	"""host:port из http://login:pass@host:port для логов."""
+	value = proxy_url
+	if value.startswith('http://'):
+		value = value[7:]
+	if '@' in value:
+		value = value.split('@', 1)[1]
+	return value
+
+
 def get_next_proxy() -> Optional[Dict[str, str]]:
     """Возвращает следующий прокси из списка с улучшенной обработкой и исключением проблемных"""
     global PROXY_INDEX, PROXY_LIST, BAD_PROXIES
@@ -608,25 +673,11 @@ def get_next_proxy() -> Optional[Dict[str, str]]:
             continue
 
         try:
-            # Формат: ip:port@login:password
-            if '@' in proxy_str:
-                auth_part, proxy_part = proxy_str.split('@')
-                login, password = auth_part.split(':')
-                ip, port = proxy_part.split(':')
+            proxy_dict = parse_proxy_line(proxy_str)
+            if not proxy_dict:
+                raise ValueError(f'не удалось распознать формат: {proxy_str}')
 
-                proxy_dict = {
-                    'http': f'http://{login}:{password}@{ip}:{port}',
-                    'https': f'http://{login}:{password}@{ip}:{port}'
-                }
-            else:
-                # Формат: ip:port
-                ip, port = proxy_str.split(':')
-                proxy_dict = {
-                    'http': f'http://{ip}:{port}',
-                    'https': f'http://{ip}:{port}'
-                }
-
-            log_debug(f"Используется прокси: {ip}:{port}")
+            log_debug(f"Используется прокси: {_proxy_url_to_host_port(proxy_dict['http'])}")
             return proxy_dict
         except Exception as e:
             log_debug(f"Ошибка парсинга прокси {proxy_str}: {e}")
@@ -761,30 +812,22 @@ def make_request(
             session.proxies.update(proxy)
             log_debug("Используется словарь прокси")
         else:
-            # Проверяем формат прокси-строки
-            if '@' in proxy:
-                # Формат: login:password@ip:port
-                auth_part, proxy_part = proxy.split('@', 1)
-                if ':' in auth_part:
-                    username, password = auth_part.split(':', 1)
-                    proxy_dict = {
-                        'http': f'http://{username}:{password}@{proxy_part}',
-                        'https': f'http://{username}:{password}@{proxy_part}'
-                    }
-                    log_debug(f"Используется прокси с аутентификацией: {username}:***@{proxy_part}")
-                else:
-                    proxy_dict = {
-                        'http': f'http://{proxy}',
-                        'https': f'http://{proxy}'
-                    }
-                    log_debug(f"Используется прокси без аутентификации: {proxy}")
+            proxy_value = proxy.strip()
+            if proxy_value.startswith('http://'):
+                proxy_value = proxy_value[7:]
+            elif proxy_value.startswith('https://'):
+                proxy_value = proxy_value[8:]
+            proxy_dict = parse_proxy_line(proxy_value)
+            if proxy_dict:
+                session.proxies.update(proxy_dict)
+                log_debug(f"Используется прокси: {_proxy_url_to_host_port(proxy_dict['http'])}")
             else:
                 proxy_dict = {
-                    'http': f'http://{proxy}',
-                    'https': f'http://{proxy}'
+                    'http': f'http://{proxy_value}',
+                    'https': f'http://{proxy_value}',
                 }
-                log_debug(f"Используется прокси: {proxy}")
-            session.proxies.update(proxy_dict)
+                session.proxies.update(proxy_dict)
+                log_debug(f"Используется прокси: {proxy_value}")
     
     # Настройка заголовков — используем «современные» заголовки из HEADERS
     session.headers.update(HEADERS)
@@ -2316,22 +2359,26 @@ def _create_chrome_driver_robust(temp_dir: Optional[str] = None, proxy: Optional
 
                 # Настройка прокси
                 if proxy:
-                    if '@' in proxy:
-                        # Формат: login:password@ip:port
-                        auth_part, proxy_part = proxy.split('@', 1)
+                    proxy_value = proxy
+                    if isinstance(proxy_value, str):
+                        if proxy_value.startswith('http://'):
+                            proxy_value = proxy_value[7:]
+                        elif proxy_value.startswith('https://'):
+                            proxy_value = proxy_value[8:]
+                        parsed = parse_proxy_line(proxy_value)
+                        if parsed:
+                            proxy_value = parsed['http'][7:]
+                    if '@' in str(proxy_value):
+                        auth_part, proxy_part = str(proxy_value).split('@', 1)
                         if ':' in auth_part:
-                            username, password = auth_part.split(':', 1)
-                            # Для Chrome с аутентификацией прокси используем расширение
                             chrome_options.add_argument(f'--proxy-server={proxy_part}')
-                            # Добавляем расширение для аутентификации прокси
                             chrome_options.add_argument('--load-extension=/tmp/proxy-auth-extension')
                         else:
-                            chrome_options.add_argument(f'--proxy-server={proxy}')
+                            chrome_options.add_argument(f'--proxy-server={proxy_value}')
                     else:
-                        # Формат: ip:port
-                        chrome_options.add_argument(f'--proxy-server={proxy}')
+                        chrome_options.add_argument(f'--proxy-server={proxy_value}')
 
-                    log_debug(f"Armtek Selenium: добавлен прокси {proxy}")
+                    log_debug(f"Armtek Selenium: добавлен прокси {_proxy_url_to_host_port(str(proxy_value)) if '@' in str(proxy_value) else proxy_value}")
 
                 # Дополнительные опции для стабильности и производительности
                 chrome_options.add_argument('--disable-extensions')
@@ -2418,22 +2465,26 @@ def _create_chrome_driver_minimal(temp_dir: str, proxy: Optional[str] = None):
         
         # Настройка прокси
         if proxy:
-            if '@' in proxy:
-                # Формат: login:password@ip:port
-                auth_part, proxy_part = proxy.split('@', 1)
+            proxy_value = proxy
+            if isinstance(proxy_value, str):
+                if proxy_value.startswith('http://'):
+                    proxy_value = proxy_value[7:]
+                elif proxy_value.startswith('https://'):
+                    proxy_value = proxy_value[8:]
+                parsed = parse_proxy_line(proxy_value)
+                if parsed:
+                    proxy_value = parsed['http'][7:]
+            if '@' in str(proxy_value):
+                auth_part, proxy_part = str(proxy_value).split('@', 1)
                 if ':' in auth_part:
-                    username, password = auth_part.split(':', 1)
-                    # Для Chrome с аутентификацией прокси используем расширение
                     chrome_options.add_argument(f'--proxy-server={proxy_part}')
-                    # Добавляем расширение для аутентификации прокси
                     chrome_options.add_argument('--load-extension=/tmp/proxy-auth-extension')
                 else:
-                    chrome_options.add_argument(f'--proxy-server={proxy}')
+                    chrome_options.add_argument(f'--proxy-server={proxy_value}')
             else:
-                # Формат: ip:port
-                chrome_options.add_argument(f'--proxy-server={proxy}')
-            
-            log_debug(f"Armtek Selenium: добавлен прокси {proxy}")
+                chrome_options.add_argument(f'--proxy-server={proxy_value}')
+
+            log_debug(f"Armtek Selenium: добавлен прокси {_proxy_url_to_host_port(str(proxy_value)) if '@' in str(proxy_value) else proxy_value}")
         
         service = Service()
         driver = webdriver.Chrome(service=service, options=chrome_options)
@@ -2740,18 +2791,24 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
         proxies = None
         if proxy:
             try:
-                # Если proxy - это строка, преобразуем в словарь
-                if isinstance(proxy, str):
-                    if proxy.startswith('http://'):
-                        proxy = proxy[7:]  # Убираем 'http://'
-                    proxies = {
-                        'http': f'http://{proxy}',
-                        'https': f'http://{proxy}'
-                    }
-                else:
+                if isinstance(proxy, dict):
                     proxies = proxy
-                session.proxies.update(proxies)
-                log_debug(f"Emex: использование прокси {proxy}")
+                    session.proxies.update(proxies)
+                    log_debug(f"Emex: использование прокси {_proxy_url_to_host_port(proxies.get('http', ''))}")
+                elif isinstance(proxy, str):
+                    proxy_value = proxy.strip()
+                    if proxy_value.startswith('http://'):
+                        proxy_value = proxy_value[7:]
+                    elif proxy_value.startswith('https://'):
+                        proxy_value = proxy_value[8:]
+                    proxies = parse_proxy_line(proxy_value)
+                    if not proxies:
+                        proxies = {
+                            'http': f'http://{proxy_value}',
+                            'https': f'http://{proxy_value}',
+                        }
+                    session.proxies.update(proxies)
+                    log_debug(f"Emex: использование прокси {_proxy_url_to_host_port(proxies.get('http', ''))}")
             except Exception as e:
                 log_debug(f"Emex: ошибка настройки прокси {proxy}: {str(e)}")
         else:
