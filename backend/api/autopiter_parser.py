@@ -2,7 +2,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from bs4 import BeautifulSoup
 import re
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 import time
 import json
 from selenium import webdriver
@@ -669,7 +669,7 @@ def get_next_proxy() -> Optional[Dict[str, str]]:
         PROXY_INDEX += 1
         attempts += 1
 
-        if proxy_str in BAD_PROXIES:
+        if _proxy_is_bad(proxy_str):
             continue
 
         try:
@@ -687,15 +687,38 @@ def get_next_proxy() -> Optional[Dict[str, str]]:
     log_debug("Нет доступных рабочих прокси (все помечены проблемными)")
     return None
 
+def _proxy_is_bad(proxy_line: str, proxy_dict: Optional[Dict[str, str]] = None) -> bool:
+	"""Проверяет, помечен ли прокси как проблемный (по строке файла или host:port)."""
+	if proxy_line in BAD_PROXIES:
+		return True
+	if proxy_dict:
+		host_port = _proxy_url_to_host_port(proxy_dict.get('http', ''))
+		if host_port and host_port in BAD_PROXIES:
+			return True
+	parsed = parse_proxy_line(proxy_line)
+	if parsed:
+		host_port = _proxy_url_to_host_port(parsed.get('http', ''))
+		if host_port and host_port in BAD_PROXIES:
+			return True
+	return False
+
+
 def mark_proxy_bad(proxy_repr: str) -> None:
     """Помечает прокси как проблемный, чтобы временно его не использовать"""
     try:
         if proxy_repr.startswith('http://'):
             proxy_repr = proxy_repr[7:]
+        elif proxy_repr.startswith('https://'):
+            proxy_repr = proxy_repr[8:]
     except Exception:
         pass
+    if not proxy_repr:
+        return
     BAD_PROXIES.add(proxy_repr)
-    log_debug(f"Прокси помечен как проблемный: {proxy_repr}")
+    host_port = _proxy_url_to_host_port(proxy_repr)
+    if host_port:
+        BAD_PROXIES.add(host_port)
+    log_debug(f"Прокси помечен как проблемный: {host_port or proxy_repr}")
 
 def get_proxy_string() -> Optional[str]:
     """Возвращает строку прокси для использования в парсерах"""
@@ -2721,6 +2744,61 @@ def _split_comma_separated_brands(brand_str: str) -> List[str]:
     return [part for part in parts if part]
 
 
+def _emex_apply_xsrf(session) -> None:
+	"""XSRF-TOKEN в cookie URL-encoded; в заголовок нужно декодированное значение."""
+	xsrf_token = (
+		session.cookies.get("XSRF-TOKEN")
+		or session.cookies.get("xsrf-token")
+		or session.cookies.get("X_XSRF_TOKEN")
+		or session.cookies.get("csrf-token")
+	)
+	if xsrf_token:
+		session.headers["X-XSRF-TOKEN"] = unquote(xsrf_token)
+
+
+def _emex_warmup_session(session, artikul: str, proxies=None) -> None:
+	"""Прогрев: главная + страница поиска (cookies для API)."""
+	encoded_artikul = quote(artikul)
+	search_url = f"https://emex.ru/search?detailNum={encoded_artikul}"
+	try:
+		session.get("https://emex.ru/", timeout=6, proxies=proxies)
+	except Exception as e:
+		log_debug(f"Emex: ошибка прогрева главной: {e}")
+	try:
+		session.get(search_url, timeout=8, proxies=proxies)
+	except Exception as e:
+		log_debug(f"Emex: ошибка прогрева search: {e}")
+	for name, val in (("regionId", "263"), ("locationId", "263")):
+		if not session.cookies.get(name):
+			try:
+				session.cookies.set(name, val, domain="emex.ru")
+			except Exception:
+				pass
+	_emex_apply_xsrf(session)
+
+
+def _emex_extract_brands_from_json(data: object) -> List[str]:
+	brands: Set[str] = set()
+	if not isinstance(data, dict):
+		return []
+	search_result = data.get("searchResult", {})
+	if not isinstance(search_result, dict):
+		return []
+	makes = search_result.get("makes", {})
+	if isinstance(makes, dict):
+		for item in makes.get("list", []) or []:
+			if isinstance(item, dict):
+				brand = item.get("make")
+				if brand and str(brand).strip():
+					for split_brand in _split_comma_separated_brands(str(brand).strip()):
+						brands.add(split_brand)
+	sr_make = search_result.get("make")
+	if isinstance(sr_make, str) and sr_make.strip():
+		for split_brand in _split_comma_separated_brands(sr_make.strip()):
+			brands.add(split_brand)
+	return sorted(brands)
+
+
 def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> List[str]:
     """Получает бренды с Emex по артикулу.
     
@@ -2823,31 +2901,9 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             except Exception as e:
                 log_debug(f"Emex: ошибка получения прокси: {str(e)}")
         
-        # Устанавливаем куки
-        try:
-            session.cookies.set("regionId", "263", domain="emex.ru")
-            session.cookies.set("locationId", "263", domain="emex.ru")
-        except Exception:
-            pass
-        
-        # Короткий прогрев (раньше +0.5 с на каждый артикул сильно замедляло парсинг)
-        try:
-            log_debug(f"Emex: прогрев сессии с прокси: {proxies is not None}")
-            session.get("https://emex.ru/", timeout=4, proxies=proxies)
-            time.sleep(0.05)
-        except Exception as e:
-            log_debug(f"Emex: ошибка прогрева сессии: {str(e)}")
-            pass
-        
-        # Получаем XSRF токен
-        xsrf_token = (
-            session.cookies.get("XSRF-TOKEN")
-            or session.cookies.get("xsrf-token")
-            or session.cookies.get("X_XSRF_TOKEN")
-            or session.cookies.get("csrf-token")
-        )
-        if xsrf_token:
-            session.headers.update({"X-XSRF-TOKEN": xsrf_token})
+        # Устанавливаем куки и прогреваем сессию
+        _emex_warmup_session(session, artikul, proxies)
+        direct_fallback_used = False
 
         # Основные попытки с разными параметрами (сокращенный список)
         api_variants = [
@@ -2907,38 +2963,12 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                                 if 'application/json' in content_type:
                                     try:
                                         data = response.json()
-                                        brands = set()
-                                        
-                                        # Обработка структуры ответа Emex
-                                        search_result = data.get("searchResult", {})
-                                        if search_result:
-                                            # Проверяем makes - основной источник брендов
-                                            makes = search_result.get("makes", {})
-                                            if makes:
-                                                makes_list = makes.get("list", [])
-                                                for item in makes_list:
-                                                    if isinstance(item, dict):
-                                                        brand = item.get("make")
-                                                        if brand and brand.strip():
-                                                            # Разбиваем бренды с запятыми на отдельные
-                                                            split_brands = _split_comma_separated_brands(brand.strip())
-                                                            for split_brand in split_brands:
-                                                                brands.add(split_brand)
-                                                                log_debug(f"Emex API: добавлен бренд '{split_brand}' для {artikul} (из '{brand}')")
-                                            
-                                            # Дополнительно берем бренд из searchResult.make
-                                            sr_make = search_result.get("make")
-                                            if isinstance(sr_make, str) and sr_make.strip():
-                                                # Разбиваем бренды с запятыми на отдельные
-                                                split_brands = _split_comma_separated_brands(sr_make.strip())
-                                                for split_brand in split_brands:
-                                                    brands.add(split_brand)
-                                                    log_debug(f"Emex API: добавлен бренд из searchResult.make '{split_brand}' для {artikul} (из '{sr_make}')")
-                                        
-                                        if brands:
-                                            log_debug(f"Emex API: найдено {len(brands)} брендов для {artikul}")
-                                            return sorted(list(brands))
-                                        
+                                        brands_list = _emex_extract_brands_from_json(data)
+                                        if brands_list:
+                                            global EMEX_SELENIUM_FAILURES
+                                            EMEX_SELENIUM_FAILURES = 0
+                                            log_debug(f"Emex API: найдено {len(brands_list)} брендов для {artikul}")
+                                            return brands_list
                                     except json.JSONDecodeError as e:
                                         log_debug(f"Emex API: ошибка JSON для {artikul}: {str(e)}")
                                         continue
@@ -2947,19 +2977,16 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                                 log_debug(f"Emex API: Rate limit для {artikul}, пропускаем")
                                 break  # Выходим из цикла при rate limit
                             elif response.status_code == 403:  # Forbidden
-                                log_debug(f"Emex API: 403 Forbidden для {artikul}, помечаем прокси как проблемный и пробуем следующий")
-                                try:
-                                    # Помечаем текущий прокси как плохой
-                                    current_http = session.proxies.get('http') or ''
-                                    if current_http:
-                                        mark_proxy_bad(current_http)
-                                except Exception:
-                                    pass
-                                # Меняем прокси
-                                new_proxy = get_next_proxy()
-                                if new_proxy:
-                                    session.proxies.update(new_proxy)
-                                break  # Переходим к следующей конфигурации
+                                log_debug(f"Emex API: 403 Forbidden для {artikul}")
+                                # Emex часто блокирует datacenter-прокси, но прямой IP сервера может работать
+                                if proxies is not None and not direct_fallback_used:
+                                    log_debug("Emex API: 403 через прокси, пробуем прямое соединение без прокси")
+                                    session.proxies.clear()
+                                    proxies = None
+                                    direct_fallback_used = True
+                                    _emex_warmup_session(session, artikul, None)
+                                    continue
+                                break
                             
                         except requests.exceptions.Timeout as e:
                             total_attempts += 1
@@ -3035,7 +3062,6 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             return []
 
         try:
-            # Легкий парсинг страницы поиска: бренды часто присутствуют в блоке фильтров/подсказок
             from selenium.webdriver.common.by import By as _By
             brands = set()
             opts = Options()
@@ -3043,33 +3069,61 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
             opts.add_argument('--no-sandbox')
             opts.add_argument('--disable-dev-shm-usage')
             opts.add_argument('--blink-settings=imagesEnabled=false')
+            opts.add_argument('--disable-blink-features=AutomationControlled')
             tmp_dir = tempfile.mkdtemp(prefix=f"chrome_emex_{uuid.uuid4().hex[:8]}_")
             opts.add_argument(f'--user-data-dir={tmp_dir}')
             drv = webdriver.Chrome(options=opts)
             _set_selenium_remote_command_timeout(drv, _selenium_remote_http_timeout_seconds())
-            drv.set_page_load_timeout(15)
+            drv.set_page_load_timeout(20)
             try:
                 search_url = f"https://emex.ru/search?detailNum={quote(artikul)}"
                 drv.get(search_url)
-                WebDriverWait(drv, 10).until(lambda d: d.execute_script('return document.readyState') == 'complete')
-                # Ищем бренды в фильтрах или в блоке makes
-                possible_selectors = [
-                    'div.makes-list span',
-                    '[data-qa="makes-filter"] span',
-                    'div[data-qa="brand-name"]',
-                ]
-                for sel in possible_selectors:
-                    try:
-                        elems = drv.find_elements(_By.CSS_SELECTOR, sel)
-                        for el in elems:
-                            txt = el.text.strip()
-                            if txt and len(txt) > 1 and not txt.isdigit():
-                                # Разбиваем бренды с запятыми на отдельные
-                                split_brands = _split_comma_separated_brands(txt)
-                                for split_brand in split_brands:
-                                    brands.add(split_brand)
-                    except Exception:
-                        continue
+                WebDriverWait(drv, 12).until(lambda d: d.execute_script('return document.readyState') == 'complete')
+                time.sleep(1.5)
+                api_url = (
+                    f"https://emex.ru/api/search/search?detailNum={quote(artikul)}"
+                    "&locationId=263&showAll=false&isHeaderSearch=true"
+                )
+                try:
+                    raw = drv.execute_async_script(
+                        """
+                        const url = arguments[0];
+                        const cb = arguments[arguments.length - 1];
+                        fetch(url, {
+                            credentials: 'include',
+                            headers: {
+                                'Accept': 'application/json, text/plain, */*',
+                                'X-Requested-With': 'XMLHttpRequest',
+                            },
+                        })
+                            .then(r => r.json())
+                            .then(d => cb(d))
+                            .catch(() => cb(null));
+                        """,
+                        api_url,
+                    )
+                    for brand in _emex_extract_brands_from_json(raw):
+                        brands.add(brand)
+                except Exception as e:
+                    log_debug(f"Emex Selenium fetch API: {e}")
+                if not brands:
+                    possible_selectors = [
+                        'div.makes-list span',
+                        '[data-qa="makes-filter"] span',
+                        'div[data-qa="brand-name"]',
+                        '[class*="MakeFilter"] span',
+                        '[class*="make"] span',
+                    ]
+                    for sel in possible_selectors:
+                        try:
+                            elems = drv.find_elements(_By.CSS_SELECTOR, sel)
+                            for el in elems:
+                                txt = el.text.strip()
+                                if txt and len(txt) > 1 and not txt.isdigit():
+                                    for split_brand in _split_comma_separated_brands(txt):
+                                        brands.add(split_brand)
+                        except Exception:
+                            continue
             finally:
                 try:
                     drv.quit()
@@ -3081,6 +3135,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                 except Exception:
                     pass
             if brands:
+                EMEX_SELENIUM_FAILURES = 0
                 log_debug(f"Emex Selenium fallback: найдено {len(brands)} брендов для {artikul}")
                 return sorted(list(brands))
         except Exception as _e:
