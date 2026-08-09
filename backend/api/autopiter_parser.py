@@ -102,6 +102,17 @@ def reset_armtek_selenium_state() -> None:
 	ARMTEK_SELENIUM_DISABLED = False
 
 
+def reset_emex_parser_state() -> None:
+	"""Сброс глобального состояния Emex между задачами Celery (воркер живёт долго)."""
+	global EMEX_SELENIUM_FAILURES, EMEX_SELENIUM_DISABLED
+	EMEX_SELENIUM_FAILURES = 0
+	EMEX_SELENIUM_DISABLED = False
+
+
+def _emex_use_proxy_enabled() -> bool:
+	return os.getenv('EMEX_USE_PROXY', '0').strip().lower() in ('1', 'true', 'yes')
+
+
 def _note_armtek_selenium_driver_failure() -> None:
 	global ARMTEK_SELENIUM_FAILURES, ARMTEK_SELENIUM_DISABLED
 	ARMTEK_SELENIUM_FAILURES += 1
@@ -2809,6 +2820,9 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
     """
     global EMEX_SELENIUM_FAILURES, EMEX_SELENIUM_DISABLED
     try:
+        if not _emex_use_proxy_enabled():
+            proxy = None
+
         encoded_artikul = quote(artikul)
         
         # Ротация User-Agent для обхода блокировок
@@ -2889,17 +2903,19 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                     log_debug(f"Emex: использование прокси {_proxy_url_to_host_port(proxies.get('http', ''))}")
             except Exception as e:
                 log_debug(f"Emex: ошибка настройки прокси {proxy}: {str(e)}")
-        else:
-            # Если прокси не передан, получаем его автоматически
+        elif _emex_use_proxy_enabled():
             try:
                 proxy_dict = get_next_proxy()
                 if proxy_dict:
                     session.proxies.update(proxy_dict)
+                    proxies = proxy_dict
                     log_debug(f"Emex: автоматически получен прокси")
                 else:
                     log_debug(f"Emex: прокси недоступен, пробуем без прокси")
             except Exception as e:
                 log_debug(f"Emex: ошибка получения прокси: {str(e)}")
+        else:
+            log_debug("Emex: прямое соединение без прокси (EMEX_USE_PROXY=0)")
         
         # Устанавливаем куки и прогреваем сессию
         _emex_warmup_session(session, artikul, proxies)
@@ -2914,7 +2930,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
         # Счетчик попыток и общий лимит времени на один артикул,
         # чтобы избежать многоминутных зависаний при недоступном Emex.
         total_attempts = 0
-        max_total_attempts = 3
+        max_total_attempts = 5
         api_start_ts = time.time()
         max_api_time_seconds = 25
         
@@ -2978,12 +2994,12 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
                                 break  # Выходим из цикла при rate limit
                             elif response.status_code == 403:  # Forbidden
                                 log_debug(f"Emex API: 403 Forbidden для {artikul}")
-                                # Emex часто блокирует datacenter-прокси, но прямой IP сервера может работать
                                 if proxies is not None and not direct_fallback_used:
                                     log_debug("Emex API: 403 через прокси, пробуем прямое соединение без прокси")
                                     session.proxies.clear()
                                     proxies = None
                                     direct_fallback_used = True
+                                    total_attempts = max(0, total_attempts - 1)
                                     _emex_warmup_session(session, artikul, None)
                                     continue
                                 break
