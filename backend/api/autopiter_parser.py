@@ -1249,27 +1249,8 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
     
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
-        brand_exclude_tokens = [
-            'сверла', 'свечи', 'автошина', 'заклепка', 'игла',
-            'лейка', 'лента', 'помпа', 'поплавок', 'ремень',
-            'фильтр', 'хомут', 'шина', 'щетка', 'кольцо',
-            'комплект', 'костюм', 'стартер', 'шайба', 'деталь',
-            'накладка', 'тормозная', 'задняя', 'колесо',
-            'производители', 'часто ищут', 'рекомендуем', 'сверла техмаш',
-            'тестовый', 'клиента', 'без артикула', 'оригинальная',
-            'дизель', 'дизеля', 'дизельный', 'diesel', 'diesel part', 'diesel part:',
-            'запчасть', 'китай', 'россия', 'россий', 'китайск',
-            'производитель', 'бренд', 'артикул', 'номер', 'код',
-            'наименование', 'название', 'описание',
-            # Слова из описаний товаров, которые не должны быть брендами
-            'между', 'металл', 'накала', 'накаливания', 'накаткой',
-            'муфта', 'муфтой', 'рулевой', 'колонки', 'набор', 'бит', 'сталь',
-            'насос', 'гур', 'передней', 'рессоры', 'задне', 'задней', 'задни',
-            'втулка', 'кронштейн', 'осью', 'lh', 'rh', 'левая', 'правая',
-            'передняя', 'задняя', 'верхняя', 'нижняя', 'боковая',
-            'сцепления', 'диск', 'вала', 'карданный', 'подвесн',
-            'свеча', 'накаливания', 'накала'
-        ]
+        from .brand_config import get_autopiter_blacklist
+        brand_exclude_tokens = list(get_autopiter_blacklist())
 
         # Чтобы не спамить одинаковыми debug-строками для одного бренда
         # (основной селектор + fallback-селекторы), логируем каждую пару
@@ -1797,13 +1778,18 @@ _ARMTEK_UI_GARBAGE = frozenset({
 })
 
 
+def _get_armtek_ui_garbage() -> frozenset:
+	from .brand_config import get_armtek_ui_garbage
+	return get_armtek_ui_garbage()
+
+
 def _armtek_brand_text_is_valid(text: str) -> bool:
 	"""Проверка, что строка похожа на бренд, а не на UI/артикул."""
 	brand = (text or '').strip()
 	if not brand or len(brand) < 2 or len(brand) > 50:
 		return False
 	low = brand.lower()
-	if low in _ARMTEK_UI_GARBAGE:
+	if low in _get_armtek_ui_garbage():
 		return False
 	if brand.isdigit():
 		return False
@@ -1830,15 +1816,12 @@ def _armtek_parse_results_sections(driver) -> Dict[str, object]:
 		raw = driver.execute_script(
 			"""
 			const brandSelector = arguments[0];
+			const garbageList = arguments[1] || [];
 			const root = document.querySelector('.results-list__items');
 			if (!root) {
 				return {hasTarget: false, hasReplacements: false, onlyReplacements: false, brands: []};
 			}
-			const garbage = new Set([
-				'гараж','подбор','выбор','корзина','каталог','поиск','войти','главная',
-				'искомый товар','возможные замены','нет в наличии','в корзину','бренды',
-				'результаты','сортировать','фильтры','фильтр','/','armtek','armtek.ru',
-			]);
+			const garbage = new Set(garbageList.map(s => String(s).toLowerCase()));
 			function isBrandText(text) {
 				if (!text) return false;
 				const t = text.trim();
@@ -1914,6 +1897,7 @@ def _armtek_parse_results_sections(driver) -> Dict[str, object]:
 			};
 			""",
 			_ARMTEK_BRAND_SPAN_SELECTOR,
+			list(_get_armtek_ui_garbage()),
 		)
 		if not isinstance(raw, dict):
 			return default
@@ -2536,23 +2520,9 @@ def _create_chrome_driver_minimal(temp_dir: str, proxy: Optional[str] = None):
 
 def parse_armtek_page_text(page_text: str, artikul: str) -> set:
     """Парсит бренды из текста страницы Armtek с улучшенной фильтрацией"""
+    from .brand_config import get_armtek_ui_garbage, get_armtek_extra_garbage
     brands = set()
-    
-    # Список мусорных слов для исключения
-    garbage_words = {
-        'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
-        'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
-        'автозапчасти', 'аккумуляторы', 'аксессуары', 'акции', 'бренды', 'ваш', 'возврат',
-        'войти', 'выбор', 'вывод', 'гараж', 'гарантийная', 'главная', 'госномеру',
-        'грузовые', 'дней', 'доставка', 'инструмент', 'интернет', 'искать', 'искомый',
-        'как', 'каталог', 'китайские', 'компании', 'контакты', 'корзина', 'легковые',
-        'магазины', 'москва', 'мотозапчасти', 'моторные', 'мы', 'нет', 'новости', 'ооо',
-        'оплата', 'оптовым', 'партнерам', 'планировщик', 'по', 'подбор', 'пожалуйста',
-        'поиск', 'покупателям', 'поставщикам', 'правовая', 'программа', 'работа',
-        'результаты', 'реклама', 'сортировать', 'срок', 'хорошо', 'цена', 'шины',
-        'armtekparts', 'armtekru', 'canvastext', 'roboto', 'ldwbs', 'oracj', 'twmh'
-    }
-    
+    garbage_words = get_armtek_ui_garbage() | get_armtek_extra_garbage()
     # Паттерны для поиска брендов в HTML атрибутах
     brand_patterns = [
         r'data-brand="([^"]+)"',
@@ -2667,24 +2637,20 @@ def parse_armtek_http(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] 
 
 def filter_armtek_brands(brands: List[str]) -> List[str]:
 	"""Фильтрация брендов Armtek с минимальной очисткой от мусора"""
+	from .brand_config import get_armtek_extra_garbage, get_armtek_whitelist
 	filtered: List[str] = []
-
-	extra_garbage = {
-		'canvas', 'date', 'end', 'error', 'function', 'manager', 'max', 'tag', 'test',
-		'unsupported', 'vin', 'whatsapp', 'telegram', 'google', 'gtm', 'scroll', 'wrap',
-		'armtekparts', 'armtekru', 'canvastext', 'roboto', 'ldwbs', 'oracj', 'twmh',
-		'brand', 'new',
-		'главная', 'войти', 'корзина', 'каталог', 'поиск', 'новости', 'акции',
-		'контакты', 'о компании', 'правовая информация', 'программа лояльности',
-		'гараж', 'подбор', 'выбор', 'искомый товар', 'возможные замены',
-		'nxmupi', 'wti',
-	}
+	extra_garbage = get_armtek_extra_garbage()
+	whitelist = get_armtek_whitelist()
 
 	for b in brands:
 		brand = b.strip()
 		if not brand or not _armtek_brand_text_is_valid(brand):
 			continue
-		if brand.lower() in extra_garbage:
+		brand_lower = brand.lower()
+		if whitelist and brand_lower in whitelist:
+			filtered.append(brand)
+			continue
+		if brand_lower in extra_garbage:
 			continue
 
 		letters_only = re.sub(r'[^A-Za-zА-Яа-яЁё]', '', brand)

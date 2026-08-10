@@ -55,7 +55,9 @@ def cleanup_old_media_results():
 
 def compute_armtek_quality_metrics(results_armtek: list) -> dict:
     """Метрики качества Armtek: not found, garbage, valid."""
-    from .autopiter_parser import _ARMTEK_UI_GARBAGE, _armtek_brand_text_is_valid
+    from .autopiter_parser import _armtek_brand_text_is_valid, _get_armtek_ui_garbage
+
+    ui_garbage = _get_armtek_ui_garbage()
 
     not_found_label = 'Бренды не найдены'
     total = len(results_armtek)
@@ -67,7 +69,7 @@ def compute_armtek_quality_metrics(results_armtek: list) -> dict:
         brand = str(row.get('Бренд № 2', '')).strip()
         if not brand or brand == not_found_label:
             not_found += 1
-        elif brand.lower() in _ARMTEK_UI_GARBAGE or not _armtek_brand_text_is_valid(brand):
+        elif brand.lower() in ui_garbage or not _armtek_brand_text_is_valid(brand):
             garbage += 1
         else:
             valid += 1
@@ -338,71 +340,10 @@ def _split_comma_separated_brands(brand_str: str) -> List[str]:
     return [part for part in parts if part]
 
 
-def filter_garbage_brands(brands: List[str]) -> List[str]:
+def filter_garbage_brands(brands: List[str], source: str = 'autopiter') -> List[str]:
     """Фильтрует мусорные бренды из результатов Autopiter и Emex"""
-    garbage_words = {
-        'артикул', 'тестовый', 'клиента', 'ремень', 'грм', 'без артикула', 'оригинальная',
-        'дизель', 'дизеля', 'дизельный', 'дизел', 'дизелями', 'дизелям', 'diesel', 'diesel part', 'diesel part:',
-        'крышка', 'решетки', 'фен', 'строительный', 'полироль', 'mat', 'номер', 'корея',
-        # Слова из описаний товаров Autopiter
-        'между', 'металл', 'накала', 'накаливания', 'накаткой', 'накаливания',
-        'муфта', 'муфтой', 'рулевой', 'колонки', 'набор', 'бит', 'сталь', 'шт',
-        'насос', 'гур', 'передней', 'рессоры', 'задне', 'задней', 'задни',
-        'втулка', 'кронштейн', 'осью', 'lh', 'rh', 'левая', 'правая',
-        'передняя', 'задняя', 'верхняя', 'нижняя', 'боковая',
-        'сцепления', 'диск', 'вала', 'карданный', 'подвесн', 'свеча',
-        'муфта рулевой колонки', 'набор бит х сталь шт', 'насос гур shacman',
-        'русская', 'артель', 'освар', 'plak', 'zabectuaptukyl', 'zikmar', 'plak',
-        'testartikul', 'euroflextestartikul', 'тестовый артикул', 'артикул клиента',
-        'артикул №', 'без артикула', 'оригинальная', 'артикул', 'см предыдущий артикул',
-        'new', 'хорошо', 'корзина', 'cookies', 'сайт был лучше', 'лучше', 'был', 'сайт',
-        'telegram', 'whatsapp', 'запчасти', 'грузовые', 'сортировать по', 'сортировать',
-        'выбор', 'armtek', 'каталог', 'главная', 'подбор', 'гараж', 'войти',
-        'мы используем', 'используем', 'чтобы', 'был лучше', 'лучшехорошо',
-        'как сделать заказ', 'аксессуары', 'dragonflys', 'грузовые запчасти',
-        'оплата', 'доставка', 'возврат', 'гарантийная политика', 'контакты',
-        'новости', 'акции', 'партнерам', 'поставщикам', 'покупателям', 'реклама на сайте',
-        'программа лояльности', 'правовая информация', 'о компании', 'работа в компании',
-        'китайские авто', 'новые товары', 'популярные товары', 'сезонные товары',
-        'моторные масла', 'аккумуляторы', 'инструмент', 'автохимия', 'автокосметика',
-        'автоглушитель', 'автокомпонент', 'автодеталь', 'автокомпонент плюс',
-        'автокомпонент', 'компонент', 'автодеталь', 'автокомпонент плюс',
-        'наконечник правый', 'наконечник рулевой п', 'наконечник рулевой тяги',
-        'pyчнoй тoпливoпoдкaчивaющий нacoc', 'шины и диски', 'колпачок маслосъемный',
-        'невский фильтр', 'подушка дизеля боковая', 'сальник распредвала',
-        'корпус межосевого дифференциала', 'нет в наличии', 'или выбрать другой удобный для вас способ',
-        'каталоги', 'популярные категории', 'строительство и ремонт', 'электрика и свет',
-        'палец sitrak', 'переключатели подрулевые в сборе', 'мтз', 'сад и огород',
-        'fmsi', 'ac delco', 'achim', 'achr', 'b-tech', 'beru', 'champion', 'chery', 'dragonzap',
-        'ford', 'lucas', 'ngk', 'robiton', 'trw', 'vag',
-        'kamaz', 'leo trade', 'prc',
-        'zg.link', 'ast', 'foton',
-        'shaft-gear', 'gspartshinotoyota', 'gspartshino',
-        'gspartshinotoyota / lexus', 'gspartshinotoyota/lexus',
-        'telegramwhatsapp', 'грузовые запчасти', 'выбор armtekсортировать по:выбор armtek',
-        'каталогглавнаяподборкорзинагаражвойти', 'мы используем cookies, чтобы сайт был лучшехорошо',
-        'прокладка гбц на hino hino', 'прокладка гбц производства японии', 'прокладка клапанной крышки',
-        'колпачок маслосъемный', 'о-кольцо стержня капана (victor reinz)', 'прокладка гбц',
-        'прокладка', 'гбц', 'клапанной крышки', 'стержня капана', 'victor reinz', 'кольцо',
-        'маслосъемный', 'капана', 'стержня', 'крышки', 'клапанной', 'производства японии',
-        'японии', 'производства', 'hino hino', 'на hino', 'гбц на', 'гбц производства',
-        'прокладка гбц на', 'прокладка гбц производства', 'прокладка клапанной',
-        'о-кольцо стержня', 'кольцо стержня', 'стержня капана (victor reinz)',
-        'капана (victor reinz)', '(victor reinz)', 'victor', 'reinz', 'кольцо стержня капана',
-        'о-кольцо', 'кольцо', 'стержня', 'капана', 'victor reinz', 'маслосъемный колпачок',
-        'колпачок маслосъемный', 'маслосъемный', 'колпачок', 'крышки клапанной',
-        'клапанной крышки', 'крышки', 'клапанной', 'производства', 'японии', 'hino',
-        'гбц', 'прокладка', 'кольцо', 'стержня', 'капана', 'victor', 'reinz', 'маслосъемный',
-        'колпачок', 'крышки', 'клапанной', 'производства', 'японии', 'hino', 'гбц', 'прокладка',
-        # Emex specific garbage
-        'emex', 'вакансии', 'контакты', 'аккумуляторы', 'возврат', 'вход', 'доставка', 'оплата',
-        'корзина', 'найти', 'подобрать', 'деталь', 'компании', 'покупателям', 'поставщикам',
-        'санкт-петербург', 'помощь', 'сотрудничество', 'товары', 'шины', 'диски', 'лампы',
-        'масла', 'моторные', 'оферта', 'политика', 'cookies', 'использования', 'давайте',
-        'эксперт', 'знает', 'лучше', 'результаты', 'поиска', 'номеру', 'детали', 'щетки',
-        'стеклоочистителя', 'дилерская сеть', 'свет', 'вход', 'оптового', 'покупателя',
-        'персональных', 'данных', 'сотрудничество', 'товары', 'щетки', 'стеклоочистителя'
-    }
+    from .brand_config import get_blacklist_for_source
+    garbage_words = get_blacklist_for_source(source)
     
     filtered: List[str] = []
     # Дедупликация брендов на уровне результатов, иначе Emex (и иногда Autopiter)
@@ -1388,7 +1329,7 @@ def process_parsing_task(self, task_id):
                                     if not single_brand:
                                         continue
                                     
-                                    filtered_brands = filter_garbage_brands([single_brand])
+                                    filtered_brands = filter_garbage_brands([single_brand], source='autopiter')
                                     if filtered_brands:
                                         # Создаем отдельную запись для каждого отфильтрованного бренда
                                         for filtered_brand in filtered_brands:
@@ -1416,7 +1357,7 @@ def process_parsing_task(self, task_id):
                             else:
                                 # Если b2 пустой, но есть артикул, все равно проверяем b2 на мусор
                                 if b2:
-                                    filtered_b2 = filter_garbage_brands([b2])
+                                    filtered_b2 = filter_garbage_brands([b2], source='autopiter')
                                     if not filtered_b2:
                                         stats['brand2_filtered_as_garbage'] += 1
                                         continue  # Пропускаем, если это мусорный бренд
@@ -1455,7 +1396,7 @@ def process_parsing_task(self, task_id):
                                         stats['brand2_filtered_as_article'] += 1
                                         continue  # Пропускаем, если это артикул
                                     
-                                    filtered_brands = filter_garbage_brands([single_brand])
+                                    filtered_brands = filter_garbage_brands([single_brand], source='emex')
                                     if filtered_brands:
                                         # Создаем отдельную запись для каждого отфильтрованного бренда
                                         for filtered_brand in filtered_brands:
@@ -1483,7 +1424,7 @@ def process_parsing_task(self, task_id):
                             else:
                                 # Если b2 пустой, но есть артикул, все равно проверяем b2 на мусор
                                 if b2:
-                                    filtered_b2 = filter_garbage_brands([b2])
+                                    filtered_b2 = filter_garbage_brands([b2], source='emex')
                                     if not filtered_b2:
                                         stats['brand2_filtered_as_garbage'] += 1
                                         continue  # Пропускаем, если это мусорный бренд

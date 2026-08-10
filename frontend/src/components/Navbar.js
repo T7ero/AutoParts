@@ -11,6 +11,7 @@ const navigation = [
   { name: 'Задачи', href: '/tasks' },
   { name: 'Логи', href: '/logs' },
   { name: 'Анализ прайс-листа', href: '/price-list-analysis' },
+  { name: 'Списки брендов', href: '/brand-lists' },
   { name: 'Прокси', href: '/proxy-manager', external: true },
 ];
 

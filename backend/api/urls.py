@@ -1,6 +1,7 @@
 from django.urls import path
 from . import views
 from . import price_list_views
+from . import brand_list_views
 
 urlpatterns = [
     path('parsing-tasks/', views.parsing_tasks, name='parsing_tasks'),
@@ -15,6 +16,9 @@ urlpatterns = [
     path('proxies/upload/', views.upload_proxies, name='upload_proxies'),
     path('proxies/status/', views.proxy_status, name='proxy_status'),
     path('proxies/reset/', views.reset_proxy_index, name='reset_proxy_index'),
+    path('brand-lists/', brand_list_views.brand_lists_overview, name='brand_lists_overview'),
+    path('brand-lists/<str:list_id>/', brand_list_views.brand_list_detail, name='brand_list_detail'),
+    path('brand-lists/<str:list_id>/upload/', brand_list_views.brand_list_upload, name='brand_list_upload'),
     path('auth/token/', views.auth_token, name='auth_token'),
     path('media/<path:file_path>', views.serve_media_file, name='serve_media_file'),
     

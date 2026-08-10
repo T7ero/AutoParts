@@ -10,6 +10,7 @@ import Upload from './pages/Upload';
 import Tasks from './pages/Tasks';
 import Logs from './pages/Logs';
 import PriceListAnalysis from './pages/PriceListAnalysis';
+import BrandLists from './pages/BrandLists';
 
 function App() {
   return (
@@ -26,6 +27,7 @@ function App() {
                 <Route path="/tasks" element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
                 <Route path="/logs" element={<ProtectedRoute><Logs /></ProtectedRoute>} />
                 <Route path="/price-list-analysis" element={<ProtectedRoute><PriceListAnalysis /></ProtectedRoute>} />
+                <Route path="/brand-lists" element={<ProtectedRoute><BrandLists /></ProtectedRoute>} />
               </Routes>
             </main>
           </div>
