@@ -5,7 +5,7 @@ set -e
 if [ "$(id -u)" = "0" ]; then
     # Запускаем подготовку от root
     echo "🔧 Настройка прав доступа..."
-    mkdir -p /app/media/uploads /app/media/results /app/media/temp /app/static
+    mkdir -p /app/media/uploads /app/media/results /app/media/temp /app/media/config/lists /app/static
     touch /app/media/temp/proxies.txt
     chown -R appuser:appuser /app/media
     chmod -R 775 /app/media

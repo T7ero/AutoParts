@@ -45,7 +45,11 @@ LIST_META: Dict[str, dict] = {
 
 
 def get_config_dir() -> Path:
-    return Path(settings.BASE_DIR) / 'config' / 'lists'
+    """Каталог списков брендов. По умолчанию media/config/lists (writable в Docker)."""
+    override = os.getenv('BRAND_LISTS_DIR', '').strip()
+    if override:
+        return Path(override)
+    return Path(settings.BASE_DIR) / 'media' / 'config' / 'lists'
 
 
 def get_list_path(list_id: str) -> Path:
@@ -69,14 +73,41 @@ def parse_file_content(content: str) -> List[str]:
     return items
 
 
+def _legacy_config_dir() -> Path:
+    return Path(settings.BASE_DIR) / 'config' / 'lists'
+
+
+def _migrate_legacy_lists(config_dir: Path) -> None:
+    """Копирует списки из старого config/lists, если новые ещё не созданы."""
+    legacy_dir = _legacy_config_dir()
+    if not legacy_dir.is_dir():
+        return
+    for list_id in LIST_META:
+        dst = config_dir / f'{list_id}.txt'
+        src = legacy_dir / f'{list_id}.txt'
+        if not dst.exists() and src.is_file():
+            try:
+                dst.write_text(src.read_text(encoding='utf-8'), encoding='utf-8')
+            except OSError:
+                pass
+
+
 def ensure_defaults() -> None:
     """Создаёт файлы конфигурации с значениями по умолчанию, если их ещё нет."""
     config_dir = get_config_dir()
-    config_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # Нет прав на запись — load_list() использует DEFAULT_LISTS из памяти.
+        return
+    _migrate_legacy_lists(config_dir)
     for list_id, defaults in DEFAULT_LISTS.items():
         path = get_list_path(list_id)
         if not path.exists():
-            _write_list_file(path, defaults)
+            try:
+                _write_list_file(path, defaults)
+            except OSError:
+                pass
 
 
 def _write_list_file(path: Path, items: List[str]) -> None:
@@ -96,6 +127,10 @@ def invalidate_cache(list_id: str | None = None) -> None:
             _mtimes.clear()
 
 
+def _default_list_set(list_id: str) -> Set[str]:
+    return {item.lower() for item in DEFAULT_LISTS.get(list_id, [])}
+
+
 def load_list(list_id: str) -> Set[str]:
     """Загружает список из файла с кэшированием по mtime."""
     ensure_defaults()
@@ -103,13 +138,16 @@ def load_list(list_id: str) -> Set[str]:
     try:
         mtime = path.stat().st_mtime
     except OSError:
-        return set()
+        return _default_list_set(list_id)
 
     with _lock:
         if list_id in _cache and _mtimes.get(list_id) == mtime:
             return _cache[list_id]
 
-    content = path.read_text(encoding='utf-8')
+    try:
+        content = path.read_text(encoding='utf-8')
+    except OSError:
+        return _default_list_set(list_id)
     items = {item.lower() for item in parse_file_content(content)}
 
     with _lock:
@@ -124,7 +162,10 @@ def load_list_items(list_id: str) -> List[str]:
     path = get_list_path(list_id)
     if not path.exists():
         return list(DEFAULT_LISTS.get(list_id, []))
-    return parse_file_content(path.read_text(encoding='utf-8'))
+    try:
+        return parse_file_content(path.read_text(encoding='utf-8'))
+    except OSError:
+        return list(DEFAULT_LISTS.get(list_id, []))
 
 
 def save_list(list_id: str, items: List[str]) -> int:

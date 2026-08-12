@@ -12,6 +12,7 @@ from .brand_config import (
     parse_file_content,
     list_all_metadata,
     ensure_defaults,
+    get_list_path,
 )
 
 
@@ -54,7 +55,7 @@ def brand_list_detail(request, list_id):
             'group': meta['group'],
             'items': items,
             'count': len(items),
-            'file': f'config/lists/{list_id}.txt',
+            'file': str(get_list_path(list_id)),
         })
 
     items = request.data.get('items')
