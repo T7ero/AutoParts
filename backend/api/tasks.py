@@ -999,7 +999,7 @@ def process_parsing_task(self, task_id):
 
             # Опционально: пробовать Autopiter через прокси, если лимит 429 привязан к IP.
             # По умолчанию выключено, чтобы не ухудшать качество/стабильность.
-            autopiter_use_proxy = (os.getenv("AUTOPITER_USE_PROXY", "0").strip() == "1")
+            autopiter_use_proxy = (os.getenv("AUTOPITER_USE_PROXY", "1").strip() == "1")
             try:
                 autopiter_has_proxies = len(PROXY_LIST) > 0
             except Exception:
