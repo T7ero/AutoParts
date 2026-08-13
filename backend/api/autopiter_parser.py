@@ -217,6 +217,55 @@ class AutopiterForbiddenException(Exception):
 class AutopiterNetworkException(Exception):
     """Сетевая ошибка/таймаут Autopiter. Нельзя негативно кэшировать надолго."""
 
+
+class AutopiterBlockedException(Exception):
+    """Autopiter показал captcha/страницу ошибки вместо каталога."""
+
+
+_AUTOPITER_BLOCK_MARKERS = (
+    'я не робот',
+    'errorpage',
+    'smartcaptcha',
+    'captcha',
+    'подтвердите, что вы не робот',
+    'подтвердите что вы не робот',
+    'button__inner',
+)
+
+
+def _autopiter_page_blocked(page_source: str) -> bool:
+    """True, если вместо каталога показана captcha или страница ошибки."""
+    if not page_source:
+        return True
+    low = page_source.lower()
+    if any(marker in low for marker in _AUTOPITER_BLOCK_MARKERS):
+        return True
+    # ErrorPage без строк таблицы — типичный признак блокировки
+    if 'errorpage' in low and 'individualtablerow' not in low:
+        return True
+    return False
+
+
+def looks_like_analytics_garbage_token(text: str) -> bool:
+    """Отсекает случайные JS/analytics-токены вроде LDwBSShMoYhCzEpEE."""
+    s = (text or '').strip()
+    if len(s) < 10 or ' ' in s:
+        return False
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', s):
+        return False
+    letters = sum(1 for c in s if c.isalpha())
+    if letters < 8:
+        return False
+    has_upper = any(c.isupper() for c in s)
+    has_lower = any(c.islower() for c in s)
+    has_digit = any(c.isdigit() for c in s)
+    vowels = sum(1 for c in s.lower() if c in 'aeiouаеёиоуыэюя')
+    if has_upper and has_lower and has_digit and len(s) >= 14:
+        return True
+    if letters >= 10 and vowels <= 1:
+        return True
+    return False
+
 # Autopiter очень чувствителен к burst-нагрузке.
 # Даже при небольшом ThreadPoolExecutor легко ловится 429/403, что приводит к пустым результатам.
 # Этот лимитер делает "плавный" поток запросов в рамках одного процесса celery-worker.
@@ -939,11 +988,12 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
                 log_debug(f"АвтоПитер: не удалось создать Selenium-драйвер для {artikul}")
                 return []
 
-            # Очищаем cookies перед загрузкой для предотвращения проблем с кэшем
-            try:
-                driver.delete_all_cookies()
-            except Exception as e:
-                log_debug(f"Не удалось очистить cookies: {str(e)}")
+            # Очистка cookies ухудшает прохождение captcha — по умолчанию не трогаем сессию.
+            if os.getenv("AUTOPITER_CLEAR_COOKIES", "0").strip().lower() in ("1", "true", "yes", "on"):
+                try:
+                    driver.delete_all_cookies()
+                except Exception as e:
+                    log_debug(f"Не удалось очистить cookies: {str(e)}")
 
             url = f"https://autopiter.ru/goods/{quote(artikul)}"
             driver.get(url)
@@ -955,8 +1005,11 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
             except TimeoutException:
                 log_debug(f"АвтоПитер: таймаут ожидания #main-content для {artikul}")
 
-            # Дополнительное ожидание для полной загрузки
-            time.sleep(2)
+            time.sleep(1.5)
+
+            if _autopiter_page_blocked(driver.page_source):
+                log_debug(f"АвтоПитер: captcha/блокировка для {artikul}, пропускаем Selenium-парсинг")
+                raise AutopiterBlockedException(f"Autopiter captcha/block for {artikul}")
 
             # Прокручиваем страницу для подгрузки ВСЕХ данных
             last_height = driver.execute_script("return document.body.scrollHeight")
@@ -1035,6 +1088,8 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
                 continue
             return brands
 
+        except AutopiterBlockedException:
+            raise
         except Exception as e:
             last_error = e
             msg = str(e).lower()
@@ -1078,12 +1133,22 @@ def get_brands_by_artikul(
     try:
         transport = os.getenv("AUTOPITER_TRANSPORT", "selenium").strip().lower()
         if not force_http and transport in ("selenium", "sel"):
-            brands = parse_autopiter_selenium(artikul, proxy)
+            try:
+                brands = parse_autopiter_selenium(artikul, proxy)
+            except AutopiterBlockedException:
+                # Captcha на IP сервера: HTTP без прокси почти всегда даст 429.
+                if proxy:
+                    log_debug(f"АвтоПитер: captcha для {artikul}, пробуем HTTP через прокси")
+                    return get_brands_by_artikul(artikul, proxy, force_http=True)
+                log_debug(
+                    f"АвтоПитер: captcha для {artikul}, HTTP fallback пропущен "
+                    f"(включите AUTOPITER_USE_PROXY=1)"
+                )
+                raise
             if brands:
                 return brands
 
             # Circuit-breaker: при деградации Selenium сразу пробуем HTTP для ЭТОГО артикула.
-            # Это не меняет глобальный transport, но спасает "дыры" по брендам.
             use_http_fallback = os.getenv("AUTOPITER_SELENIUM_HTTP_FALLBACK", "1").strip().lower()
             if use_http_fallback in ("1", "true", "yes", "on"):
                 log_debug(f"АвтоПитер: Selenium вернул 0 для {artikul}, пробуем HTTP fallback")
@@ -1232,7 +1297,7 @@ def get_brands_by_artikul(
 
         return []
         
-    except (AutopiterRateLimitException, AutopiterForbiddenException):
+    except (AutopiterRateLimitException, AutopiterForbiddenException, AutopiterBlockedException):
         # Пробрасываем выше, чтобы tasks.py не делал negative-cache.
         raise
     except AutopiterNetworkException:
@@ -1248,6 +1313,10 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
     brands = set()
     
     try:
+        if _autopiter_page_blocked(html_content):
+            log_debug(f"Autopiter: страница заблокирована (captcha/ошибка) для {artikul}")
+            return []
+
         soup = BeautifulSoup(html_content, 'html.parser')
         from .brand_config import get_autopiter_blacklist
         brand_exclude_tokens = list(get_autopiter_blacklist())
@@ -1267,6 +1336,9 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             if not brand or len(brand) <= 1 or len(brand) >= 50:
                 return
             brand_lower = brand.lower()
+
+            if looks_like_analytics_garbage_token(brand):
+                return
             
             # Исключаем чисто цифровые значения
             if brand_lower.isdigit():
@@ -1389,60 +1461,39 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
         if table and rows:
             log_debug(f"Autopiter: найдено {len(rows)} строк IndividualTableRow для {artikul}")
 
-            # Проходим по всем строкам и ищем infoColumn с точным селектором
             for row_idx, row in enumerate(rows):
+                brand_link = row.select_one('div[class*="IndividualTableRow__brandLink"] a')
+                if brand_link:
+                    register_brand(brand_link.get_text(strip=True), f"строка {row_idx + 1} brandLink")
+                    continue
+
+                brand_link_area = row.select_one('div[class*="IndividualTableRow__brandLink"]')
+                if brand_link_area:
+                    title_span = brand_link_area.select_one('span[title]')
+                    if title_span and title_span.get('title'):
+                        register_brand(title_span.get('title'), f"строка {row_idx + 1} title")
+                        continue
+                    nested_link = brand_link_area.select_one('a')
+                    if nested_link:
+                        register_brand(nested_link.get_text(strip=True), f"строка {row_idx + 1} nested-link")
+                        continue
+
                 info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
                 if info_column:
-                    # Собираем все возможные тексты из строки для поиска бренда
-                    all_texts_in_row = []
-
-                    # 1. Используем точный селектор: span > span > span > span
-                    brand_spans = info_column.select('span > span > span > span')
-                    for span in brand_spans:
-                        brand_text = span.get_text(strip=True)
-                        if brand_text:
-                            all_texts_in_row.append(brand_text)
-
-                    # 2. Пробуем через title
-                    brand_spans_title = info_column.select('span[title]')
-                    for span in brand_spans_title:
-                        title_text = span.get('title')
-                        if title_text:
-                            all_texts_in_row.append(title_text)
-
-                    # 3. Пробуем все span внутри infoColumn
-                    all_spans = info_column.select('span')
-                    for span in all_spans:
-                        span_text = span.get_text(strip=True)
-                        if span_text and len(span_text) > 1 and len(span_text) < 50:
-                            all_texts_in_row.append(span_text)
-
-                    # 4. Пробуем получить текст напрямую из infoColumn
-                    direct_text = info_column.get_text(strip=True, separator=' ')
-                    if direct_text:
-                        # ВАЖНО: не разбиваем на слова — иначе многословные бренды ("Carville Racing", "Golden Asia")
-                        # превращаются в отдельные "Carville" и "Racing".
-                        all_texts_in_row.append(direct_text)
-
-                    # Регистрируем все найденные тексты как потенциальные бренды
-                    for text in all_texts_in_row:
-                        register_brand(text, f"строка {row_idx + 1}")
+                    title_span = info_column.select_one('span[title]')
+                    if title_span and title_span.get('title'):
+                        register_brand(title_span.get('title'), f"строка {row_idx + 1} info-title")
         else:
             if not table:
                 log_debug(f"Autopiter: не найдена таблица Table__table для {artikul}")
             else:
                 log_debug(f"Autopiter: не найдены строки IndividualTableRow для {artikul}")
 
-        # Fallback: если таблица не найдена/пустая, берем бренды напрямую из ссылок брендов.
-        # Это покрывает случаи, когда структура таблицы изменилась, но href /brands/... остался.
-        brand_link_selectors = [
-            "#main-content a[href*='/brands/']",
-            "a[href*='/brands/']",
-            "#main-content [class*='IndividualTableRow__infoColumn'] a",
-        ]
-        for selector in brand_link_selectors:
-            for a_tag in soup.select(selector):
-                register_brand(a_tag.get_text(strip=True), f"fallback-link {selector}")
+        # Fallback только внутри строк таблицы (не по всей странице — иначе footer/nav).
+        if not brands:
+            for row_idx, row in enumerate(rows or []):
+                for a_tag in row.select('a[href*="/brands/"]'):
+                    register_brand(a_tag.get_text(strip=True), f"fallback-row {row_idx + 1}")
 
         # Дополнительно собираем бренды из блока "Производители" (чипы над таблицей)
         brand_chip_selectors = [
@@ -1472,20 +1523,28 @@ def split_combined_brands(brands: List[str]) -> List[str]:
         if not brand_clean:
             continue
             
-        # Разделяем по различным разделителям (включая запятую)
-        separators = [', ', ',', ' / ', '/', ' & ', '&', ' + ', '+', ' - ', '-', ' | ', '|']
+        # Разделяем по разделителям (без одиночного дефиса — иначе ломается ВАТИ-АВТО).
+        separators = [', ', ',', ' / ', '/', ' & ', '&', ' + ', '+', ' | ', '|']
         
         # Проверяем, есть ли разделители
         has_separator = False
-        for sep in separators:
-            if sep in brand_clean:
-                has_separator = True
-                parts = brand_clean.split(sep)
-                for part in parts:
-                    part_clean = part.strip()
-                    if part_clean and len(part_clean) > 2:
-                        result.add(part_clean)
-                break
+        if ' - ' in brand_clean:
+            has_separator = True
+            parts = brand_clean.split(' - ')
+            for part in parts:
+                part_clean = part.strip()
+                if part_clean and len(part_clean) > 2:
+                    result.add(part_clean)
+        else:
+            for sep in separators:
+                if sep in brand_clean:
+                    has_separator = True
+                    parts = brand_clean.split(sep)
+                    for part in parts:
+                        part_clean = part.strip()
+                        if part_clean and len(part_clean) > 2:
+                            result.add(part_clean)
+                    break
         
         # Если нет разделителей, пробуем разделить по заглавным буквам
         if not has_separator:

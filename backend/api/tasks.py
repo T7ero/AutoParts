@@ -9,6 +9,8 @@ from .autopiter_parser import (
     AutopiterRateLimitException,
     AutopiterForbiddenException,
     AutopiterNetworkException,
+    AutopiterBlockedException,
+    looks_like_analytics_garbage_token,
     cleanup_chrome_processes,
     cleanup_driver_pool,
     get_next_proxy,
@@ -445,6 +447,7 @@ def filter_garbage_brands(brands: List[str], source: str = 'autopiter') -> List[
             brand_lower in garbage_words or
             brand_lower in extra_garbage_exact or
             brand_clean.upper() in ru_number_words or
+            looks_like_analytics_garbage_token(brand_clean) or
             any(garbage in brand_lower for garbage in garbage_words) or
             any(garbage in brand_lower for garbage in extra_garbage_exact)
         )
@@ -1035,6 +1038,11 @@ def process_parsing_task(self, task_id):
                             time.sleep(0.01 if site == 'autopiter' else 0.01)
                             brands = parser_func(num, proxy)
 
+                            if site == 'autopiter':
+                                brands = filter_garbage_brands(brands, source='autopiter')
+                            elif site == 'emex':
+                                brands = filter_garbage_brands(brands, source='emex')
+
                             is_empty = len(brands) == 0
                             set_cache(num, site, brands, is_empty)
 
@@ -1050,7 +1058,12 @@ def process_parsing_task(self, task_id):
                                 log(f"Failed to parse {site} for {num} after {max_retries} attempts")
                                 # При rate-limit/403 от Autopiter не кэшируем пустое,
                                 # иначе бренды "застревают" в NEGATIVE_CACHE_EXPIRATION.
-                                if isinstance(e, (AutopiterRateLimitException, AutopiterForbiddenException, AutopiterNetworkException)):
+                                if isinstance(e, (
+                                    AutopiterRateLimitException,
+                                    AutopiterForbiddenException,
+                                    AutopiterNetworkException,
+                                    AutopiterBlockedException,
+                                )):
                                     log_debug(f"{site}: rate-limit/403/network, пропускаем negative cache для {num}")
                                     return []
                                 set_cache(num, site, [], True)
@@ -1458,6 +1471,8 @@ def process_parsing_task(self, task_id):
                                 'Артикул по Бренду № 2': clean_excel_string(original_num),
                                 'Источник': src
                             })
+                            if brand and str(brand).strip():
+                                stats['unique_brands']['armtek'].add(str(brand).strip())
                         print(f"[DEBUG] {log_messages[-1] if log_messages else 'Обработка строки'}")
                         ensure_not_cancelled()
                         ws_send()
