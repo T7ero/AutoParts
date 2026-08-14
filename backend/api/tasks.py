@@ -16,6 +16,7 @@ from .autopiter_parser import (
     get_next_proxy,
     get_proxy_string,
     load_proxies_from_file,
+    is_autopiter_proxy_enabled,
     log_debug,
     filter_armtek_brands,
     reset_armtek_selenium_state,
@@ -610,7 +611,7 @@ def process_parsing_task(self, task_id):
 
         # Загружаем прокси при старте задачи
         load_proxies_from_file()
-        
+
         def log(msg: str):
             """Логирование c временной меткой + запись в файл (если доступен)."""
             from datetime import datetime as _dt
@@ -997,14 +998,14 @@ def process_parsing_task(self, task_id):
             autopiter_workers_cfg = max(1, min(8, autopiter_workers_cfg))
             AUTOPITER_MAX_WORKERS = _resolve_autopiter_workers(nnums, autopiter_workers_cfg, row_index)
 
-            # Опционально: пробовать Autopiter через прокси, если лимит 429 привязан к IP.
-            # По умолчанию выключено, чтобы не ухудшать качество/стабильность.
-            autopiter_use_proxy = (os.getenv("AUTOPITER_USE_PROXY", "0").strip() == "1")
-            try:
-                autopiter_has_proxies = len(PROXY_LIST) > 0
-            except Exception:
-                autopiter_has_proxies = False
-            autopiter_proxy_enabled = autopiter_use_proxy and autopiter_has_proxies
+            # Autopiter через прокси: auto = включить, если прокси загружены в файл.
+            autopiter_proxy_enabled = is_autopiter_proxy_enabled()
+            if 'autopiter' in selected_sources:
+                proxy_mode = os.getenv("AUTOPITER_USE_PROXY", "auto").strip() or "auto"
+                log(
+                    f"Autopiter: прокси {'включены' if autopiter_proxy_enabled else 'выключены'} "
+                    f"({len(PROXY_LIST)} в файле, AUTOPITER_USE_PROXY={proxy_mode})"
+                )
             try:
                 autopiter_proxy_retries = int(os.getenv("AUTOPITER_PROXY_RETRIES", "2"))
             except Exception:

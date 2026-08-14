@@ -914,6 +914,25 @@ def get_proxy_string() -> Optional[str]:
             return proxy_url[7:]  # Убираем 'http://'
     return None
 
+
+def is_autopiter_proxy_enabled() -> bool:
+    """Нужно ли ходить на Autopiter через прокси.
+
+    AUTOPITER_USE_PROXY:
+    - auto (по умолчанию): включить, если в файле есть прокси
+    - 1/true: включить (если прокси есть)
+    - 0/false: выключить
+    """
+    explicit = os.getenv("AUTOPITER_USE_PROXY", "auto").strip().lower()
+    if not PROXY_LIST:
+        load_proxies_from_file()
+    proxy_count = len(PROXY_LIST)
+    if explicit in ("0", "false", "no", "off"):
+        return False
+    if explicit in ("1", "true", "yes", "on"):
+        return proxy_count > 0
+    return proxy_count > 0
+
 def cleanup_chrome_processes():
     """Принудительно очищает процессы Chrome и временные директории"""
     try:
@@ -1244,13 +1263,20 @@ def get_brands_by_artikul(
             try:
                 brands = parse_autopiter_selenium(artikul, proxy)
             except AutopiterBlockedException:
-                # Captcha на IP сервера: HTTP без прокси почти всегда даст 429.
                 if proxy:
                     log_debug(f"АвтоПитер: captcha для {artikul}, пробуем HTTP через прокси")
                     return get_brands_by_artikul(artikul, proxy, force_http=True)
+                if is_autopiter_proxy_enabled():
+                    fallback_proxy = get_proxy_string()
+                    if fallback_proxy:
+                        log_debug(
+                            f"АвтоПитер: captcha для {artikul} с IP сервера, "
+                            f"повтор через прокси {_proxy_url_to_host_port(fallback_proxy)}"
+                        )
+                        return get_brands_by_artikul(artikul, fallback_proxy, force_http=False)
                 log_debug(
-                    f"АвтоПитер: captcha для {artikul}, HTTP fallback пропущен "
-                    f"(включите AUTOPITER_USE_PROXY=1)"
+                    f"АвтоПитер: captcha для {artikul}, прокси недоступны "
+                    f"(загрузите proxies.txt или AUTOPITER_USE_PROXY=0 отключает авто-режим)"
                 )
                 raise
             if brands:
