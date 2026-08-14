@@ -224,12 +224,13 @@ class AutopiterBlockedException(Exception):
 
 _AUTOPITER_BLOCK_MARKERS = (
     'я не робот',
+    'вы очень активный',
+    'мы временно ограничили ваш доступ',
     'errorpage',
     'smartcaptcha',
     'captcha',
     'подтвердите, что вы не робот',
     'подтвердите что вы не робот',
-    'button__inner',
 )
 
 
@@ -698,8 +699,131 @@ def parse_proxy_line(proxy_str: str) -> Optional[Dict[str, str]]:
 		except ValueError:
 			return None
 
-	url = f'http://{login}:{password}@{host}:{port}'
+	url = f'http://{quote(login, safe="")}:{quote(password, safe="")}@{host}:{port}'
 	return {'http': url, 'https': url}
+
+
+def _session_set_proxy(session, proxy: Optional[Union[str, Dict[str, str]]]) -> Optional[Dict[str, str]]:
+	"""Настраивает requests.Session на прокси. Возвращает dict прокси или None."""
+	session.proxies.clear()
+	if not proxy:
+		return None
+	if isinstance(proxy, dict):
+		session.proxies.update(proxy)
+		return proxy
+	proxy_value = str(proxy).strip()
+	if proxy_value.startswith('http://'):
+		proxy_value = proxy_value[7:]
+	elif proxy_value.startswith('https://'):
+		proxy_value = proxy_value[8:]
+	proxy_dict = parse_proxy_line(proxy_value)
+	if not proxy_dict:
+		proxy_dict = {
+			'http': f'http://{proxy_value}',
+			'https': f'http://{proxy_value}',
+		}
+	session.proxies.update(proxy_dict)
+	return proxy_dict
+
+
+def _parse_proxy_credentials(proxy_value: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+	"""Возвращает (host, port, login, password) из строки прокси."""
+	proxy_dict = parse_proxy_line(proxy_value)
+	if not proxy_dict:
+		return None, None, None, None
+	url = proxy_dict.get('http', '')
+	if url.startswith('http://'):
+		url = url[7:]
+	if '@' not in url:
+		if ':' in url:
+			host, port = url.rsplit(':', 1)
+			return host, port, None, None
+		return None, None, None, None
+	auth_part, host_port = url.rsplit('@', 1)
+	if ':' not in auth_part or ':' not in host_port:
+		return None, None, None, None
+	login, password = auth_part.split(':', 1)
+	host, port = host_port.rsplit(':', 1)
+	return host, port, unquote(login), unquote(password)
+
+
+def _create_proxy_auth_extension(host: str, port: str, username: str, password: str) -> str:
+	"""Создаёт временное Chrome-расширение для HTTP-прокси с авторизацией."""
+	plugin_dir = tempfile.mkdtemp(prefix='chrome_proxy_auth_')
+	manifest_json = json.dumps({
+		"version": "1.0.0",
+		"manifest_version": 2,
+		"name": "Chrome Proxy Auth",
+		"permissions": [
+			"proxy",
+			"tabs",
+			"unlimitedStorage",
+			"storage",
+			"<all_urls>",
+			"webRequest",
+			"webRequestBlocking",
+		],
+		"background": {"scripts": ["background.js"]},
+		"minimum_chrome_version": "76.0.0",
+	}, ensure_ascii=True)
+	background_js = f"""
+var config = {{
+	mode: "fixed_servers",
+	rules: {{
+		singleProxy: {{
+			scheme: "http",
+			host: {json.dumps(host)},
+			port: parseInt({json.dumps(str(port))}, 10)
+		}},
+		bypassList: ["localhost", "127.0.0.1"]
+	}}
+}};
+chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
+
+function callbackFn(details) {{
+	return {{
+		authCredentials: {{
+			username: {json.dumps(username)},
+			password: {json.dumps(password)}
+		}}
+	}};
+}}
+
+chrome.webRequest.onAuthRequired.addListener(
+	callbackFn,
+	{{urls: ["<all_urls>"]}},
+	['blocking']
+);
+"""
+	with open(os.path.join(plugin_dir, 'manifest.json'), 'w', encoding='utf-8') as f:
+		f.write(manifest_json)
+	with open(os.path.join(plugin_dir, 'background.js'), 'w', encoding='utf-8') as f:
+		f.write(background_js)
+	return plugin_dir
+
+
+def _configure_chrome_proxy(chrome_options: Options, proxy: Optional[str]) -> bool:
+	"""Настраивает прокси в Chrome. Возвращает True, если загружено auth-расширение."""
+	if not proxy:
+		return False
+	proxy_value = str(proxy).strip()
+	if proxy_value.startswith('http://'):
+		proxy_value = proxy_value[7:]
+	elif proxy_value.startswith('https://'):
+		proxy_value = proxy_value[8:]
+	host, port, login, password = _parse_proxy_credentials(proxy_value)
+	if host and port and login and password:
+		ext_dir = _create_proxy_auth_extension(host, port, login, password)
+		chrome_options.add_argument(f'--load-extension={ext_dir}')
+		log_debug(f"Selenium: прокси с авторизацией {_proxy_url_to_host_port(f'{login}:***@{host}:{port}')}")
+		return True
+	if host and port:
+		chrome_options.add_argument(f'--proxy-server=http://{host}:{port}')
+		log_debug(f"Selenium: прокси без авторизации {host}:{port}")
+		return False
+	chrome_options.add_argument(f'--proxy-server=http://{proxy_value}')
+	log_debug(f"Selenium: прокси {proxy_value}")
+	return False
 
 
 def _proxy_url_to_host_port(proxy_url: str) -> str:
@@ -887,30 +1011,9 @@ def make_request(
 
     # Настройка сессии (пул соединений на поток)
     session = _get_thread_requests_session()
-    session.proxies.clear()
-    
-    # Настройка прокси
-    if proxy:
-        if isinstance(proxy, dict):
-            session.proxies.update(proxy)
-            log_debug("Используется словарь прокси")
-        else:
-            proxy_value = proxy.strip()
-            if proxy_value.startswith('http://'):
-                proxy_value = proxy_value[7:]
-            elif proxy_value.startswith('https://'):
-                proxy_value = proxy_value[8:]
-            proxy_dict = parse_proxy_line(proxy_value)
-            if proxy_dict:
-                session.proxies.update(proxy_dict)
-                log_debug(f"Используется прокси: {_proxy_url_to_host_port(proxy_dict['http'])}")
-            else:
-                proxy_dict = {
-                    'http': f'http://{proxy_value}',
-                    'https': f'http://{proxy_value}',
-                }
-                session.proxies.update(proxy_dict)
-                log_debug(f"Используется прокси: {proxy_value}")
+    proxy_dict = _session_set_proxy(session, proxy)
+    if proxy_dict:
+        log_debug(f"Используется прокси: {_proxy_url_to_host_port(proxy_dict.get('http', ''))}")
     
     # Настройка заголовков — используем «современные» заголовки из HEADERS
     session.headers.update(HEADERS)
@@ -980,10 +1083,15 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
         temp_dir = tempfile.mkdtemp(prefix=f"chrome_autopiter_")
 
         try:
-            if not force_fresh_driver:
-                driver = get_driver_from_pool()
-            if not driver:
+            # С пулом переиспользуется драйвер без прокси — при captcha это критично.
+            if proxy:
                 driver = _create_chrome_driver_robust(temp_dir, proxy)
+            elif not force_fresh_driver:
+                driver = get_driver_from_pool()
+                if not driver:
+                    driver = _create_chrome_driver_robust(temp_dir, None)
+            else:
+                driver = _create_chrome_driver_robust(temp_dir, None)
             if not driver:
                 log_debug(f"АвтоПитер: не удалось создать Selenium-драйвер для {artikul}")
                 return []
@@ -1107,7 +1215,7 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
             return []
         finally:
             if driver:
-                if driver_broken:
+                if driver_broken or proxy:
                     try:
                         driver.quit()
                     except Exception:
@@ -1177,15 +1285,9 @@ def get_brands_by_artikul(
         
         # Настройка прокси, если указан
         if proxy:
-            if isinstance(proxy, str):
-                if proxy.startswith('http://'):
-                    proxy = proxy[7:]  # Убираем 'http://'
-                proxy_dict = {
-                    'http': f'http://{proxy}',
-                    'https': f'http://{proxy}'
-                }
-                session.proxies.update(proxy_dict)
-                log_debug(f"АвтоПитер: использование прокси {proxy}")
+            proxy_dict = _session_set_proxy(session, proxy)
+            if proxy_dict:
+                log_debug(f"АвтоПитер: использование прокси {_proxy_url_to_host_port(proxy_dict.get('http', ''))}")
 
         # Autopiter чувствителен к параллельности: на `429/403` важно повторять запрос.
         # Иначе в задачи улетает пустой результат, который затем кэшируется.
@@ -1230,6 +1332,9 @@ def get_brands_by_artikul(
             except requests.exceptions.RequestException as e:
                 backoff = max(0.4, min(6.0, 0.8 * (2 ** attempt)))
                 global_penalty = min(120.0, max(6.0, 6.0 * (2 ** attempt)))
+                err_text = str(e).lower()
+                if proxy and ('407' in err_text or 'proxy authentication required' in err_text):
+                    mark_proxy_bad(str(proxy))
                 log_debug(
                     f"АвтоПитер: network error для {artikul}, backoff {backoff:.1f}s "
                     f"(attempt {attempt + 1}/{max_attempts}), global_penalty {global_penalty:.1f}s: {e}"
@@ -2419,49 +2524,20 @@ def _create_chrome_driver_robust(temp_dir: Optional[str] = None, proxy: Optional
                 chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
                 chrome_options.add_experimental_option('useAutomationExtension', False)
 
+                proxy_extension_loaded = _configure_chrome_proxy(chrome_options, proxy)
+
                 # Дополнительные настройки для стабильности
-                chrome_options.add_argument('--disable-extensions')
+                if not proxy_extension_loaded:
+                    chrome_options.add_argument('--disable-extensions')
                 chrome_options.add_argument('--disable-plugins')
                 chrome_options.add_argument('--disable-images')
-                # Не отключаем JS/CSS для Armtek: часть структуры и видимости управляется Angular
                 chrome_options.add_argument('--disable-web-security')
                 chrome_options.add_argument('--disable-features=VizDisplayCompositor')
                 chrome_options.add_argument('--memory-pressure-off')
                 chrome_options.add_argument('--max_old_space_size=4096')
                 chrome_options.add_argument('--disable-features=IsolateOrigins,site-per-process')
                 chrome_options.add_argument('--renderer-process-limit=2')
-
-                # Добавляем user-data-dir для стабильности сессий
                 chrome_options.add_argument(f'--user-data-dir={temp_dir}')
-
-                # Настройка прокси
-                if proxy:
-                    proxy_value = proxy
-                    if isinstance(proxy_value, str):
-                        if proxy_value.startswith('http://'):
-                            proxy_value = proxy_value[7:]
-                        elif proxy_value.startswith('https://'):
-                            proxy_value = proxy_value[8:]
-                        parsed = parse_proxy_line(proxy_value)
-                        if parsed:
-                            proxy_value = parsed['http'][7:]
-                    if '@' in str(proxy_value):
-                        auth_part, proxy_part = str(proxy_value).split('@', 1)
-                        if ':' in auth_part:
-                            chrome_options.add_argument(f'--proxy-server={proxy_part}')
-                            chrome_options.add_argument('--load-extension=/tmp/proxy-auth-extension')
-                        else:
-                            chrome_options.add_argument(f'--proxy-server={proxy_value}')
-                    else:
-                        chrome_options.add_argument(f'--proxy-server={proxy_value}')
-
-                    log_debug(f"Armtek Selenium: добавлен прокси {_proxy_url_to_host_port(str(proxy_value)) if '@' in str(proxy_value) else proxy_value}")
-
-                # Дополнительные опции для стабильности и производительности
-                chrome_options.add_argument('--disable-extensions')
-                chrome_options.add_argument('--disable-plugins')
-                chrome_options.add_argument('--disable-images')
-                chrome_options.add_argument('--disable-web-security')
                 chrome_options.add_argument('--allow-running-insecure-content')
                 chrome_options.add_argument('--disable-background-timer-throttling')
                 chrome_options.add_argument('--disable-backgrounding-occluded-windows')
@@ -2537,32 +2613,11 @@ def _create_chrome_driver_minimal(temp_dir: str, proxy: Optional[str] = None):
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--disable-extensions')
+        
+        proxy_extension_loaded = _configure_chrome_proxy(chrome_options, proxy)
+        if not proxy_extension_loaded:
+            chrome_options.add_argument('--disable-extensions')
         chrome_options.add_argument('--disable-plugins')
-        
-        # Настройка прокси
-        if proxy:
-            proxy_value = proxy
-            if isinstance(proxy_value, str):
-                if proxy_value.startswith('http://'):
-                    proxy_value = proxy_value[7:]
-                elif proxy_value.startswith('https://'):
-                    proxy_value = proxy_value[8:]
-                parsed = parse_proxy_line(proxy_value)
-                if parsed:
-                    proxy_value = parsed['http'][7:]
-            if '@' in str(proxy_value):
-                auth_part, proxy_part = str(proxy_value).split('@', 1)
-                if ':' in auth_part:
-                    chrome_options.add_argument(f'--proxy-server={proxy_part}')
-                    chrome_options.add_argument('--load-extension=/tmp/proxy-auth-extension')
-                else:
-                    chrome_options.add_argument(f'--proxy-server={proxy_value}')
-            else:
-                chrome_options.add_argument(f'--proxy-server={proxy_value}')
-
-            log_debug(f"Armtek Selenium: добавлен прокси {_proxy_url_to_host_port(str(proxy_value)) if '@' in str(proxy_value) else proxy_value}")
-        
         service = Service()
         driver = webdriver.Chrome(service=service, options=chrome_options)
         _set_selenium_remote_command_timeout(driver, _selenium_remote_http_timeout_seconds())
