@@ -1205,8 +1205,13 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
 
             full_html = driver.page_source
             brands = parse_autopiter_response(full_html, artikul)
-            if brands:
-                return brands
+            if not brands:
+                try:
+                    with open(f'/tmp/autopiter_debug_{artikul}.html', 'w', encoding='utf-8') as f:
+                        f.write(driver.page_source)
+                    log_debug(f"АвтоПитер: HTML сохранен для отладки: /tmp/autopiter_debug_{artikul}.html")
+                except:
+                    pass
 
             # Если страницы явно "пустые" (0 строк и 0 брендов) — лечим пересозданием драйвера.
             if final_rows_count == 0 and selenium_attempt < (selenium_attempts - 1):
@@ -1452,9 +1457,6 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
         from .brand_config import get_autopiter_blacklist
         brand_exclude_tokens = list(get_autopiter_blacklist())
 
-        # Чтобы не спамить одинаковыми debug-строками для одного бренда
-        # (основной селектор + fallback-селекторы), логируем каждую пару
-        # (бренд, source-группа) один раз.
         logged_pairs = set()
 
         def _source_group(source_text: str) -> str:
@@ -1471,103 +1473,73 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             if looks_like_analytics_garbage_token(brand):
                 return
             
-            # Исключаем чисто цифровые значения
             if brand_lower.isdigit():
                 return
             
-            # Исключаем служебные слова - проверяем точное совпадение И подстроку
-            # Сначала проверяем точное совпадение (более строгая проверка)
             if brand_lower in brand_exclude_tokens:
                 return
-            # Проверяем специальные случаи типа "diesel part", "diesel part:"
             if 'diesel' in brand_lower and ('part' in brand_lower or 'parts' in brand_lower):
                 return
-            # Затем проверяем, является ли бренд частью исключаемых слов
             if any(exclude in brand_lower for exclude in brand_exclude_tokens):
                 return
-            # Также проверяем обратное - является ли исключаемое слово частью бренда
             if any(brand_lower in exclude for exclude in brand_exclude_tokens if len(exclude) > len(brand_lower)):
                 return
             
-            # Исключаем артикулы, начинающиеся с определенных префиксов
             if brand_lower.startswith('12643') or brand_lower.startswith('d-') or brand_lower.startswith('dz'):
                 return
             
-            # Исключаем значения, начинающиеся с цифр (скорее всего артикулы)
             if brand[0].isdigit():
                 return
             
-            # Исключаем артикулы с форматом типа "43050.810", "DZ1560160020", "BAY15d", "MZ-005"
-            # Проверяем, если больше 50% символов - цифры или дефисы/точки, то это артикул
             digit_and_separator_count = sum(1 for c in brand if c.isdigit() or c in '-./')
             if digit_and_separator_count > len(brand) * 0.5:
                 return
             
-            # Исключаем короткие коды типа "BAY15d", "MZ-005", "NI-007" (2-3 буквы + цифры)
             if len(brand) <= 10 and re.match(r'^[A-Z]{2,3}[-]?\d+[A-Z]?$', brand, re.IGNORECASE):
                 return
             
-            # Исключаем артикулы с форматом "XXX-XXX" где много цифр
             if re.match(r'^[A-Z0-9]{2,}[-/][A-Z0-9]{2,}', brand, re.IGNORECASE):
-                # Проверяем, если больше 40% цифр, то это артикул
                 digit_count = sum(1 for c in brand if c.isdigit())
                 if digit_count > len(brand) * 0.4:
                     return
             
-            # Исключаем значения, где первые 3 символа содержат цифры (скорее всего артикулы)
             if any(char.isdigit() for char in brand[:3]):
                 return
             
-            # Исключаем слишком короткие значения (меньше 2 символов) или слишком длинные
             if len(brand) < 2 or len(brand) > 50:
                 return
             
-            # Исключаем артикулы с форматом "2911033G1080", "2912021LE058", "2206010A86AD"
-            # Паттерн: начинается с цифр, затем буквы, затем цифры (или наоборот)
             if re.match(r'^\d+[A-Z]+\d+', brand, re.IGNORECASE) or re.match(r'^[A-Z]+\d+[A-Z]+\d+', brand, re.IGNORECASE):
                 return
             
-            # Исключаем артикулы с форматом типа "2911033G", "2206010A" (много цифр + одна буква)
             if re.match(r'^\d{6,}[A-Z]{1,3}$', brand, re.IGNORECASE):
                 return
             
-            # Исключаем артикулы с форматом типа "G1080", "LE058" (буквы + цифры, если цифр больше 3)
             if re.match(r'^[A-Z]{1,4}\d{4,}$', brand, re.IGNORECASE):
                 return
             
-            # Исключаем значения, состоящие только из заглавных букв и цифр без пробелов (скорее всего артикулы)
             if brand.isupper() and not ' ' in brand and any(c.isdigit() for c in brand) and len(brand) > 5:
                 digit_ratio = sum(1 for c in brand if c.isdigit()) / len(brand)
-                if digit_ratio > 0.3:  # Если больше 30% цифр, то это артикул
+                if digit_ratio > 0.3:
                     return
                 
-            # Исключаем артикулы, где больше 60% символов - цифры (даже если есть буквы)
             digit_count = sum(1 for c in brand if c.isdigit())
             if digit_count > len(brand) * 0.6:
                 return
             
-            # Исключаем фразы из описаний (содержат пробелы и русские слова)
-            # Если бренд содержит пробелы и состоит в основном из русских букв - это описание, а не бренд
             if ' ' in brand:
                 russian_chars = sum(1 for c in brand if 'а' <= c.lower() <= 'я' or c.lower() == 'ё')
                 total_chars = sum(1 for c in brand if c.isalpha())
                 if total_chars > 0 and russian_chars / total_chars > 0.7:
-                    # Это русская фраза из описания, а не бренд
                     return
             
-            # Исключаем слова, которые начинаются с заглавной буквы и состоят только из русских букв
-            # (обычно это слова из описаний, а не бренды)
             if brand[0].isupper() and all('а' <= c.lower() <= 'я' or c.lower() == 'ё' or c == ' ' for c in brand):
-                # Проверяем, не является ли это известным брендом
                 known_russian_brands = {'автокомпонент', 'автокомпонент плюс', 'автодеталь'}
                 if brand_lower not in known_russian_brands:
                     return
             
-            # Разбиваем бренды с запятыми на отдельные (например, "БРТ, Балаково" -> "БРТ" и "Балаково")
-            # Используем ту же функцию, что и для Emex
             split_brands = _split_comma_separated_brands(brand)
             for split_brand in split_brands:
-                # Убираем ведущие подчеркивания (например, "_Балаково" -> "Балаково")
                 split_brand = split_brand.lstrip('_').strip()
                 if split_brand and len(split_brand) >= 2:
                     brands.add(split_brand)
@@ -1577,54 +1549,109 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                             logged_pairs.add(key)
                             log_debug(f"Autopiter: найден бренд '{split_brand}' ({source}) для {artikul} (из '{brand}')")
         
-        # Используем ТОЧНЫЙ селектор из DevTools пользователя
-        # #main-content > div > div > div.Table__table____693a7dea7e60fe92 > div > div.IndividualTableRow__infoColumn___b7ecc9b28c9245b4 > span > span > span > span
-        
-        # Ищем main-content
         main_content = soup.select_one('#main-content')
         if not main_content:
             log_debug(f"Autopiter: не найден #main-content для {artikul}")
             main_content = soup
 
-        # Основной путь через таблицу (может меняться из-за хэшей классов/AB-тестов)
+        # ========== ОСНОВНОЙ ПУТЬ: ищем бренды в строках таблицы ==========
         table = main_content.select_one('div[class*="Table__table"]')
         rows = table.select('div[class*="IndividualTableRow"]') if table else []
+        
         if table and rows:
             log_debug(f"Autopiter: найдено {len(rows)} строк IndividualTableRow для {artikul}")
 
             for row_idx, row in enumerate(rows):
+                # Ищем бренд в разных местах строки
+                found_brand = None
+                source_desc = None
+
+                # 1. Пробуем найти через ссылку на бренд (основной способ)
                 brand_link = row.select_one('div[class*="IndividualTableRow__brandLink"] a')
                 if brand_link:
-                    register_brand(brand_link.get_text(strip=True), f"строка {row_idx + 1} brandLink")
-                    continue
+                    found_brand = brand_link.get_text(strip=True)
+                    source_desc = f"строка {row_idx + 1} brandLink"
+                else:
+                    # 2. Пробуем найти через div с классом brandLink (без вложенной ссылки)
+                    brand_link_area = row.select_one('div[class*="IndividualTableRow__brandLink"]')
+                    if brand_link_area:
+                        # Ищем span с title
+                        title_span = brand_link_area.select_one('span[title]')
+                        if title_span and title_span.get('title'):
+                            found_brand = title_span.get('title')
+                            source_desc = f"строка {row_idx + 1} title"
+                        else:
+                            # Ищем любую ссылку
+                            nested_link = brand_link_area.select_one('a')
+                            if nested_link:
+                                found_brand = nested_link.get_text(strip=True)
+                                source_desc = f"строка {row_idx + 1} nested-link"
+                            else:
+                                # Пробуем получить текст напрямую
+                                direct_text = brand_link_area.get_text(strip=True)
+                                if direct_text:
+                                    found_brand = direct_text
+                                    source_desc = f"строка {row_idx + 1} direct-text"
 
-                brand_link_area = row.select_one('div[class*="IndividualTableRow__brandLink"]')
-                if brand_link_area:
-                    title_span = brand_link_area.select_one('span[title]')
-                    if title_span and title_span.get('title'):
-                        register_brand(title_span.get('title'), f"строка {row_idx + 1} title")
-                        continue
-                    nested_link = brand_link_area.select_one('a')
-                    if nested_link:
-                        register_brand(nested_link.get_text(strip=True), f"строка {row_idx + 1} nested-link")
-                        continue
+                # 3. Если не нашли через brandLink, пробуем infoColumn
+                if not found_brand:
+                    info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
+                    if info_column:
+                        # Ищем span с title
+                        title_span = info_column.select_one('span[title]')
+                        if title_span and title_span.get('title'):
+                            found_brand = title_span.get('title')
+                            source_desc = f"строка {row_idx + 1} info-title"
+                        else:
+                            # Пробуем найти ссылку внутри infoColumn
+                            link_in_info = info_column.select_one('a[href*="/brands/"]')
+                            if link_in_info:
+                                found_brand = link_in_info.get_text(strip=True)
+                                source_desc = f"строка {row_idx + 1} info-link"
+                            else:
+                                # Пробуем получить текст напрямую
+                                direct_text = info_column.get_text(strip=True)
+                                if direct_text:
+                                    # Бренд обычно первый в infoColumn
+                                    first_part = direct_text.split()[0] if direct_text.split() else ''
+                                    if first_part and len(first_part) > 1:
+                                        found_brand = first_part
+                                        source_desc = f"строка {row_idx + 1} info-text"
 
-                info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
-                if info_column:
-                    title_span = info_column.select_one('span[title]')
-                    if title_span and title_span.get('title'):
-                        register_brand(title_span.get('title'), f"строка {row_idx + 1} info-title")
+                # 4. Если все еще не нашли, пробуем общие селекторы внутри строки
+                if not found_brand:
+                    # Ищем любой элемент с классом brand
+                    brand_elements = row.select('[class*="brand"]')
+                    for el in brand_elements:
+                        text = el.get_text(strip=True)
+                        if text and len(text) > 1:
+                            found_brand = text
+                            source_desc = f"строка {row_idx + 1} brand-class"
+                            break
+
+                # Регистрируем найденный бренд
+                if found_brand:
+                    register_brand(found_brand, source_desc or f"строка {row_idx + 1}")
+
         else:
             if not table:
                 log_debug(f"Autopiter: не найдена таблица Table__table для {artikul}")
             else:
                 log_debug(f"Autopiter: не найдены строки IndividualTableRow для {artikul}")
 
-        # Fallback только внутри строк таблицы (не по всей странице — иначе footer/nav).
+        # ========== FALLBACK: если бренды не найдены в основном пути ==========
         if not brands:
-            for row_idx, row in enumerate(rows or []):
-                for a_tag in row.select('a[href*="/brands/"]'):
-                    register_brand(a_tag.get_text(strip=True), f"fallback-row {row_idx + 1}")
+            # Ищем бренды через ссылки на /brands/ во всей странице
+            for a_tag in soup.select('a[href*="/brands/"]'):
+                brand_text = a_tag.get_text(strip=True)
+                if brand_text and len(brand_text) > 1:
+                    register_brand(brand_text, "fallback-link")
+
+            # Ищем бренды через элементы с data-brand
+            for el in soup.select('[data-brand]'):
+                brand_text = el.get('data-brand', '').strip()
+                if brand_text:
+                    register_brand(brand_text, "fallback-data-brand")
 
         # Дополнительно собираем бренды из блока "Производители" (чипы над таблицей)
         brand_chip_selectors = [
@@ -1636,7 +1663,8 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
         for selector in brand_chip_selectors:
             for element in soup.select(selector):
                 text = element.get('title') or element.get_text(strip=True)
-                register_brand(text, "блок производителей")
+                if text:
+                    register_brand(text, "блок производителей")
         
         log_debug(f"Autopiter: итого найдено {len(brands)} брендов для {artikul}")
         
