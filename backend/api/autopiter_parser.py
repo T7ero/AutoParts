@@ -1566,14 +1566,19 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                 source_desc = None
 
                 # ====== ГЛАВНЫЙ СПОСОБ (Самый надежный): ищем в brandLink ======
-                #  бренд лежит внутри span.IndividualTableRow__brandLink
+                # бренд лежит внутри span.IndividualTableRow__brandLink
                 brand_link = row.select_one('span[class*="IndividualTableRow__brandLink"] a[href*="/brands/"]')
                 if not brand_link:
-                    # Fallback: если не нашли по brandLink, ищем по infoColumn (как было раньше)
+                    # Fallback: если не нашли по brandLink, ищем по infoColumn
                     info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
                     if info_column:
-                        time.sleep(0.5)
-                        brand_link = info_column.select_one('span a[href*="/brands/"]')
+                        # Вместо WebDriverWait делаем 2 короткие попытки с паузой
+                        # Это эмулирует ожидание появления элемента без драйвера
+                        for _ in range(2):
+                            brand_link = info_column.select_one('span a[href*="/brands/"]')
+                            if brand_link:
+                                break
+                            time.sleep(0.4)  # Ждем 0.4 секунды и пробуем снова
 
                 if brand_link:
                     found_brand = brand_link.get_text(strip=True)
