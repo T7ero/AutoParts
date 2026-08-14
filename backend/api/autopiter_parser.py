@@ -1573,7 +1573,7 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                     info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
                     if info_column:
                         time.sleep(0.5)
-                        brand_link = info_column.select_one('a[href*="/brands/"]')
+                        brand_link = info_column.select_one('span a[href*="/brands/"]')
 
                 if brand_link:
                     found_brand = brand_link.get_text(strip=True)
