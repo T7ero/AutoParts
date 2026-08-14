@@ -1568,6 +1568,7 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                 # ====== ГЛАВНЫЙ СПОСОБ: ищем в infoColumn (здесь находятся бренды!) ======
                 info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
                 if info_column:
+                    time.sleep(0.5)
                     # Ищем ссылку на бренд внутри infoColumn
                     brand_link = info_column.select_one('a[href*="/brands/"]')
                     if brand_link:
