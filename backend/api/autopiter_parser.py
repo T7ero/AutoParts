@@ -1562,65 +1562,49 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             log_debug(f"Autopiter: найдено {len(rows)} строк IndividualTableRow для {artikul}")
 
             for row_idx, row in enumerate(rows):
-                # Ищем бренд в разных местах строки
                 found_brand = None
                 source_desc = None
 
-                # 1. Пробуем найти через ссылку на бренд (основной способ)
-                brand_link = row.select_one('div[class*="IndividualTableRow__brandLink"] a')
-                if brand_link:
-                    found_brand = brand_link.get_text(strip=True)
-                    source_desc = f"строка {row_idx + 1} brandLink"
-                else:
-                    # 2. Пробуем найти через div с классом brandLink (без вложенной ссылки)
-                    brand_link_area = row.select_one('div[class*="IndividualTableRow__brandLink"]')
-                    if brand_link_area:
-                        # Ищем span с title
-                        title_span = brand_link_area.select_one('span[title]')
-                        if title_span and title_span.get('title'):
-                            found_brand = title_span.get('title')
-                            source_desc = f"строка {row_idx + 1} title"
-                        else:
-                            # Ищем любую ссылку
-                            nested_link = brand_link_area.select_one('a')
-                            if nested_link:
-                                found_brand = nested_link.get_text(strip=True)
-                                source_desc = f"строка {row_idx + 1} nested-link"
-                            else:
-                                # Пробуем получить текст напрямую
-                                direct_text = brand_link_area.get_text(strip=True)
-                                if direct_text:
-                                    found_brand = direct_text
-                                    source_desc = f"строка {row_idx + 1} direct-text"
-
-                # 3. Если не нашли через brandLink, пробуем infoColumn
-                if not found_brand:
-                    info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
-                    if info_column:
+                # ====== ГЛАВНЫЙ СПОСОБ: ищем в infoColumn (здесь находятся бренды!) ======
+                info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
+                if info_column:
+                    # Ищем ссылку на бренд внутри infoColumn
+                    brand_link = info_column.select_one('a[href*="/brands/"]')
+                    if brand_link:
+                        found_brand = brand_link.get_text(strip=True)
+                        source_desc = f"строка {row_idx + 1} info-link"
+                    else:
                         # Ищем span с title
                         title_span = info_column.select_one('span[title]')
                         if title_span and title_span.get('title'):
                             found_brand = title_span.get('title')
                             source_desc = f"строка {row_idx + 1} info-title"
                         else:
-                            # Пробуем найти ссылку внутри infoColumn
-                            link_in_info = info_column.select_one('a[href*="/brands/"]')
-                            if link_in_info:
-                                found_brand = link_in_info.get_text(strip=True)
-                                source_desc = f"строка {row_idx + 1} info-link"
-                            else:
-                                # Пробуем получить текст напрямую
-                                direct_text = info_column.get_text(strip=True)
-                                if direct_text:
-                                    # Бренд обычно первый в infoColumn
+                            # Пробуем получить текст напрямую из infoColumn
+                            # Бренд обычно первый в infoColumn
+                            direct_text = info_column.get_text(strip=True)
+                            if direct_text:
+                                # Бренд идет первым, до разделителя
+                                first_part = direct_text.split('—')[0].strip()
+                                if first_part and len(first_part) > 1:
+                                    found_brand = first_part
+                                    source_desc = f"строка {row_idx + 1} info-text"
+                                elif direct_text and len(direct_text) > 1:
+                                    # Если нет разделителя, пробуем взять первый элемент
                                     first_part = direct_text.split()[0] if direct_text.split() else ''
                                     if first_part and len(first_part) > 1:
                                         found_brand = first_part
-                                        source_desc = f"строка {row_idx + 1} info-text"
+                                        source_desc = f"строка {row_idx + 1} info-text-split"
 
-                # 4. Если все еще не нашли, пробуем общие селекторы внутри строки
+                # ====== ВТОРОЙ СПОСОБ: ищем в brandLink ======
                 if not found_brand:
-                    # Ищем любой элемент с классом brand
+                    brand_link = row.select_one('div[class*="IndividualTableRow__brandLink"] a')
+                    if brand_link:
+                        found_brand = brand_link.get_text(strip=True)
+                        source_desc = f"строка {row_idx + 1} brandLink"
+
+                # ====== ТРЕТИЙ СПОСОБ: любой элемент с классом brand ======
+                if not found_brand:
                     brand_elements = row.select('[class*="brand"]')
                     for el in brand_elements:
                         text = el.get_text(strip=True)
