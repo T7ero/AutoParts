@@ -1331,7 +1331,7 @@ def get_brands_by_artikul(
         # - 429/403: 1 попытка (сильный глобальный cooldown), дальше переходим к следующему артикулу
         # Для fast-fallback после Selenium используем более "короткий" HTTP-профиль,
         # чтобы не зависать по 40-60 секунд на одном артикуле.
-        max_attempts = 1 if force_http else 3
+        max_attempts = 1 if force_http else 4
         request_timeout = 10 if force_http else 18
         for attempt in range(max_attempts):
             # Лёгкий джиттер + глобальный лимитер, чтобы не стрелять бурстами и не ловить 429 пачками
@@ -1396,36 +1396,38 @@ def get_brands_by_artikul(
                 except Exception:
                     retry_after = None
 
+                # Если сервер сказал ждать - ждем столько, сколько он сказал.
                 if retry_after is not None:
-                    # Если сервер шлёт Retry-After — уважаем, но ограничиваем сверху
-                    backoff = max(0.2, min(2.0, retry_after))
-                    # Для глобального отката нужно сильнее, чем локальный backoff.
-                    global_penalty = min(120.0, max(6.0, retry_after * 4.0))
+                    backoff = max(1.0, min(10.0, retry_after))
+                    global_penalty = min(120.0, max(10.0, retry_after * 3.0))
                 else:
-                    # Экспоненциальный backoff локально, но кап ограничен,
-                    # а "длинный перерыв" обеспечивает глобальный кулдаун (Redis).
-                    backoff = max(0.2, min(2.0, 0.3 * (2 ** attempt)))
-                    # Глобальная penalty должна расти быстрее, иначе 429-волны не успевают "схлынуть".
-                    global_penalty = min(120.0, max(6.0, 5.0 * (2 ** attempt)))
+                    # Если сервер не сказал - увеличиваем паузу экспоненциально.
+                    backoff = max(1.0, min(10.0, 2.0 * (2 ** attempt)))
+                    global_penalty = min(120.0, max(10.0, 10.0 * (2 ** attempt)))
 
                 log_debug(
                     f"АвтоПитер: HTTP {response.status_code} для {artikul}, backoff {backoff:.1f}s "
                     f"(attempt {attempt + 1}/{max_attempts}), global_penalty {global_penalty:.1f}s"
                 )
-                # Удлиняем общий cooldown по всем процессам, чтобы другие worker'ы не добивали Autopiter.
-                if response.status_code in (429, 403):
-                    _global_autopiter_penalize(global_penalty)
+
+                # Применяем штрафы и чистим куки
+                _global_autopiter_penalize(global_penalty)
                 _AUTOPITER_LIMITER.penalize(backoff)
                 try:
                     session.cookies.clear()
                 except Exception:
                     pass
 
-                # ВАЖНО: на 429/403 не тратим время на повторные попытки по этому же артикулу.
-                # Пробрасываем исключение в tasks.py, там negative-cache не ставится.
-                if response.status_code == 429:
-                    raise AutopiterRateLimitException(f"Autopiter rate-limit 429 for {artikul}")
-                raise AutopiterForbiddenException(f"Autopiter forbidden 403 for {artikul}")
+                # ЖДЕМ! Это критично, чтобы сайт разблокировал IP.
+                time.sleep(backoff)
+
+                # Если это была последняя попытка - возвращаем пустой список, НЕ выкидываем исключение.
+                if attempt == max_attempts - 1:
+                    log_debug(f"АвтоПитер: исчерпаны попытки для {artikul} из-за {response.status_code}, возвращаем []")
+                    return []
+                
+                # Иначе пробуем следующую попытку
+                continue
 
             # Для других HTTP кодов не делаем много повторов
             log_debug(f"АвтоПитер: HTTP {response.status_code} для {artikul} (attempt {attempt + 1})")
