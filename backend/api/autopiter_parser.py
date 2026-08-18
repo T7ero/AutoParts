@@ -1340,6 +1340,7 @@ def get_brands_by_artikul(
             _AUTOPITER_LIMITER.wait()
 
             try:
+                time.sleep(random.uniform(15, 25))
                 # Увеличенный timeout снижает количество "Read timed out"
                 response = session.get(url, timeout=request_timeout, allow_redirects=True)
             except requests.exceptions.Timeout as e:
