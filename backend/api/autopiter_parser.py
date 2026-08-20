@@ -21,7 +21,7 @@ import random
 import threading
 from typing import List, Dict, Optional, Tuple, Set, Union
 from selenium.common.exceptions import TimeoutException
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import gc
 
 try:
@@ -1259,41 +1259,51 @@ def get_brands_by_artikul(
     force_http: bool = False,
 ) -> List[str]:
     """Получает бренды с Autopiter по артикулу.
-    По умолчанию работает через Selenium (стабильнее при волнах HTTP 429).
-    Для отката на HTTP можно выставить AUTOPITER_TRANSPORT=http.
+    Новая логика: сначала пробуем HTTP (быстро), Selenium — только как fallback.
     """
     try:
-        transport = os.getenv("AUTOPITER_TRANSPORT", "selenium").strip().lower()
-        if not force_http and transport in ("selenium", "sel"):
+        # ===== НОВАЯ ЛОГИКА: Сначала HTTP, Selenium только как fallback =====
+        # Если force_http уже True, значит мы уже внутри HTTP-режима (рекурсивно не идём)
+        if not force_http:
+            # Пытаемся получить прокси для HTTP-запроса
+            http_proxy_dict = get_next_proxy()
+            
+            if http_proxy_dict:
+                # Извлекаем строку прокси (без 'http://') для передачи в функцию
+                http_proxy_url = http_proxy_dict.get('http', '')
+                if http_proxy_url.startswith('http://'):
+                    http_proxy = http_proxy_url[7:]
+                else:
+                    http_proxy = http_proxy_url
+                
+                log_debug(f"АвтоПитер: пробуем быстрый HTTP-запрос для {artikul} через прокси {_proxy_url_to_host_port(http_proxy_url)}")
+                
+                # Вызываем функцию с force_http=True (это заставит её использовать HTTP-режим)
+                brands = get_brands_by_artikul(artikul, http_proxy, force_http=True)
+                
+                if brands:
+                    log_debug(f"АвтоПитер: HTTP-запрос успешно вернул {len(brands)} брендов для {artikul}")
+                    return brands
+                else:
+                    log_debug(f"АвтоПитер: HTTP-запрос вернул 0 брендов для {artikul}, пробуем Selenium")
+            else:
+                log_debug(f"АвтоПитер: не удалось получить прокси для HTTP, сразу пробуем Selenium")
+
+            # Если HTTP не сработал или не было прокси — пробуем Selenium
             try:
                 brands = parse_autopiter_selenium(artikul, proxy)
+                if brands:
+                    log_debug(f"АвтоПитер: Selenium успешно вернул {len(brands)} брендов для {artikul}")
+                    return brands
             except AutopiterBlockedException:
-                if proxy:
-                    log_debug(f"АвтоПитер: captcha/блокировка для {artikul} на прокси {proxy}. Помечаем прокси как плохой и берем новый.")
-                    mark_proxy_bad(proxy)  # <--- ВАЖНО: помечаем текущий прокси как проблемный
-                    # Пробуем HTTP через новый прокси (force_http=True, но без передачи старого proxy)
-                    return get_brands_by_artikul(artikul, None, force_http=True)
-                if is_autopiter_proxy_enabled():
-                    fallback_proxy = get_proxy_string()
-                    if fallback_proxy:
-                        log_debug(
-                            f"АвтоПитер: captcha для {artikul} с IP сервера, "
-                            f"повтор через прокси {_proxy_url_to_host_port(fallback_proxy)}"
-                        )
-                        return get_brands_by_artikul(artikul, fallback_proxy, force_http=False)
-                log_debug(
-                    f"АвтоПитер: captcha для {artikul}, прокси недоступны "
-                    f"(загрузите proxies.txt или AUTOPITER_USE_PROXY=0 отключает авто-режим)"
-                )
-                raise
-            if brands:
-                return brands
+                log_debug(f"АвтоПитер: Selenium упал на капчу для {artikul}, возвращаем пустой результат")
+                # Если Selenium упал на капчу — возвращаем []
+                return []
+            except Exception as e:
+                log_debug(f"АвтоПитер: Selenium ошибка для {artikul}: {str(e)}")
+                return []
 
-            # Circuit-breaker: при деградации Selenium сразу пробуем HTTP для ЭТОГО артикула.
-            use_http_fallback = os.getenv("AUTOPITER_SELENIUM_HTTP_FALLBACK", "1").strip().lower()
-            if use_http_fallback in ("1", "true", "yes", "on"):
-                log_debug(f"АвтоПитер: Selenium вернул 0 для {artikul}, пробуем HTTP fallback")
-                return get_brands_by_artikul(artikul, proxy, force_http=True)
+            # Если ни HTTP, ни Selenium не вернули бренды — возвращаем пустой список
             return []
 
         log_debug(f"АвтоПитер: начинаем парсинг {artikul}")

@@ -978,9 +978,9 @@ def process_parsing_task(self, task_id):
             if total_proxies > 0:
                 # Фиксируем 2 параллельных потока для Emex, чтобы не менять нагрузку
                 # и не провоцировать лишние сбои при смене прокси/окружения.
-                emex_parallel = 2
+                emex_parallel = 5
             else:
-                emex_parallel = 2
+                emex_parallel = 5
             emex_semaphore = threading.Semaphore(emex_parallel)
 
             try:
@@ -1173,10 +1173,10 @@ def process_parsing_task(self, task_id):
             # Armtek: стараемся держать 2 потока для скорости,
             # но adaptive-логика откатывает до 1 при волне renderer/timeout.
             try:
-                armtek_workers_cfg = int(os.getenv("ARMTEK_MAX_WORKERS", "1"))
+                armtek_workers_cfg = int(os.getenv("ARMTEK_MAX_WORKERS", "4"))
             except Exception:
-                armtek_workers_cfg = 1
-            armtek_workers_cfg = max(1, min(2, armtek_workers_cfg))
+                armtek_workers_cfg = 4
+            armtek_workers_cfg = max(1, min(6, armtek_workers_cfg))
             armtek_workers = _resolve_armtek_workers(len(numbers), armtek_workers_cfg, row_index)
             with concurrent.futures.ThreadPoolExecutor(max_workers=armtek_workers) as executor:
                 future_map = {executor.submit(parse_one_armtek, num): num for num in numbers}
