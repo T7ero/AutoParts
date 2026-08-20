@@ -52,8 +52,8 @@ HEADERS = {
 }
 # Оптимизированные таймауты для ускорения работы
 TIMEOUT = 5  # Увеличиваем для стабильности
-SELENIUM_TIMEOUT = 8  # Оптимизированное время для ускорения
-PAGE_LOAD_TIMEOUT = 12  # Увеличиваем для стабильности
+SELENIUM_TIMEOUT = 20 # Оптимизированное время для ускорения
+PAGE_LOAD_TIMEOUT = 30  # Увеличиваем для стабильности
 
 # Настройки для пула драйверов
 DRIVER_POOL_SIZE = 1
@@ -1351,7 +1351,7 @@ def get_brands_by_artikul(
         # Для fast-fallback после Selenium используем более "короткий" HTTP-профиль,
         # чтобы не зависать по 40-60 секунд на одном артикуле.
         max_attempts = 1 if force_http else 4
-        request_timeout = 10 if force_http else 18
+        request_timeout = 25 if force_http else 30
         for attempt in range(max_attempts):
             # Лёгкий джиттер + глобальный лимитер, чтобы не стрелять бурстами и не ловить 429 пачками
             time.sleep(random.uniform(0.0, 0.05))
