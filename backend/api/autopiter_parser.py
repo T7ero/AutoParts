@@ -837,38 +837,32 @@ def _proxy_url_to_host_port(proxy_url: str) -> str:
 
 
 def get_next_proxy() -> Optional[Dict[str, str]]:
-    """Возвращает следующий прокси из списка с улучшенной обработкой и исключением проблемных"""
-    global PROXY_INDEX, PROXY_LIST, BAD_PROXIES
-
+    """Возвращает прокси с случайным портом из диапазона 10000-10999"""
+    global PROXY_LIST, BAD_PROXIES
+    
     if not PROXY_LIST:
         load_proxies_from_file()
-
+        
     if not PROXY_LIST:
         return None
 
-    # Перебираем список, пропуская известные проблемные
-    attempts = 0
-    while attempts < len(PROXY_LIST):
-        proxy_str = PROXY_LIST[PROXY_INDEX % len(PROXY_LIST)]
-        PROXY_INDEX += 1
-        attempts += 1
-
-        if _proxy_is_bad(proxy_str):
-            continue
-
-        try:
-            proxy_dict = parse_proxy_line(proxy_str)
-            if not proxy_dict:
-                raise ValueError(f'не удалось распознать формат: {proxy_str}')
-
-            log_debug(f"Используется прокси: {_proxy_url_to_host_port(proxy_dict['http'])}")
+    # Берем базовую строку (у нас их всего одна или несколько)
+    base_proxy_str = PROXY_LIST[0]  # Например: "1fGdpeSDT6:8Aa4oZQHGR@pool.proxy.market"
+    
+    # Генерируем случайный порт в нужном диапазоне
+    random_port = random.randint(10000, 10999)
+    
+    # Собираем строку заново с новым портом
+    proxy_str_with_port = f"{base_proxy_str}:{random_port}"
+    
+    try:
+        proxy_dict = parse_proxy_line(proxy_str_with_port)
+        if proxy_dict:
+            log_debug(f"Используется прокси: {_proxy_url_to_host_port(proxy_dict['http'])} с портом {random_port}")
             return proxy_dict
-        except Exception as e:
-            log_debug(f"Ошибка парсинга прокси {proxy_str}: {e}")
-            BAD_PROXIES.add(proxy_str)
-            continue
-
-    log_debug("Нет доступных рабочих прокси (все помечены проблемными)")
+    except Exception as e:
+        log_debug(f"Ошибка парсинга прокси: {e}")
+        
     return None
 
 def _proxy_is_bad(proxy_line: str, proxy_dict: Optional[Dict[str, str]] = None) -> bool:
@@ -1316,18 +1310,34 @@ def get_brands_by_artikul(
         
         # Настройка прокси, если указан
         if proxy:
+            # Если прокси передан в функцию — используем его
             proxy_dict = _session_set_proxy(session, proxy)
             if proxy_dict:
                 log_debug(f"АвтоПитер: использование прокси {_proxy_url_to_host_port(proxy_dict.get('http', ''))}")
         else:
-            # Если прокси не передан, гарантированно берем новый на каждый артикул
-            # Это предотвращает 429, так как IP меняется перед каждым артикулом
+            # Если прокси не передан — принудительно берем новый на каждый артикул
+            # get_next_proxy() возвращает словарь {'http': '...', 'https': '...'}
             new_proxy_dict = get_next_proxy()
             if new_proxy_dict:
+                # Очищаем старые прокси
                 session.proxies.clear()
+                # Применяем новый словарь прокси к сессии
                 session.proxies.update(new_proxy_dict)
-                proxy = new_proxy_dict.get('http', '')
-                log_debug(f"АвтоПитер: принудительная ротация прокси на {_proxy_url_to_host_port(proxy)} перед артикулом {artikul}")
+                
+                # Извлекаем строку прокси БЕЗ 'http://' для логов и передачи в Selenium
+                raw_proxy_url = new_proxy_dict.get('http', '')
+                if raw_proxy_url.startswith('http://'):
+                    proxy_for_selenium = raw_proxy_url[7:]  # Убираем 'http://'
+                else:
+                    proxy_for_selenium = raw_proxy_url
+                
+                log_debug(f"АвтоПитер: принудительная ротация прокси на {_proxy_url_to_host_port(raw_proxy_url)} перед артикулом {artikul}")
+                
+                # ВАЖНО: передаем правильную строку дальше в Selenium/HTTP
+                proxy = proxy_for_selenium
+            else:
+                log_debug(f"АвтоПитер: не удалось получить новый прокси для {artikul}, работаем без прокси")
+                proxy = None
 
         # Autopiter чувствителен к параллельности: на `429/403` важно повторять запрос.
         # Иначе в задачи улетает пустой результат, который затем кэшируется.
