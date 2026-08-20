@@ -1319,6 +1319,15 @@ def get_brands_by_artikul(
             proxy_dict = _session_set_proxy(session, proxy)
             if proxy_dict:
                 log_debug(f"АвтоПитер: использование прокси {_proxy_url_to_host_port(proxy_dict.get('http', ''))}")
+        else:
+            # Если прокси не передан, гарантированно берем новый на каждый артикул
+            # Это предотвращает 429, так как IP меняется перед каждым артикулом
+            new_proxy_dict = get_next_proxy()
+            if new_proxy_dict:
+                session.proxies.clear()
+                session.proxies.update(new_proxy_dict)
+                proxy = new_proxy_dict.get('http', '')
+                log_debug(f"АвтоПитер: принудительная ротация прокси на {_proxy_url_to_host_port(proxy)} перед артикулом {artikul}")
 
         # Autopiter чувствителен к параллельности: на `429/403` важно повторять запрос.
         # Иначе в задачи улетает пустой результат, который затем кэшируется.
