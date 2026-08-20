@@ -1243,6 +1243,12 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
                     return_driver_to_pool(driver)
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+            try:
+                  subprocess.run(['pkill', '-9', '-f', 'chrome'], timeout=3, capture_output=True)
+                  subprocess.run(['pkill', '-9', '-f', 'chromedriver'], timeout=3, capture_output=True)
+            except Exception:
+                  pass
+
     if last_error:
         log_debug(f"АвтоПитер: не удалось восстановить Selenium-сессию для {artikul}: {last_error}")
     return []
