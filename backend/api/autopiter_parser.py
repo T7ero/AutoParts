@@ -1126,7 +1126,7 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
             except TimeoutException:
                 log_debug(f"АвтоПитер: таймаут ожидания #main-content для {artikul}")
 
-            time.sleep(1.5)
+            time.sleep(3.0)
 
             if _autopiter_page_blocked(driver.page_source):
                 log_debug(f"АвтоПитер: captcha/блокировка для {artikul}, пропускаем Selenium-парсинг")
@@ -1263,8 +1263,10 @@ def get_brands_by_artikul(
                 brands = parse_autopiter_selenium(artikul, proxy)
             except AutopiterBlockedException:
                 if proxy:
-                    log_debug(f"АвтоПитер: captcha для {artikul}, пробуем HTTP через прокси")
-                    return get_brands_by_artikul(artikul, proxy, force_http=True)
+                    log_debug(f"АвтоПитер: captcha/блокировка для {artikul} на прокси {proxy}. Помечаем прокси как плохой и берем новый.")
+                    mark_proxy_bad(proxy)  # <--- ВАЖНО: помечаем текущий прокси как проблемный
+                    # Пробуем HTTP через новый прокси (force_http=True, но без передачи старого proxy)
+                    return get_brands_by_artikul(artikul, None, force_http=True)
                 if is_autopiter_proxy_enabled():
                     fallback_proxy = get_proxy_string()
                     if fallback_proxy:
