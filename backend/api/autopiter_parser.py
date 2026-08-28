@@ -2609,13 +2609,17 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
 
 def _create_chrome_driver_robust(temp_dir: Optional[str] = None, proxy: Optional[str] = None) -> Optional[webdriver.Chrome]:
     """Создает Chrome драйвер с улучшенной обработкой ошибок и retry логикой"""
+    
+    # ВАЖНО: перед созданием нового драйвера убиваем ВСЕ старые процессы Chrome/Chromedriver
+    try:
+        subprocess.run(['pkill', '-9', '-f', 'chrome'], timeout=3, capture_output=True)
+        subprocess.run(['pkill', '-9', '-f', 'chromedriver'], timeout=3, capture_output=True)
+    except Exception:
+        pass
+    
     if not temp_dir:
         temp_dir = tempfile.mkdtemp(prefix=f"chrome_{uuid.uuid4().hex[:8]}_")
-        try:
-              subprocess.run(['pkill', '-9', '-f', 'chrome'], timeout=3, capture_output=True) 
-              subprocess.run(['pkill', '-9', '-f', 'chromedriver'], timeout=3, capture_output=True)
-        except Exception:
-              pass
+    
     with _ChromeCreateLock():
         for attempt in range(DRIVER_CREATION_RETRIES):
             try:
