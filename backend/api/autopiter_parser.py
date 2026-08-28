@@ -2163,13 +2163,11 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
 		log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
 		
 		# Получаем драйвер из пула или создаем новый (всегда с уникальным user-data-dir)
-		driver = get_driver_from_pool()
+		log_debug("Armtek Selenium: создаем новый драйвер (без пула)")
+		driver = _recover_armtek_driver(None, proxy_str)
 		if driver is None:
-			log_debug("Armtek Selenium: создаем новый драйвер")
-			driver = _recover_armtek_driver(None, proxy_str)
-			if driver is None:
-				log_debug("Armtek Selenium: не удалось создать драйвер")
-				return None
+			log_debug("Armtek Selenium: не удалось создать драйвер")
+			return None
 		
 		# Chrome CLI не поддерживает proxy-auth; для Selenium используем только ip:port
 		effective_proxy = None if (proxy_str and '@' in proxy_str) else proxy_str
@@ -2578,6 +2576,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
 		log_debug(f"Armtek Selenium: итого найдено {len(brands)} брендов для {artikul}")
 	else:
 		log_debug(f"Armtek Selenium: бренды не найдены для {artikul}")
+    
 	
 	return sorted(brands)
 
@@ -2585,6 +2584,11 @@ def _create_chrome_driver_robust(temp_dir: Optional[str] = None, proxy: Optional
     """Создает Chrome драйвер с улучшенной обработкой ошибок и retry логикой"""
     if not temp_dir:
         temp_dir = tempfile.mkdtemp(prefix=f"chrome_{uuid.uuid4().hex[:8]}_")
+        try:
+              subprocess.run(['pkill', '-9', '-f', 'chrome'], timeout=3, capture_output=True) 
+              subprocess.run(['pkill', '-9', '-f', 'chromedriver'], timeout=3, capture_output=True)
+        except Exception:
+              pass
     with _ChromeCreateLock():
         for attempt in range(DRIVER_CREATION_RETRIES):
             try:

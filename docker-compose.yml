@@ -60,17 +60,17 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256M
-          cpus: '0.3'
+          memory: 4096M
+          cpus: '2.0'
         reservations:
-          memory: 128M
-          cpus: '0.1'
+          memory: 2048M
+          cpus: '1.0'
 
   celery:
     build: 
       context: ./backend
       dockerfile: Dockerfile.alternative
-    command: celery -A backend worker -l info --concurrency=6 --max-tasks-per-child=5 --prefetch-multiplier=1
+    command: celery -A backend worker -l info --concurrency=2 --max-tasks-per-child=5 --prefetch-multiplier=1
     volumes:
       - ./backend:/app
       - ./backend/media:/app/media
@@ -114,7 +114,7 @@ services:
         reservations:
           memory: 1024M
           cpus: '1.0'
-    shm_size: '512mb'
+    shm_size: '1gb'
     ulimits:
       nproc: 65535
       nofile:
