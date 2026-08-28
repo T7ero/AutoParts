@@ -38,8 +38,8 @@ from celery.utils.log import get_task_logger
 from datetime import datetime
 # Кэш для ускорения работы парсера
 PARSER_CACHE = {}
-CACHE_EXPIRATION = 3600  # 1 час
-NEGATIVE_CACHE_EXPIRATION = 1800  # 30 минут для пустых результатов
+CACHE_EXPIRATION = 21600  # 6 часов вместо 1
+NEGATIVE_CACHE_EXPIRATION = 7200  # 2 часа для пустых
 
 CANCELLED_PARSING_TASKS: Set[int] = set()
 CANCELLED_TASKS_LOCK = threading.Lock()
@@ -990,7 +990,7 @@ def process_parsing_task(self, task_id):
             # Дефолт для Autopiter — 2 потока (через env, без хардкода в UI).
             # При росте таймаутов adaptive-логика временно откатит до 1.
             nnums = len(numbers)
-            default_ap_workers = "2"
+            default_ap_workers = "3"
             try:
                 autopiter_workers_cfg = int(os.getenv("AUTOPITER_MAX_WORKERS", default_ap_workers))
             except Exception:

@@ -1126,7 +1126,7 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
             except TimeoutException:
                 log_debug(f"АвтоПитер: таймаут ожидания #main-content для {artikul}")
 
-            time.sleep(3.0)
+            time.sleep(1.5)
 
             if _autopiter_page_blocked(driver.page_source):
                 log_debug(f"АвтоПитер: captcha/блокировка для {artikul}, пропускаем Selenium-парсинг")
@@ -1410,7 +1410,16 @@ def get_brands_by_artikul(
                             continue
                         else:
                             raise AutopiterNetworkException(f"Autopiter 407 for {artikul}: {e}")
-                
+
+                if '504' in err_text or 'timed out' in err_text:
+                    if proxy:
+                        mark_proxy_bad(str(proxy))
+                        log_debug(f"АвтоПитер: 504 на прокси {proxy}, мгновенно меняем")
+                        if attempt < max_attempts - 1:
+                            continue
+                        else:
+                            raise AutopiterNetworkException(f"Autopiter 504 for {artikul}: {e}")
+
                 # Остальные ошибки сети/прокси
                 backoff = max(0.4, min(6.0, 0.8 * (2 ** attempt)))
                 global_penalty = min(120.0, max(6.0, 6.0 * (2 ** attempt)))
@@ -2171,6 +2180,14 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
 	
 	try:
 		log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
+
+		try:
+			http_brands = parse_armtek_http(artikul, proxy_str)
+			if http_brands:
+				log_debug(f"Armtek: HTTP дал {len(http_brands)} брендов для {artikul}, пропускаем Selenium")
+				return filter_armtek_brands(http_brands)
+		except Exception as e:
+			log_debug(f"Armtek HTTP fallback ошибка: {str(e)}")
 		
 		# Получаем драйвер из пула или создаем новый (всегда с уникальным user-data-dir)
 		log_debug("Armtek Selenium: создаем новый драйвер (без пула)")
@@ -2326,7 +2343,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
 			driver_broken = False
 			try:
 				driver.get(url)
-				_armtek_wait_for_results(driver, max(12.0, float(SELENIUM_TIMEOUT) + 4.0))
+				_armtek_wait_for_results(driver, max(8.0, float(SELENIUM_TIMEOUT) + 4.0))
 			except Exception as e:
 				if _is_selenium_fatal_error(e):
 					return []
@@ -3098,7 +3115,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
         # Счетчик попыток и общий лимит времени на один артикул,
         # чтобы избежать многоминутных зависаний при недоступном Emex.
         total_attempts = 0
-        max_total_attempts = 5
+        max_total_attempts = 3
         api_start_ts = time.time()
         max_api_time_seconds = 25
         
