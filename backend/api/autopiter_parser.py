@@ -1399,11 +1399,21 @@ def get_brands_by_artikul(
                 time.sleep(backoff)
                 continue
             except requests.exceptions.RequestException as e:
+                err_text = str(e).lower()
+                
+                # ВАЖНО: если прокси требует авторизацию, но не получает её — мгновенно меняем
+                if '407' in err_text or 'proxy authentication required' in err_text:
+                    if proxy:
+                        mark_proxy_bad(str(proxy))
+                        log_debug(f"АвтоПитер: 407 на прокси {proxy}, мгновенно меняем прокси")
+                        if attempt < max_attempts - 1:
+                            continue
+                        else:
+                            raise AutopiterNetworkException(f"Autopiter 407 for {artikul}: {e}")
+                
+                # Остальные ошибки сети/прокси
                 backoff = max(0.4, min(6.0, 0.8 * (2 ** attempt)))
                 global_penalty = min(120.0, max(6.0, 6.0 * (2 ** attempt)))
-                err_text = str(e).lower()
-                if proxy and ('407' in err_text or 'proxy authentication required' in err_text):
-                    mark_proxy_bad(str(proxy))
                 log_debug(
                     f"АвтоПитер: network error для {artikul}, backoff {backoff:.1f}s "
                     f"(attempt {attempt + 1}/{max_attempts}), global_penalty {global_penalty:.1f}s: {e}"
