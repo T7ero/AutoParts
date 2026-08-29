@@ -957,7 +957,6 @@ def is_autopiter_proxy_enabled() -> bool:
 def cleanup_chrome_processes():
     """Принудительно очищает процессы Chrome и временные директории"""
     try:
-        # Проверяем, есть ли процессы Chrome перед очисткой
         chrome_processes = []
         
         for process_name in ['chrome', 'chromedriver', 'chromium']:
@@ -969,8 +968,9 @@ def cleanup_chrome_processes():
             except:
                 pass
         
-        # ЕСЛИ БОЛЬШЕ 10 ПРОЦЕССОВ - убиваем, иначе пропускаем
-        if len(chrome_processes) > 10:
+        # ВСЕГДА убиваем процессы, если их больше 3
+        # (а не только когда > 10)
+        if len(chrome_processes) > 3:
             log_debug(f"Найдено {len(chrome_processes)} процессов Chrome, очищаем")
             for process_name in ['chrome', 'chromedriver', 'chromium']:
                 try:
@@ -980,9 +980,9 @@ def cleanup_chrome_processes():
                     pass
         else:
             log_debug(f"Найдено {len(chrome_processes)} процессов Chrome, очистка не требуется")
-            return  # <-- НЕ убиваем, если мало процессов
+            return
         
-        # Очищаем временные директории Chrome более эффективно
+        # Очищаем временные директории
         temp_patterns = [
             '.com.google.Chrome*',
             '.org.chromium.Chromium*',
@@ -994,7 +994,7 @@ def cleanup_chrome_processes():
         for pattern in temp_patterns:
             try:
                 subprocess.run(['find', '/tmp', '-name', pattern, '-type', 'd', '-exec', 'rm', '-rf', '{}', '+'], 
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
             except:
                 pass
         
@@ -1011,21 +1011,7 @@ def cleanup_chrome_processes():
             except:
                 pass
         
-        # Очищаем временные директории в текущем рабочем каталоге
-        try:
-            current_dir = os.getcwd()
-            for pattern in ['chrome_*', 'chromium_*']:
-                for path in glob.glob(os.path.join(current_dir, pattern)):
-                    try:
-                        if os.path.isdir(path):
-                            subprocess.run(['rm', '-rf', path], 
-                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
-                    except:
-                        pass
-        except:
-            pass
-        
-        time.sleep(0.5)  # Уменьшаем время ожидания после очистки для ускорения
+        time.sleep(0.5)
         
     except Exception as e:
         log_debug(f"Ошибка очистки Chrome процессов: {str(e)}")
