@@ -73,6 +73,10 @@ MAX_ARMTEK_SELENIUM_FAILURES = 2
 BAD_PROXIES_EXPIRE = 300  # 5 минут
 BAD_PROXIES_TIMESTAMP = {}  # словарь для отслеживания времени
 
+# ===== ДОБАВИТЬ НОВЫЕ ПЕРЕМЕННЫЕ =====
+CHROME_MAX_PROCESSES = int(os.getenv("CHROME_MAX_PROCESSES", "10"))
+ARMTEK_CLEANUP_INTERVAL = int(os.getenv("ARMTEK_CLEANUP_INTERVAL", "3"))
+
 class _ChromeCreateLock:
 	"""Сериализует запуск Chrome между потоками и celery fork-процессами."""
 

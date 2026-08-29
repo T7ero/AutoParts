@@ -1126,6 +1126,13 @@ def process_parsing_task(self, task_id):
             reset_armtek_selenium_state()
             log(f"Armtek: начало обработки {len(numbers)} артикулов для строки {row_index + 1}")
 
+            try:
+                cleanup_driver_pool()
+                cleanup_chrome_processes()
+                log("Armtek: принудительная очистка драйверов перед началом строки")
+            except Exception as e:
+                log(f"Ошибка очистки драйверов: {e}")
+
             def parse_one_armtek(num):
                 cached_result = get_from_cache(num, 'armtek')
                 if cached_result is not None:
@@ -1134,7 +1141,7 @@ def process_parsing_task(self, task_id):
                         return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in cached_result]
                     return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
 
-                max_retries = 2
+                max_retries = 1
                 for attempt in range(max_retries):
                     try:
                         if attempt == 0:
@@ -1170,14 +1177,8 @@ def process_parsing_task(self, task_id):
                             set_cache(num, 'armtek', [], True)
                             return []
 
-            # Armtek: стараемся держать 2 потока для скорости,
-            # но adaptive-логика откатывает до 1 при волне renderer/timeout.
-            try:
-                armtek_workers_cfg = int(os.getenv("ARMTEK_MAX_WORKERS", "4"))
-            except Exception:
-                armtek_workers_cfg = 4
-            armtek_workers_cfg = max(1, min(6, armtek_workers_cfg))
-            armtek_workers = _resolve_armtek_workers(len(numbers), armtek_workers_cfg, row_index)
+            armtek_workers = 1  # Жёстко 1, даже если в env больше
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=armtek_workers) as executor:
                 future_map = {executor.submit(parse_one_armtek, num): num for num in numbers}
                 for future in concurrent.futures.as_completed(future_map):
@@ -1190,6 +1191,20 @@ def process_parsing_task(self, task_id):
                     except Exception as e:
                         log(f"Error processing armtek result for {num}: {str(e)}")
                         _record_armtek_event(_is_timeout_like_armtek_error(e), row_index)
+
+                    # ===== ДОБАВИТЬ: очистка после каждого артикула =====
+                    try:
+                        cleanup_chrome_processes()
+                    except Exception as e:
+                        log(f"Ошибка очистки Chrome после {num}: {e}")
+
+            # ===== ДОБАВИТЬ: финальная очистка после строки =====
+            try:
+                cleanup_driver_pool()
+                cleanup_chrome_processes()
+                log(f"Armtek: финальная очистка после строки {row_index + 1}")
+            except Exception as e:
+                log(f"Ошибка финальной очистки: {e}")
 
             log(f"Armtek: завершена обработка для строки {row_index + 1}, найдено {len(results)} результатов")
             return results

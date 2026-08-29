@@ -105,16 +105,20 @@ services:
       - CHROME_REMOTE_DEBUGGING_PORT=0
       - DEBUG=False
       - PYTHONUNBUFFERED=1
+      - CHROME_MAX_PROCESSES=10
+      - ARMTEK_CLEANUP_INTERVAL=3
+      - SELENIUM_TIMEOUT=15
+      - PAGE_LOAD_TIMEOUT=20
     restart: always
     deploy:
       resources:
         limits:
-          memory: 6144M
-          cpus: '2.0'
+          memory: 8192M
+          cpus: '3.0'
         reservations:
-          memory: 3072M
+          memory: 4096M
           cpus: '1.0'
-    shm_size: '2gb'
+    shm_size: '4gb'
     ulimits:
       nproc: 65535
       nofile:
