@@ -957,48 +957,15 @@ def is_autopiter_proxy_enabled() -> bool:
 def cleanup_chrome_processes():
     """Принудительно очищает процессы Chrome и временные директории"""
     try:
-        chrome_processes = []
-        
+        # ВСЕГДА убиваем процессы, не проверяя количество
         for process_name in ['chrome', 'chromedriver', 'chromium']:
             try:
-                result = subprocess.run(['pgrep', '-f', process_name], 
-                                      capture_output=True, text=True, timeout=2)
-                if result.returncode == 0 and result.stdout.strip():
-                    chrome_processes.extend(result.stdout.strip().split('\n'))
+                subprocess.run(['pkill', '-9', '-f', process_name], 
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
             except:
                 pass
-        
-        # ВСЕГДА убиваем процессы, если их больше 3
-        # (а не только когда > 10)
-        if len(chrome_processes) > 3:
-            log_debug(f"Найдено {len(chrome_processes)} процессов Chrome, очищаем")
-            for process_name in ['chrome', 'chromedriver', 'chromium']:
-                try:
-                    subprocess.run(['pkill', '-9', '-f', process_name], 
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
-                except:
-                    pass
-        else:
-            log_debug(f"Найдено {len(chrome_processes)} процессов Chrome, очистка не требуется")
-            return
         
         # Очищаем временные директории
-        temp_patterns = [
-            '.com.google.Chrome*',
-            '.org.chromium.Chromium*',
-            'chrome_*',
-            'chromium_*'
-        ]
-        
-        # Очищаем /tmp
-        for pattern in temp_patterns:
-            try:
-                subprocess.run(['find', '/tmp', '-name', pattern, '-type', 'd', '-exec', 'rm', '-rf', '{}', '+'], 
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
-            except:
-                pass
-        
-        # Дополнительная очистка через glob
         import glob
         for pattern in ['/tmp/chrome_*', '/tmp/chromium_*', '/tmp/.com.google.Chrome*', '/tmp/.org.chromium.Chromium*']:
             try:

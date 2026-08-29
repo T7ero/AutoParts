@@ -117,7 +117,7 @@ services:
           cpus: '3.0'
         reservations:
           memory: 4096M
-          cpus: '1.0'
+          cpus: '2.0'
     shm_size: '4gb'
     ulimits:
       nproc: 65535
