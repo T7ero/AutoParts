@@ -69,6 +69,9 @@ ARMTEK_SELENIUM_FAILURES = 0
 ARMTEK_SELENIUM_DISABLED = False
 MAX_ARMTEK_SELENIUM_FAILURES = 2
 
+# сброс плохих прокси по времени:
+BAD_PROXIES_EXPIRE = 300  # 5 минут
+BAD_PROXIES_TIMESTAMP = {}  # словарь для отслеживания времени
 
 class _ChromeCreateLock:
 	"""Сериализует запуск Chrome между потоками и celery fork-процессами."""
@@ -837,32 +840,47 @@ def _proxy_url_to_host_port(proxy_url: str) -> str:
 
 
 def get_next_proxy() -> Optional[Dict[str, str]]:
-    """Возвращает прокси с случайным портом из диапазона 10000-10999"""
-    global PROXY_LIST, BAD_PROXIES
+    global PROXY_LIST, PROXY_INDEX, BAD_PROXIES, BAD_PROXIES_TIMESTAMP
+    
+    # Очищаем старые плохие прокси (старше 5 минут)
+    current_time = time.time()
+    expired = [p for p, t in BAD_PROXIES_TIMESTAMP.items() if current_time - t > BAD_PROXIES_EXPIRE]
+    for p in expired:
+        BAD_PROXIES.discard(p)
+        del BAD_PROXIES_TIMESTAMP[p]
     
     if not PROXY_LIST:
         load_proxies_from_file()
-        
     if not PROXY_LIST:
         return None
 
-    # Берем базовую строку (у нас их всего одна или несколько)
-    base_proxy_str = PROXY_LIST[0]  # Например: "1fGdpeSDT6:8Aa4oZQHGR@pool.proxy.market"
-    
-    # Генерируем случайный порт в нужном диапазоне
-    random_port = random.randint(10000, 10999)
-    
-    # Собираем строку заново с новым портом
-    proxy_str_with_port = f"{base_proxy_str}:{random_port}"
-    
-    try:
-        proxy_dict = parse_proxy_line(proxy_str_with_port)
-        if proxy_dict:
-            log_debug(f"Используется прокси: {_proxy_url_to_host_port(proxy_dict['http'])} с портом {random_port}")
-            return proxy_dict
-    except Exception as e:
-        log_debug(f"Ошибка парсинга прокси: {e}")
+    # Пробуем перебрать все прокси
+    for _ in range(len(PROXY_LIST)):
+        proxy_str = PROXY_LIST[PROXY_INDEX % len(PROXY_LIST)]
+        PROXY_INDEX += 1
         
+        if proxy_str in BAD_PROXIES:
+            continue
+        
+        # Генерируем случайный порт
+        random_port = random.randint(10000, 10999)
+        proxy_str_with_port = f"{proxy_str}:{random_port}"
+        
+        try:
+            proxy_dict = parse_proxy_line(proxy_str_with_port)
+            if proxy_dict:
+                log_debug(f"Используется прокси: {_proxy_url_to_host_port(proxy_dict['http'])} с портом {random_port}")
+                return proxy_dict
+        except Exception as e:
+            log_debug(f"Ошибка парсинга прокси: {e}")
+            BAD_PROXIES.add(proxy_str)
+            BAD_PROXIES_TIMESTAMP[proxy_str] = time.time()
+            continue
+    
+    # Если все прокси плохие - сбрасываем и пробуем сначала
+    log_debug("Все прокси плохие, сбрасываем BAD_PROXIES")
+    BAD_PROXIES.clear()
+    BAD_PROXIES_TIMESTAMP.clear()
     return None
 
 def _proxy_is_bad(proxy_line: str, proxy_dict: Optional[Dict[str, str]] = None) -> bool:
@@ -882,7 +900,9 @@ def _proxy_is_bad(proxy_line: str, proxy_dict: Optional[Dict[str, str]] = None) 
 
 
 def mark_proxy_bad(proxy_repr: str) -> None:
-    """Помечает прокси как проблемный, чтобы временно его не использовать"""
+    """Помечает прокси как проблемный с временной меткой"""
+    global BAD_PROXIES, BAD_PROXIES_TIMESTAMP
+    
     try:
         if proxy_repr.startswith('http://'):
             proxy_repr = proxy_repr[7:]
@@ -890,13 +910,16 @@ def mark_proxy_bad(proxy_repr: str) -> None:
             proxy_repr = proxy_repr[8:]
     except Exception:
         pass
+    
     if not proxy_repr:
         return
-    BAD_PROXIES.add(proxy_repr)
-    host_port = _proxy_url_to_host_port(proxy_repr)
-    if host_port:
-        BAD_PROXIES.add(host_port)
-    log_debug(f"Прокси помечен как проблемный: {host_port or proxy_repr}")
+        
+    # Находим базовую строку без порта
+    base_proxy = proxy_repr.split(':')[0] if ':' in proxy_repr else proxy_repr
+    
+    BAD_PROXIES.add(base_proxy)
+    BAD_PROXIES_TIMESTAMP[base_proxy] = time.time()
+    log_debug(f"Прокси помечен как проблемный: {base_proxy}")
 
 def get_proxy_string() -> Optional[str]:
     """Возвращает строку прокси для использования в парсерах"""

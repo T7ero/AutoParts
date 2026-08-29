@@ -109,12 +109,12 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4096M
+          memory: 6144M
           cpus: '2.0'
         reservations:
-          memory: 1024M
+          memory: 3072M
           cpus: '1.0'
-    shm_size: '1gb'
+    shm_size: '2gb'
     ulimits:
       nproc: 65535
       nofile:
