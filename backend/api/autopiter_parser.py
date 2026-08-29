@@ -57,7 +57,7 @@ PAGE_LOAD_TIMEOUT = 30  # Увеличиваем для стабильности
 
 # Настройки для пула драйверов
 DRIVER_POOL_SIZE = 1
-DRIVER_CREATION_RETRIES = 3
+DRIVER_CREATION_RETRIES = 2
 DRIVER_TIMEOUT_RETRIES = 3  # Увеличиваем количество попыток
 
 # Один Chrome на воркер — иначе в Docker ловим "failed to start a thread"
@@ -2590,7 +2590,6 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
 def _create_chrome_driver_robust(temp_dir: Optional[str] = None, proxy: Optional[str] = None) -> Optional[webdriver.Chrome]:
     """Создает Chrome драйвер с улучшенной обработкой ошибок и retry логикой"""
     
-    # ВАЖНО: перед созданием нового драйвера убиваем ВСЕ старые процессы Chrome/Chromedriver
     try:
         subprocess.run(['pkill', '-9', '-f', 'chrome'], timeout=3, capture_output=True)
         subprocess.run(['pkill', '-9', '-f', 'chromedriver'], timeout=3, capture_output=True)
@@ -2612,37 +2611,44 @@ def _create_chrome_driver_robust(temp_dir: Optional[str] = None, proxy: Optional
                 chrome_options.add_argument('--disable-blink-features=AutomationControlled')
                 chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
                 chrome_options.add_experimental_option('useAutomationExtension', False)
-
-                proxy_extension_loaded = _configure_chrome_proxy(chrome_options, proxy)
-
-                # Дополнительные настройки для стабильности
-                if not proxy_extension_loaded:
-                    chrome_options.add_argument('--disable-extensions')
-                chrome_options.add_argument('--disable-plugins')
-                chrome_options.add_argument('--disable-images')
-                chrome_options.add_argument('--disable-web-security')
+                
+                # ===== НОВЫЕ АРГУМЕНТЫ ДЛЯ СТАБИЛЬНОСТИ =====
+                chrome_options.add_argument('--disable-software-rasterizer')
                 chrome_options.add_argument('--disable-features=VizDisplayCompositor')
-                chrome_options.add_argument('--memory-pressure-off')
-                chrome_options.add_argument('--max_old_space_size=4096')
                 chrome_options.add_argument('--disable-features=IsolateOrigins,site-per-process')
-                chrome_options.add_argument('--renderer-process-limit=2')
-                chrome_options.add_argument(f'--user-data-dir={temp_dir}')
-                chrome_options.add_argument('--allow-running-insecure-content')
                 chrome_options.add_argument('--disable-background-timer-throttling')
                 chrome_options.add_argument('--disable-backgrounding-occluded-windows')
                 chrome_options.add_argument('--disable-renderer-backgrounding')
                 chrome_options.add_argument('--disable-features=TranslateUI')
                 chrome_options.add_argument('--disable-ipc-flooding-protection')
-                chrome_options.add_argument('--no-first-run')
-                chrome_options.add_argument('--no-default-browser-check')
                 chrome_options.add_argument('--disable-logging')
-                chrome_options.add_argument('--disable-gpu-logging')
-                chrome_options.add_argument('--silent')
                 chrome_options.add_argument('--disable-crash-reporter')
                 chrome_options.add_argument('--disable-in-process-stack-traces')
                 chrome_options.add_argument('--log-level=3')
+                chrome_options.add_argument('--silent')
                 chrome_options.add_argument('--disable-dev-tools')
-                chrome_options.add_argument('--disable-software-rasterizer')
+                chrome_options.add_argument('--no-first-run')
+                chrome_options.add_argument('--no-default-browser-check')
+                
+                # ===== ВАЖНО: ограничиваем память для Chrome =====
+                chrome_options.add_argument('--memory-pressure-off')
+                chrome_options.add_argument('--max_old_space_size=2048')
+                
+                # ===== ВАЖНО: ограничиваем количество процессов =====
+                chrome_options.add_argument('--renderer-process-limit=2')
+                
+                # ===== ВАЖНО: отключаем ненужные фичи =====
+                chrome_options.add_argument('--disable-extensions')
+                chrome_options.add_argument('--disable-plugins')
+                chrome_options.add_argument('--disable-images')
+                chrome_options.add_argument('--disable-web-security')
+
+                proxy_extension_loaded = _configure_chrome_proxy(chrome_options, proxy)
+                if not proxy_extension_loaded:
+                    chrome_options.add_argument('--disable-extensions')
+                
+                chrome_options.add_argument(f'--user-data-dir={temp_dir}')
+                chrome_options.add_argument('--allow-running-insecure-content')
 
                 # Пытаемся найти ChromeDriver в разных местах
                 service = None
@@ -2661,18 +2667,15 @@ def _create_chrome_driver_robust(temp_dir: Optional[str] = None, proxy: Optional
                         continue
 
                 if service is None:
-                    service = Service()  # Автоопределение
+                    service = Service()
 
-                # Для тяжелых страниц (Autopiter) не ждем загрузки всех sub-resources,
-                # иначе чаще ловим renderer timeout в контейнере.
                 chrome_options.page_load_strategy = 'eager'
                 driver = webdriver.Chrome(service=service, options=chrome_options)
                 _set_selenium_remote_command_timeout(driver, _selenium_remote_http_timeout_seconds())
 
-                # Устанавливаем таймауты
                 driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
                 driver.set_script_timeout(max(20, PAGE_LOAD_TIMEOUT))
-                driver.implicitly_wait(1)  # Еще больше уменьшаем для ускорения
+                driver.implicitly_wait(1)
 
                 return driver
 
@@ -2683,7 +2686,7 @@ def _create_chrome_driver_robust(temp_dir: Optional[str] = None, proxy: Optional
                     time.sleep(3 + attempt * 2)
                     break
                 if attempt < DRIVER_CREATION_RETRIES - 1:
-                    time.sleep(2 ** attempt)  # Экспоненциальная задержка
+                    time.sleep(2 ** attempt)
                 else:
                     log_debug(f"Не удалось создать Chrome драйвер после {DRIVER_CREATION_RETRIES} попыток")
                     return None
