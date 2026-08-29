@@ -1144,7 +1144,6 @@ def process_parsing_task(self, task_id):
         
                 max_retries = 1  # Только 1 попытка, чтобы не накапливать драйверы
                 for attempt in range(max_retries):
-                    driver = None
                     try:
                         if attempt == 0:
                             proxy = None
@@ -1176,7 +1175,7 @@ def process_parsing_task(self, task_id):
                             set_cache(num, 'armtek', [], True)
                             return []
                     finally:
-                        # ===== ВАЖНО: ПРИНУДИТЕЛЬНАЯ ОЧИСТКА ПОСЛЕ КАЖДОГО АРТИКУЛА =====
+                        # ===== ОЧИСТКА ПОСЛЕ КАЖДОГО АРТИКУЛА =====
                         try:
                             cleanup_chrome_processes()
                         except Exception:
