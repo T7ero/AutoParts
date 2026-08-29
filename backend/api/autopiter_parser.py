@@ -956,27 +956,27 @@ def cleanup_chrome_processes():
         # Проверяем, есть ли процессы Chrome перед очисткой
         chrome_processes = []
         
-        # Убиваем все процессы Chrome более эффективно
         for process_name in ['chrome', 'chromedriver', 'chromium']:
             try:
-                # Проверяем, есть ли процессы
                 result = subprocess.run(['pgrep', '-f', process_name], 
                                       capture_output=True, text=True, timeout=2)
-                if result.returncode == 0:
+                if result.returncode == 0 and result.stdout.strip():
                     chrome_processes.extend(result.stdout.strip().split('\n'))
             except:
                 pass
         
-        if chrome_processes:
-            log_debug(f"Найдено {len(chrome_processes)} процессов Chrome для очистки")
-            
-            # Убиваем процессы
+        # ЕСЛИ БОЛЬШЕ 10 ПРОЦЕССОВ - убиваем, иначе пропускаем
+        if len(chrome_processes) > 10:
+            log_debug(f"Найдено {len(chrome_processes)} процессов Chrome, очищаем")
             for process_name in ['chrome', 'chromedriver', 'chromium']:
                 try:
                     subprocess.run(['pkill', '-9', '-f', process_name], 
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
                 except:
                     pass
+        else:
+            log_debug(f"Найдено {len(chrome_processes)} процессов Chrome, очистка не требуется")
+            return  # <-- НЕ убиваем, если мало процессов
         
         # Очищаем временные директории Chrome более эффективно
         temp_patterns = [
