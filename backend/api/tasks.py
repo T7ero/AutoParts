@@ -1136,13 +1136,19 @@ def process_parsing_task(self, task_id):
                 local = {'autopiter': [], 'emex': []}
                 if 'autopiter' in selected_sources:
                     ap_retries = autopiter_proxy_retries if autopiter_proxy_enabled else 1
-                    local['autopiter'].extend(parse_one('autopiter', get_brands_by_artikul, max_retries=ap_retries)(num))
+                    autopiter_inner = parse_one('autopiter', get_brands_by_artikul, max_retries=ap_retries)
+                    if autopiter_inner is not None:  # <-- ДОБАВИТЬ ПРОВЕРКУ
+                        local['autopiter'].extend(autopiter_inner(num))
+                    else:
+                        log_debug(f"autopiter: parse_one вернул None для {num}")
+
                 if 'emex' in selected_sources and not state['emex_disabled']:
                     with emex_semaphore:
                         proxy = get_proxy_string()
                         try:
-                            emex_res = parse_one('emex', get_brands_by_artikul_emex)(num, proxy)
-                            if emex_res:
+                            emex_inner = parse_one('emex', get_brands_by_artikul_emex)
+                            if emex_inner is not None:
+                                emex_res = emex_inner(num,proxy)
                                 state['emex_failures'] = 0
                             else:
                                 state['emex_failures'] += 1
