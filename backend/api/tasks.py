@@ -1068,73 +1068,75 @@ def process_parsing_task(self, task_id):
 
             log(f"Парсинг {len(uncached_numbers)} артикулов из {len(numbers)} (остальные в кэше)")
 
-            def parse_one(site, parser_func, max_retries=1):
-                def inner(num, proxy=None):
-                    # ===== ПРОВЕРКА КЭША ВНУТРИ =====
-                    cached = get_cached_brands(num, site)
-                    if cached is not None:
-                        log_debug(f"{site}: глобальный кэш {num} ({len(cached)} брендов)")
-                        return [(brand, part_number, name, b, num, site) for b in cached]
-
-                    # ===== ПРОВЕРКА: parser_func не должна быть None =====
-                    if parser_func is None:
-                        log_debug(f"{site}: parser_func is None для {num}")
-                        return []
-                    
-                    for attempt in range(max_retries):
-                        try:
-                            if site == 'autopiter' and autopiter_proxy_enabled:
-                                proxy = get_proxy_string()
+        def parse_one(site, parser_func, max_retries=1):
+            def inner(num, proxy=None):
+                # ===== ПРОВЕРКА КЭША ВНУТРИ =====
+                cached = get_cached_brands(num, site)
+                if cached is not None:
+                    log_debug(f"{site}: глобальный кэш {num} ({len(cached)} брендов)")
+                    return [(brand, part_number, name, b, num, site) for b in cached]
+        
+                # ===== ПРОВЕРКА: parser_func не должна быть None =====
+                if parser_func is None:
+                    log_debug(f"{site}: parser_func is None для {num}")
+                    return []
+        
+                for attempt in range(max_retries):
+                    try:
+                        if site == 'autopiter' and autopiter_proxy_enabled:
+                            proxy = get_proxy_string()
+                            log_debug(f"{site}: попытка {attempt+1} с прокси для {num}")
+                        elif attempt == 0:
+                            if site == 'emex' and proxy:
                                 log_debug(f"{site}: попытка {attempt+1} с прокси для {num}")
-                            elif attempt == 0:
-                                if site == 'emex' and proxy:
-                                    log_debug(f"{site}: попытка {attempt+1} с прокси для {num}")
-                                else:
-                                    proxy = None
-                                    log_debug(f"{site}: попытка {attempt+1} для {num}")
                             else:
-                                proxy = get_next_proxy()
-                                log_debug(f"{site}: попытка {attempt+1} с прокси для {num}")
-
-                            time.sleep(0.01 if site == 'autopiter' else 0.01)
-                            brands = parser_func(num, proxy)
-
-                            if site == 'autopiter':
-                                brands = filter_garbage_brands(brands, source='autopiter')
-                            elif site == 'emex':
-                                brands = filter_garbage_brands(brands, source='emex')
-
-                            # ===== СОХРАНЯЕМ В ГЛОБАЛЬНЫЙ КЭШ =====
-                            set_cached_brands(num, site, brands)
-
-                            log_debug(f"{site}: {num} → {len(brands)} брендов")
-                            return [(brand, part_number, name, b, num, site) for b in brands]
-                        except Exception as e:
-                            log(f"Error parsing {site} for {num} (attempt {attempt + 1}): {str(e)}")
-                            if site == 'autopiter':
-                                _record_autopiter_event(_is_timeout_like_autopiter_error(e), row_index)
-                            if attempt < max_retries - 1:
-                                time.sleep(0.1)
-                            else:
-                                log(f"Failed to parse {site} for {num} after {max_retries} attempts")
-                                if isinstance(e, (
-                                    AutopiterRateLimitException,
-                                    AutopiterForbiddenException,
-                                    AutopiterNetworkException,
-                                    AutopiterBlockedException,
-                                )):
-                                    log_debug(f"{site}: rate-limit/403/network, пропускаем negative cache для {num}")
-                                    return []
-                                set_cached_brands(num, site, [])
+                                proxy = None
+                                log_debug(f"{site}: попытка {attempt+1} для {num}")
+                        else:
+                            proxy = get_next_proxy()
+                            log_debug(f"{site}: попытка {attempt+1} с прокси для {num}")
+        
+                        time.sleep(0.01 if site == 'autopiter' else 0.01)
+                        brands = parser_func(num, proxy)
+        
+                        if site == 'autopiter':
+                            brands = filter_garbage_brands(brands, source='autopiter')
+                        elif site == 'emex':
+                            brands = filter_garbage_brands(brands, source='emex')
+        
+                        # ===== СОХРАНЯЕМ В ГЛОБАЛЬНЫЙ КЭШ =====
+                        set_cached_brands(num, site, brands)
+        
+                        log_debug(f"{site}: {num} → {len(brands)} брендов")
+                        return [(brand, part_number, name, b, num, site) for b in brands]
+                    except Exception as e:
+                        log(f"Error parsing {site} for {num} (attempt {attempt + 1}): {str(e)}")
+                        if site == 'autopiter':
+                            _record_autopiter_event(_is_timeout_like_autopiter_error(e), row_index)
+                        if attempt < max_retries - 1:
+                            time.sleep(0.1)
+                        else:
+                            log(f"Failed to parse {site} for {num} after {max_retries} attempts")
+                            if isinstance(e, (
+                                AutopiterRateLimitException,
+                                AutopiterForbiddenException,
+                                AutopiterNetworkException,
+                                AutopiterBlockedException,
+                            )):
+                                log_debug(f"{site}: rate-limit/403/network, пропускаем negative cache для {num}")
                                 return []
-                    return inner
+                            set_cached_brands(num, site, [])
+                            return []
+                return []  # <-- ДОБАВИТЬ: если все попытки не удались
+            
+            return inner  # <-- ВСЕГДА ВОЗВРАЩАЕТ inner
 
             _emex_note = f", Emex параллельно: {emex_parallel}" if 'emex' in selected_sources else ""
             log(f"Начинаем парсинг {len(uncached_numbers)} артикулов для строки {row_index + 1} (потоков Autopiter/строка: {AUTOPITER_MAX_WORKERS}{_emex_note})")
 
             def worker(num):
                 local = {'autopiter': [], 'emex': []}
-                
+
                 if 'autopiter' in selected_sources:
                     ap_retries = autopiter_proxy_retries if autopiter_proxy_enabled else 1
                     autopiter_inner = parse_one('autopiter', get_brands_by_artikul, max_retries=ap_retries)
@@ -1142,7 +1144,7 @@ def process_parsing_task(self, task_id):
                         local['autopiter'].extend(autopiter_inner(num))
                     else:
                         log_debug(f"autopiter: parse_one вернул None для {num}")
-            
+
                 if 'emex' in selected_sources and not state['emex_disabled']:
                     with emex_semaphore:
                         proxy = get_proxy_string()
@@ -1158,14 +1160,14 @@ def process_parsing_task(self, task_id):
                             else:
                                 state['emex_failures'] += 1
                                 log_debug(f"emex: parse_one вернул None для {num}")
-                            
+
                             if state['emex_failures'] >= 5:
                                 state['emex_disabled'] = True
                                 log("Emex: слишком много неудач подряд, временно отключаем Emex для этой партии")
                         except Exception as e:
                             state['emex_failures'] += 1
                             log(f"Emex: критическая ошибка для артикула {num}: {str(e)}")
-                
+
                 return local
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=AUTOPITER_MAX_WORKERS) as executor:
