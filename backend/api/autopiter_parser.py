@@ -686,14 +686,26 @@ def _resolve_proxies_file_path(file_path: Optional[str] = None) -> str:
 
 
 def load_proxies_from_file(file_path: Optional[str] = None) -> List[str]:
-    """Загружает список прокси из файла"""
     global PROXY_LIST
+    
+    # Сначала пытаемся загрузить из базы данных (если есть модель Proxy)
+    try:
+        from core.models import Proxy  # или где у вас модель
+        db_proxies = Proxy.objects.filter(is_active=True).values_list('proxy_string', flat=True)
+        if db_proxies.exists():
+            PROXY_LIST = list(db_proxies)
+            log_debug(f"Загружено {len(PROXY_LIST)} прокси из базы данных")
+            return PROXY_LIST
+    except Exception as e:
+        log_debug(f"Не удалось загрузить прокси из БД: {e}")
+    
+    # Если в БД нет, загружаем из файла
     resolved_path = _resolve_proxies_file_path(file_path)
     try:
         if os.path.exists(resolved_path):
             with open(resolved_path, 'r', encoding='utf-8') as f:
                 PROXY_LIST = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
-            log_debug(f"Загружено {len(PROXY_LIST)} прокси")
+            log_debug(f"Загружено {len(PROXY_LIST)} прокси из файла {resolved_path}")
         else:
             log_debug(f"Файл прокси {resolved_path} не найден")
     except Exception as e:
