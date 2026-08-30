@@ -668,7 +668,7 @@ def process_parsing_task(self, task_id):
         
         # Собираем уникальные артикулы
         unique_articles = collect_unique_articles(df)
-        log(f"Собрано {len(unique_articles)} уникальных артикулов из {total_rows} строк")
+        log(f"Собрано {len(unique_articles)} уникальных артикулов из {len(df)} строк")
         
         # Выводим статистику по повторениям
         if unique_articles:
