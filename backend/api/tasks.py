@@ -1076,6 +1076,11 @@ def process_parsing_task(self, task_id):
                         log_debug(f"{site}: глобальный кэш {num} ({len(cached)} брендов)")
                         return [(brand, part_number, name, b, num, site) for b in cached]
 
+                    # ===== ПРОВЕРКА: parser_func не должна быть None =====
+                    if parser_func is None:
+                        log_debug(f"{site}: parser_func is None для {num}")
+                        return []
+                    
                     for attempt in range(max_retries):
                         try:
                             if site == 'autopiter' and autopiter_proxy_enabled:
