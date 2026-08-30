@@ -1075,12 +1075,12 @@ def process_parsing_task(self, task_id):
                 if cached is not None:
                     log_debug(f"{site}: глобальный кэш {num} ({len(cached)} брендов)")
                     return [(brand, part_number, name, b, num, site) for b in cached]
-        
+                
                 # ===== ПРОВЕРКА: parser_func не должна быть None =====
                 if parser_func is None:
                     log_debug(f"{site}: parser_func is None для {num}")
                     return []
-        
+                
                 for attempt in range(max_retries):
                     try:
                         if site == 'autopiter' and autopiter_proxy_enabled:
@@ -1095,18 +1095,18 @@ def process_parsing_task(self, task_id):
                         else:
                             proxy = get_next_proxy()
                             log_debug(f"{site}: попытка {attempt+1} с прокси для {num}")
-        
+                
                         time.sleep(0.01 if site == 'autopiter' else 0.01)
                         brands = parser_func(num, proxy)
-        
+                
                         if site == 'autopiter':
                             brands = filter_garbage_brands(brands, source='autopiter')
                         elif site == 'emex':
                             brands = filter_garbage_brands(brands, source='emex')
-        
+                
                         # ===== СОХРАНЯЕМ В ГЛОБАЛЬНЫЙ КЭШ =====
                         set_cached_brands(num, site, brands)
-        
+                
                         log_debug(f"{site}: {num} → {len(brands)} брендов")
                         return [(brand, part_number, name, b, num, site) for b in brands]
                     except Exception as e:
@@ -1127,9 +1127,10 @@ def process_parsing_task(self, task_id):
                                 return []
                             set_cached_brands(num, site, [])
                             return []
-                return []  # <-- ДОБАВИТЬ: если все попытки не удались
+                
+                return []  # <-- ДОБАВЛЕНО: если все попытки не удались
             
-            return inner  # <-- ВСЕГДА ВОЗВРАЩАЕТ inner
+            return inner  # <-- ВСЕГДА ВОЗВРАЩАЕТ inner (функцию)
 
             _emex_note = f", Emex параллельно: {emex_parallel}" if 'emex' in selected_sources else ""
             log(f"Начинаем парсинг {len(uncached_numbers)} артикулов для строки {row_index + 1} (потоков Autopiter/строка: {AUTOPITER_MAX_WORKERS}{_emex_note})")
