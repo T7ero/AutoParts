@@ -21,12 +21,6 @@ from .autopiter_parser import (
     filter_armtek_brands,
     reset_armtek_selenium_state,
     PROXY_LIST,
-    parse_armtek_batch_with_pool,
-    get_driver_from_pool,
-    return_driver_to_pool,
-    parse_armtek_with_driver,
-    get_cached_brands,
-    set_cached_brands,
 )
 import re
 import unicodedata
@@ -53,6 +47,7 @@ CANCELLED_TASKS_LOCK = threading.Lock()
 
 class TaskCancelledException(Exception):
     """Специальное исключение для остановки задачи по запросу пользователя"""
+
 
 @shared_task
 def cleanup_old_media_results():
@@ -642,40 +637,6 @@ def process_parsing_task(self, task_id):
         df = pd.read_excel(task.file.path)
         # Очищаем DataFrame от пустых строк
         df.dropna(how='all', inplace=True)
-
-        def collect_unique_articles(df) -> Dict[str, List[int]]:
-            """Собирает все уникальные кросс-номера с индексами строк"""
-            article_to_rows = {}
-            
-            for index, row in df.iterrows():
-                cross_from_g = safe_cell_to_str(row.iloc[6]) if len(row) > 6 else ''
-                part_from_f = safe_cell_to_str(row.iloc[5]) if len(row) > 5 else ''
-                numbers_source = cross_from_g if cross_from_g else part_from_f
-                
-                if not numbers_source:
-                    continue
-                    
-                for num in numbers_source.split(';'):
-                    num = num.strip()
-                    if not num:
-                        continue
-                    norm = normalize_article_for_compare(num)
-                    if not norm:
-                        continue
-                    if norm not in article_to_rows:
-                        article_to_rows[norm] = []
-                    article_to_rows[norm].append(index)
-            
-            return article_to_rows
-        
-        # Собираем уникальные артикулы
-        unique_articles = collect_unique_articles(df)
-        log(f"Собрано {len(unique_articles)} уникальных артикулов из {len(df)} строк")
-        
-        # Выводим статистику по повторениям
-        if unique_articles:
-            repeat_count = sum(1 for rows in unique_articles.values() if len(rows) > 1)
-            log(f"Из них повторяются в нескольких строках: {repeat_count} артикулов")
         
         # Если файл очень большой (>200 строк), разбиваем на части
         batch_files = [task.file.path]
@@ -1006,7 +967,6 @@ def process_parsing_task(self, task_id):
         def parse_all_parallel(numbers, brand, part_number, name, row_index, on_article_done=None):
             results = {'autopiter': [], 'emex': []}
             state = {"emex_disabled": False, "emex_failures": 0}
-
             if not numbers:
                 return results
 
@@ -1014,9 +974,10 @@ def process_parsing_task(self, task_id):
                 total_proxies = len(PROXY_LIST)
             except Exception:
                 total_proxies = 0
-
-            # Emex параллельность
+            # Emex: до 8 параллельных HTTP при наличии прокси; без прокси — 2 (осторожно с rate limit)
             if total_proxies > 0:
+                # Фиксируем 2 параллельных потока для Emex, чтобы не менять нагрузку
+                # и не провоцировать лишние сбои при смене прокси/окружения.
                 emex_parallel = 5
             else:
                 emex_parallel = 5
@@ -1026,7 +987,8 @@ def process_parsing_task(self, task_id):
                 cpu_n = os.cpu_count() or 4
             except Exception:
                 cpu_n = 4
-
+            # Дефолт для Autopiter — 2 потока (через env, без хардкода в UI).
+            # При росте таймаутов adaptive-логика временно откатит до 1.
             nnums = len(numbers)
             default_ap_workers = "3"
             try:
@@ -1036,6 +998,7 @@ def process_parsing_task(self, task_id):
             autopiter_workers_cfg = max(1, min(8, autopiter_workers_cfg))
             AUTOPITER_MAX_WORKERS = _resolve_autopiter_workers(nnums, autopiter_workers_cfg, row_index)
 
+            # Autopiter через прокси: auto = включить, если прокси загружены в файл.
             autopiter_proxy_enabled = is_autopiter_proxy_enabled()
             if 'autopiter' in selected_sources:
                 proxy_mode = os.getenv("AUTOPITER_USE_PROXY", "auto").strip() or "auto"
@@ -1049,42 +1012,18 @@ def process_parsing_task(self, task_id):
                 autopiter_proxy_retries = 2
             autopiter_proxy_retries = max(1, min(3, autopiter_proxy_retries))
 
-            # ===== ПРОВЕРКА ГЛОБАЛЬНОГО КЭША ДЛЯ ВСЕХ АРТИКУЛОВ =====
-            uncached_numbers = []
-            for num in numbers:
-                cached = get_cached_brands(num, 'autopiter')
-                if cached is not None:
-                    if cached:
-                        results['autopiter'].extend([(brand, part_number, name, b, num, 'autopiter') for b in cached])
-                    if on_article_done:
-                        on_article_done(num)
-                else:
-                    uncached_numbers.append(num)
-
-            # Если все артикулы в кэше - возвращаем
-            if not uncached_numbers:
-                log(f"Все {len(numbers)} артикулов найдены в глобальном кэше")
-                return results
-
-            log(f"Парсинг {len(uncached_numbers)} артикулов из {len(numbers)} (остальные в кэше)")
-
-            # ОПРЕДЕЛЕНИЕ parse_one ВНУТРИ parse_all_parallel
             def parse_one(site, parser_func, max_retries=1):
                 def inner(num, proxy=None):
-                    # ===== ПРОВЕРКА КЭША ВНУТРИ =====
-                    cached = get_cached_brands(num, site)
-                    if cached is not None:
-                        log_debug(f"{site}: глобальный кэш {num} ({len(cached)} брендов)")
-                        return [(brand, part_number, name, b, num, site) for b in cached]
-
-                    # ===== ПРОВЕРКА: parser_func не должна быть None =====
-                    if parser_func is None:
-                        log_debug(f"{site}: parser_func is None для {num}")
-                        return []
+                    cached_result = get_from_cache(num, site)
+                    if cached_result is not None:
+                        log_debug(f"{site}: кэш {num} ({len(cached_result)} брендов)")
+                        return [(brand, part_number, name, b, num, site) for b in cached_result]
 
                     for attempt in range(max_retries):
                         try:
                             if site == 'autopiter' and autopiter_proxy_enabled:
+                                # Для Autopiter: всегда ходим через прокси (и ротируем при ретрае),
+                                # иначе смысла в retry нет — лимит останется на том же IP.
                                 proxy = get_proxy_string()
                                 log_debug(f"{site}: попытка {attempt+1} с прокси для {num}")
                             elif attempt == 0:
@@ -1105,8 +1044,8 @@ def process_parsing_task(self, task_id):
                             elif site == 'emex':
                                 brands = filter_garbage_brands(brands, source='emex')
 
-                            # ===== СОХРАНЯЕМ В ГЛОБАЛЬНЫЙ КЭШ =====
-                            set_cached_brands(num, site, brands)
+                            is_empty = len(brands) == 0
+                            set_cache(num, site, brands, is_empty)
 
                             log_debug(f"{site}: {num} → {len(brands)} брендов")
                             return [(brand, part_number, name, b, num, site) for b in brands]
@@ -1118,6 +1057,8 @@ def process_parsing_task(self, task_id):
                                 time.sleep(0.1)
                             else:
                                 log(f"Failed to parse {site} for {num} after {max_retries} attempts")
+                                # При rate-limit/403 от Autopiter не кэшируем пустое,
+                                # иначе бренды "застревают" в NEGATIVE_CACHE_EXPIRATION.
                                 if isinstance(e, (
                                     AutopiterRateLimitException,
                                     AutopiterForbiddenException,
@@ -1126,52 +1067,38 @@ def process_parsing_task(self, task_id):
                                 )):
                                     log_debug(f"{site}: rate-limit/403/network, пропускаем negative cache для {num}")
                                     return []
-                                set_cached_brands(num, site, [])
+                                set_cache(num, site, [], True)
                                 return []
-                    return []  # если все попытки не удались
-                return inner  # parse_one всегда возвращает inner
+                return inner
 
             _emex_note = f", Emex параллельно: {emex_parallel}" if 'emex' in selected_sources else ""
-            log(f"Начинаем парсинг {len(uncached_numbers)} артикулов для строки {row_index + 1} (потоков Autopiter/строка: {AUTOPITER_MAX_WORKERS}{_emex_note})")
+            log(f"Начинаем парсинг {len(numbers)} артикулов для строки {row_index + 1} (потоков Autopiter/строка: {AUTOPITER_MAX_WORKERS}{_emex_note})")
 
             def worker(num):
                 local = {'autopiter': [], 'emex': []}
-
                 if 'autopiter' in selected_sources:
                     ap_retries = autopiter_proxy_retries if autopiter_proxy_enabled else 1
-                    autopiter_inner = parse_one('autopiter', get_brands_by_artikul, max_retries=ap_retries)
-                    if autopiter_inner is not None:
-                        local['autopiter'].extend(autopiter_inner(num))
-                    else:
-                        log_debug(f"autopiter: parse_one вернул None для {num}")
-
+                    local['autopiter'].extend(parse_one('autopiter', get_brands_by_artikul, max_retries=ap_retries)(num))
                 if 'emex' in selected_sources and not state['emex_disabled']:
                     with emex_semaphore:
                         proxy = get_proxy_string()
                         try:
-                            emex_inner = parse_one('emex', get_brands_by_artikul_emex)
-                            if emex_inner is not None:
-                                emex_res = emex_inner(num, proxy)
-                                if emex_res:
-                                    state['emex_failures'] = 0
-                                else:
-                                    state['emex_failures'] += 1
-                                local['emex'].extend(emex_res)
+                            emex_res = parse_one('emex', get_brands_by_artikul_emex)(num, proxy)
+                            if emex_res:
+                                state['emex_failures'] = 0
                             else:
                                 state['emex_failures'] += 1
-                                log_debug(f"emex: parse_one вернул None для {num}")
-
+                            local['emex'].extend(emex_res)
                             if state['emex_failures'] >= 5:
                                 state['emex_disabled'] = True
                                 log("Emex: слишком много неудач подряд, временно отключаем Emex для этой партии")
                         except Exception as e:
                             state['emex_failures'] += 1
                             log(f"Emex: критическая ошибка для артикула {num}: {str(e)}")
-
                 return local
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=AUTOPITER_MAX_WORKERS) as executor:
-                future_map = {executor.submit(worker, num): num for num in uncached_numbers}
+                future_map = {executor.submit(worker, num): num for num in numbers}
                 for future in concurrent.futures.as_completed(future_map):
                     num = future_map[future]
                     try:
@@ -1194,145 +1121,96 @@ def process_parsing_task(self, task_id):
             return results
 
         def parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b, row_index: int):
-            """Armtek с использованием одного драйвера на все артикулы строки (без создания нового на каждый)"""
+            """Armtek (Selenium) — последовательно по артикулам."""
             results = []
-
-            if not numbers:
-                return results
-
             reset_armtek_selenium_state()
             log(f"Armtek: начало обработки {len(numbers)} артикулов для строки {row_index + 1}")
-
-            # Легкая очистка перед началом (без убийства всех процессов)
+            
+            # Принудительная очистка перед началом
             try:
                 cleanup_driver_pool()
                 cleanup_chrome_processes()
                 log("Armtek: очистка перед началом строки")
             except Exception as e:
                 log(f"Ошибка очистки: {e}")
-
-            # ПОЛУЧАЕМ ОДИН ДРАЙВЕР ИЗ ПУЛА (не создаем новый на каждый артикул!)
-            driver = get_driver_from_pool()
-            if driver is None:
-                log(f"Armtek: не удалось получить драйвер для строки {row_index + 1}")
-                return results
-
-            driver_broken = False
-
-            def parse_one_armtek_with_driver(num):
-                """Парсит один артикул с использованием существующего драйвера"""
-                nonlocal driver, driver_broken
-
-                # Проверяем глобальный кэш (между строками)
-                cached = get_cached_brands(num, 'armtek')
-                if cached is not None:
-                    log_debug(f"Armtek: глобальный кэш {num} ({len(cached)} брендов)")
-                    if cached:
-                        return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in cached]
-                    return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
-
-                # Проверяем локальный кэш (в рамках задачи)
+        
+            def parse_one_armtek(num):
                 cached_result = get_from_cache(num, 'armtek')
                 if cached_result is not None:
-                    log_debug(f"Armtek: локальный кэш {num} ({len(cached_result)} брендов)")
+                    log_debug(f"Armtek: кэш {num} ({len(cached_result)} брендов)")
                     if cached_result:
-                        # Сохраняем в глобальный кэш
-                        set_cached_brands(num, 'armtek', cached_result)
                         return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in cached_result]
                     return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
-
-                # Парсим с использованием существующего драйвера
-                try:
-                    from .autopiter_parser import parse_armtek_with_driver
-
-                    # Используем существующий драйвер (НЕ создаем новый!)
-                    brands = parse_armtek_with_driver(driver, num)
-
-                    is_empty = len(brands) == 0
-                    set_cache(num, 'armtek', brands, is_empty)
-                    set_cached_brands(num, 'armtek', brands)
-
-                    if brands:
-                        filtered_brands = filter_armtek_brands(brands)
-                        if filtered_brands:
-                            log_debug(f"armtek: {num} → {len(filtered_brands)} брендов")
-                            return [(brand_from_e, part_number_from_f, name_from_b, brand, num, 'armtek') for brand in filtered_brands]
+        
+                max_retries = 1  # Только 1 попытка, чтобы не накапливать драйверы
+                for attempt in range(max_retries):
+                    try:
+                        if attempt == 0:
+                            proxy = None
+                            log_debug(f"Armtek: попытка {attempt+1} без прокси для {num}")
+                        else:
+                            proxy = get_next_proxy()
+                            log_debug(f"Armtek: попытка {attempt+1} с прокси для {num}")
+        
+                        from .autopiter_parser import get_brands_by_artikul_armtek
+                        brands = get_brands_by_artikul_armtek(num, proxy)
+        
+                        is_empty = len(brands) == 0
+                        set_cache(num, 'armtek', brands, is_empty)
+        
+                        if brands:
+                            filtered_brands = filter_armtek_brands(brands)
+                            if filtered_brands:
+                                log_debug(f"armtek: {num} → {len(filtered_brands)} брендов")
+                                return [(brand_from_e, part_number_from_f, name_from_b, brand, num, 'armtek') for brand in filtered_brands]
+                            return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
                         return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
-                    return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
-
-                except Exception as e:
-                    log(f"Error parsing armtek for {num}: {str(e)}")
-
-                    # Проверяем, сломался ли драйвер
-                    error_text = str(e).lower()
-                    if any(m in error_text for m in [
-                        "tab crashed", "chrome not reachable", "invalid session id",
-                        "connection refused", "timed out receiving message from renderer"
-                    ]):
-                        driver_broken = True
-                        log(f"Armtek: драйвер сломался на {num}, пересоздаем")
-
-                        # Пытаемся пересоздать драйвер
+                    except Exception as e:
+                        log(f"Error parsing armtek for {num} (attempt {attempt + 1}): {str(e)}")
+                        _record_armtek_event(_is_timeout_like_armtek_error(e), row_index)
+                        if attempt < max_retries - 1:
+                            time.sleep(0.1)
+                        else:
+                            log(f"Failed to parse armtek for {num} after {max_retries} attempts")
+                            set_cache(num, 'armtek', [], True)
+                            return []
+                    finally:
+                        # ===== ОЧИСТКА ПОСЛЕ КАЖДОГО АРТИКУЛА =====
                         try:
-                            driver.quit()
-                        except:
+                            cleanup_chrome_processes()
+                        except Exception:
                             pass
-
-                        driver = get_driver_from_pool()
-                        if driver is None:
-                            log(f"Armtek: не удалось восстановить драйвер для {num}")
-                            set_cache(num, 'armtek', [], True)
-                            set_cached_brands(num, 'armtek', [])
-                            return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
-
-                        driver_broken = False
-
-                        # Пробуем еще раз с новым драйвером
-                        try:
-                            brands = parse_armtek_with_driver(driver, num)
-                            set_cache(num, 'armtek', brands, len(brands) == 0)
-                            set_cached_brands(num, 'armtek', brands)
-                            if brands:
-                                filtered_brands = filter_armtek_brands(brands)
-                                if filtered_brands:
-                                    return [(brand_from_e, part_number_from_f, name_from_b, brand, num, 'armtek') for brand in filtered_brands]
-                            return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
-                        except Exception as e2:
-                            log(f"Armtek: повторная ошибка для {num}: {str(e2)}")
-                            set_cache(num, 'armtek', [], True)
-                            set_cached_brands(num, 'armtek', [])
-                            return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
-
-                    # Если ошибка не связана с драйвером
-                    set_cache(num, 'armtek', [], True)
-                    set_cached_brands(num, 'armtek', [])
-                    return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
-
-            # Обрабатываем все артикулы последовательно (1 поток, но 1 драйвер на все)
-            for num in numbers:
-                try:
-                    res_list = parse_one_armtek_with_driver(num)
-                    for res in res_list:
-                        results.append(res)
-                    _record_armtek_event(False, row_index)
-                except Exception as e:
-                    log(f"Error processing armtek result for {num}: {str(e)}")
-                    _record_armtek_event(_is_timeout_like_armtek_error(e), row_index)
-
-                # ОЧИСТКА ПОСЛЕ КАЖДОГО АРТИКУЛА - УБРАЛИ! (теперь чистим только после строки)
-                # Было: cleanup_chrome_processes() - УДАЛЯЕМ эту строку!
-
-            # Возвращаем драйвер в пул
-            return_driver_to_pool(driver)
-
-            # Финальная очистка после строки (только один раз!)
+                        
+            # Armtek: ВСЕГДА 1 ПОТОК
+            armtek_workers = 1
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=armtek_workers) as executor:
+                future_map = {executor.submit(parse_one_armtek, num): num for num in numbers}
+                for future in concurrent.futures.as_completed(future_map):
+                    num = future_map[future]
+                    try:
+                        res_list = future.result()
+                        for res in res_list:
+                            results.append(res)
+                        _record_armtek_event(False, row_index)
+                    except Exception as e:
+                        log(f"Error processing armtek result for {num}: {str(e)}")
+                        _record_armtek_event(_is_timeout_like_armtek_error(e), row_index)
+                    
+                    # Очистка после каждого артикула
+                    try:
+                        cleanup_chrome_processes()
+                    except Exception:
+                        pass
+                    
+            # Финальная очистка после строки
             try:
                 cleanup_driver_pool()
                 cleanup_chrome_processes()
                 log(f"Armtek: финальная очистка после строки {row_index + 1}")
             except Exception as e:
                 log(f"Ошибка финальной очистки: {e}")
-
+        
             log(f"Armtek: завершена обработка для строки {row_index + 1}, найдено {len(results)} результатов")
             return results
         
@@ -1652,7 +1530,7 @@ def process_parsing_task(self, task_id):
                     gc.collect()
                     
                     # Периодическая очистка процессов Chrome каждые 5 строк для предотвращения накопления процессов
-                    if (index + 1) % 20 == 0:
+                    if (index + 1) % 5 == 0:
                         try:
                             cleanup_chrome_processes()
                             cleanup_driver_pool()
