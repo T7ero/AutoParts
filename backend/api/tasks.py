@@ -24,7 +24,9 @@ from .autopiter_parser import (
     parse_armtek_batch_with_pool,
     get_driver_from_pool,
     return_driver_to_pool,
-    parse_armtek_with_driver
+    parse_armtek_with_driver,
+    get_cached_brands,
+    set_cached_brands,
 )
 import re
 import unicodedata
