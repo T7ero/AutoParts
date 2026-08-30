@@ -77,6 +77,51 @@ BAD_PROXIES_TIMESTAMP = {}  # словарь для отслеживания в�
 CHROME_MAX_PROCESSES = int(os.getenv("CHROME_MAX_PROCESSES", "10"))
 ARMTEK_CLEANUP_INTERVAL = int(os.getenv("ARMTEK_CLEANUP_INTERVAL", "3"))
 
+GLOBAL_BRAND_CACHE = {}
+GLOBAL_BRAND_CACHE_LOCK = threading.Lock()
+GLOBAL_CACHE_EXPIRATION = 86400  # 24 часа
+
+def normalize_article_for_compare(article: str) -> str:
+    """Нормализует артикул для сравнения"""
+    import re
+    import unicodedata
+    if not article:
+        return ''
+    a = article.upper().strip()
+    a = unicodedata.normalize("NFKC", a).replace("\u00A0", " ").replace("\u200B", "")
+    
+    ru_to_en_map = {
+        'А': 'A', 'В': 'B', 'М': 'M', 'Р': 'P',
+        'Е': 'E', 'О': 'O', 'С': 'C', 'Х': 'X',
+        'К': 'K', 'Н': 'H',
+    }
+    for ru_char, en_char in ru_to_en_map.items():
+        a = a.replace(ru_char, en_char)
+    
+    a = re.sub(r"[^0-9A-Z]+", "", a)
+    return a
+
+def get_cached_brands(artikul: str, source: str) -> Optional[List[str]]:
+    """Получает бренды из глобального кэша (между строками)"""
+    key = f"{normalize_article_for_compare(artikul)}_{source}"
+    with GLOBAL_BRAND_CACHE_LOCK:
+        if key in GLOBAL_BRAND_CACHE:
+            entry = GLOBAL_BRAND_CACHE[key]
+            if time.time() - entry['timestamp'] < GLOBAL_CACHE_EXPIRATION:
+                return entry['brands']
+    return None
+
+def set_cached_brands(artikul: str, source: str, brands: List[str]):
+    """Сохраняет бренды в глобальный кэш"""
+    key = f"{normalize_article_for_compare(artikul)}_{source}"
+    with GLOBAL_BRAND_CACHE_LOCK:
+        GLOBAL_BRAND_CACHE[key] = {
+            'brands': brands,
+            'timestamp': time.time()
+        }
+
+
+
 class _ChromeCreateLock:
 	"""Сериализует запуск Chrome между потоками и celery fork-процессами."""
 
@@ -1241,6 +1286,12 @@ def get_brands_by_artikul(
     """Получает бренды с Autopiter по артикулу.
     Новая логика: сначала пробуем HTTP (быстро), Selenium — только как fallback.
     """
+    # ===== ДОБАВИТЬ ПРОВЕРКУ ГЛОБАЛЬНОГО КЭША =====
+    cached = get_cached_brands(artikul, 'autopiter')
+    if cached is not None:
+        log_debug(f"Autopiter: глобальный кэш для {artikul} ({len(cached)} брендов)")
+        return cached
+    
     try:
         # ===== НОВАЯ ЛОГИКА: Сначала HTTP, Selenium только как fallback =====
         # Если force_http уже True, значит мы уже внутри HTTP-режима (рекурсивно не идём)
@@ -1263,6 +1314,7 @@ def get_brands_by_artikul(
                 
                 if brands:
                     log_debug(f"АвтоПитер: HTTP-запрос успешно вернул {len(brands)} брендов для {artikul}")
+                    set_cached_brands(artikul, 'autopiter', brands)
                     return brands
                 else:
                     log_debug(f"АвтоПитер: HTTP-запрос вернул 0 брендов для {artikul}, пробуем Selenium")
@@ -1274,16 +1326,19 @@ def get_brands_by_artikul(
                 brands = parse_autopiter_selenium(artikul, proxy)
                 if brands:
                     log_debug(f"АвтоПитер: Selenium успешно вернул {len(brands)} брендов для {artikul}")
+                    set_cached_brands(artikul, 'autopiter', brands)
                     return brands
             except AutopiterBlockedException:
                 log_debug(f"АвтоПитер: Selenium упал на капчу для {artikul}, возвращаем пустой результат")
-                # Если Selenium упал на капчу — возвращаем []
+                set_cached_brands(artikul, 'autopiter', [])
                 return []
             except Exception as e:
                 log_debug(f"АвтоПитер: Selenium ошибка для {artikul}: {str(e)}")
+                set_cached_brands(artikul, 'autopiter', [])
                 return []
 
             # Если ни HTTP, ни Selenium не вернули бренды — возвращаем пустой список
+            set_cached_brands(artikul, 'autopiter', [])
             return []
 
         log_debug(f"АвтоПитер: начинаем парсинг {artikul}")
@@ -1762,73 +1817,86 @@ def split_combined_brands(brands: List[str]) -> List[str]:
     return sorted(list(result))
 
 def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] = None, logger=None) -> List[str]:
-	"""Получает бренды с Armtek по артикулу (Selenium + HTTP fallback)."""
-	try:
-		log_debug(f"Armtek: начало обработки артикула {artikul}")
-		proxy_str = _normalize_proxy_arg(proxy)
+    """Получает бренды с Armtek по артикулу (Selenium + HTTP fallback)."""
+    # ===== ДОБАВИТЬ ПРОВЕРКУ ГЛОБАЛЬНОГО КЭША =====
+    cached = get_cached_brands(artikul, 'armtek')
+    if cached is not None:
+        log_debug(f"Armtek: глобальный кэш для {artikul} ({len(cached)} брендов)")
+        return cached
+    
+    try:
+        log_debug(f"Armtek: начало обработки артикула {artikul}")
+        proxy_str = _normalize_proxy_arg(proxy)
 
-		if not ARMTEK_SELENIUM_DISABLED:
-			# 1) Selenium без прокси — одна попытка (+ повтор только если Chrome жив, но брендов нет)
-			driver_failed = False
-			for selenium_attempt in range(2):
-				brands_sel = parse_armtek_selenium(artikul, None)
-				if brands_sel is None:
-					driver_failed = True
-					_note_armtek_selenium_driver_failure()
-					log_debug(f"Armtek: Chrome недоступен для {artikul}, очистка процессов")
-					cleanup_chrome_processes()
-					time.sleep(3 + selenium_attempt * 2)
-					break
-				if brands_sel:
-					return filter_armtek_brands(split_combined_brands(brands_sel))
-				if selenium_attempt == 0:
-					log_debug(f"Armtek: повтор Selenium для {artikul} после пустого результата")
-					cleanup_driver_pool()
-					time.sleep(0.5)
+        if not ARMTEK_SELENIUM_DISABLED:
+            # 1) Selenium без прокси — одна попытка (+ повтор только если Chrome жив, но брендов нет)
+            driver_failed = False
+            for selenium_attempt in range(2):
+                brands_sel = parse_armtek_selenium(artikul, None)
+                if brands_sel is None:
+                    driver_failed = True
+                    _note_armtek_selenium_driver_failure()
+                    log_debug(f"Armtek: Chrome недоступен для {artikul}, очистка процессов")
+                    cleanup_chrome_processes()
+                    time.sleep(3 + selenium_attempt * 2)
+                    break
+                if brands_sel:
+                    result = filter_armtek_brands(split_combined_brands(brands_sel))
+                    set_cached_brands(artikul, 'armtek', result)
+                    return result
+                if selenium_attempt == 0:
+                    log_debug(f"Armtek: повтор Selenium для {artikul} после пустого результата")
+                    cleanup_driver_pool()
+                    time.sleep(0.5)
 
-			# 2) Selenium с прокси — только если Chrome жив
-			if not driver_failed and not ARMTEK_SELENIUM_DISABLED:
-				if not proxy_str:
-					proxy_dict = get_next_proxy()
-					proxy_str = _normalize_proxy_arg(proxy_dict)
-					if proxy_str:
-						log_debug(f"Armtek: автоматически получен прокси: {proxy_str}")
-				if proxy_str:
-					brands_sel = parse_armtek_selenium(artikul, proxy_str)
-					if brands_sel is None:
-						_note_armtek_selenium_driver_failure()
-						cleanup_chrome_processes()
-					elif brands_sel:
-						return filter_armtek_brands(split_combined_brands(brands_sel))
+            # 2) Selenium с прокси — только если Chrome жив
+            if not driver_failed and not ARMTEK_SELENIUM_DISABLED:
+                if not proxy_str:
+                    proxy_dict = get_next_proxy()
+                    proxy_str = _normalize_proxy_arg(proxy_dict)
+                    if proxy_str:
+                        log_debug(f"Armtek: автоматически получен прокси: {proxy_str}")
+                if proxy_str:
+                    brands_sel = parse_armtek_selenium(artikul, proxy_str)
+                    if brands_sel is None:
+                        _note_armtek_selenium_driver_failure()
+                        cleanup_chrome_processes()
+                    elif brands_sel:
+                        result = filter_armtek_brands(split_combined_brands(brands_sel))
+                        set_cached_brands(artikul, 'armtek', result)
+                        return result
 
-		# 3) HTTP / API fallback — когда Selenium не поднял Chrome или страница пустая
-		for fallback_name, fallback_fn in (
-			("HTTP", lambda: parse_armtek_http(artikul, proxy_str)),
-			("API", lambda: parse_armtek_api_fallback(artikul, [proxy_str] if proxy_str else None)),
-		):
-			try:
-				fallback_brands = fallback_fn()
-				if fallback_brands:
-					filtered = filter_armtek_brands(split_combined_brands(fallback_brands))
-					if filtered:
-						log_debug(
-							f"Armtek {fallback_name} fallback: найдено {len(filtered)} брендов для {artikul}"
-						)
-						return filtered
-			except Exception as e:
-				log_debug(f"Armtek {fallback_name} fallback ошибка для {artikul}: {e}")
+        # 3) HTTP / API fallback — когда Selenium не поднял Chrome или страница пустая
+        for fallback_name, fallback_fn in (
+            ("HTTP", lambda: parse_armtek_http(artikul, proxy_str)),
+            ("API", lambda: parse_armtek_api_fallback(artikul, [proxy_str] if proxy_str else None)),
+        ):
+            try:
+                fallback_brands = fallback_fn()
+                if fallback_brands:
+                    filtered = filter_armtek_brands(split_combined_brands(fallback_brands))
+                    if filtered:
+                        log_debug(
+                            f"Armtek {fallback_name} fallback: найдено {len(filtered)} брендов для {artikul}"
+                        )
+                        set_cached_brands(artikul, 'armtek', filtered)
+                        return filtered
+            except Exception as e:
+                log_debug(f"Armtek {fallback_name} fallback ошибка для {artikul}: {e}")
 
-		msg = f"Armtek: бренды не найдены для {artikul}"
-		log_debug(msg)
-		if logger:
-			try:
-				logger(msg)
-			except Exception:
-				pass
-		return []
-	except Exception as e:
-		log_debug(f"Ошибка Armtek для {artikul}: {str(e)}")
-		return []
+        msg = f"Armtek: бренды не найдены для {artikul}"
+        log_debug(msg)
+        if logger:
+            try:
+                logger(msg)
+            except Exception:
+                pass
+        set_cached_brands(artikul, 'armtek', [])
+        return []
+    except Exception as e:
+        log_debug(f"Ошибка Armtek для {artikul}: {str(e)}")
+        set_cached_brands(artikul, 'armtek', [])
+        return []
 
 def parse_armtek_api(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
     """Попытка получить данные через API Armtek"""
@@ -2149,6 +2217,175 @@ def _armtek_parse_results_sections(driver) -> Dict[str, object]:
 		if _is_selenium_fatal_error(e):
 			return {**default, "driver_crashed": True}
 		return default
+
+def parse_armtek_with_driver(driver: webdriver.Chrome, artikul: str) -> List[str]:
+    """Парсит Armtek с использованием существующего драйвера (без создания нового)"""
+    try:
+        url = f"https://armtek.ru/search?text={quote(artikul)}"
+        driver.get(url)
+        
+        # Ждем загрузки страницы (уменьшенный таймаут)
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, '.results-list__items, .not-found__title'))
+            )
+        except TimeoutException:
+            pass
+        
+        # Используем существующую функцию парсинга
+        return parse_armtek_page_text(driver.page_source, artikul)
+    except Exception as e:
+        log_debug(f"Ошибка parse_armtek_with_driver для {artikul}: {str(e)}")
+        raise
+
+def get_armtek_driver_from_pool(proxy: Optional[str] = None) -> Optional[webdriver.Chrome]:
+    """Получает драйвер из пула или создает новый (с учетом лимита)"""
+    global DRIVER_POOL, DRIVER_POOL_LOCK
+    
+    with DRIVER_POOL_LOCK:
+        # Ищем живой драйвер в пуле
+        for i in range(len(DRIVER_POOL) - 1, -1, -1):
+            driver = DRIVER_POOL[i]
+            try:
+                # Быстрая проверка живости
+                _ = driver.title
+                # Удаляем из пула и возвращаем
+                DRIVER_POOL.pop(i)
+                DRIVER_LAST_USED[id(driver)] = time.time()
+                return driver
+            except Exception:
+                # Мертвый драйвер - удаляем
+                try:
+                    driver.quit()
+                except:
+                    pass
+                DRIVER_POOL.pop(i)
+                DRIVER_LAST_USED.pop(id(driver), None)
+    
+    # Пул пуст или все драйверы мертвы - создаем новый
+    temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_pool_{uuid.uuid4().hex[:8]}_")
+    driver = _create_chrome_driver_robust(temp_dir, proxy)
+    if driver:
+        DRIVER_LAST_USED[id(driver)] = time.time()
+        return driver
+    return None
+
+def return_armtek_driver_to_pool(driver: webdriver.Chrome) -> None:
+    """Возвращает драйвер в пул"""
+    global DRIVER_POOL, DRIVER_POOL_LOCK
+    
+    if driver is None:
+        return
+    
+    # Проверяем живость драйвера
+    try:
+        _ = driver.title
+    except Exception:
+        try:
+            driver.quit()
+        except:
+            pass
+        return
+    
+    with DRIVER_POOL_LOCK:
+        if len(DRIVER_POOL) < DRIVER_POOL_SIZE:
+            DRIVER_POOL.append(driver)
+        else:
+            try:
+                driver.quit()
+            except:
+                pass
+
+def parse_armtek_batch_with_pool(
+    numbers: List[str],
+    brand_from_e: str,
+    part_number_from_f: str,
+    name_from_b: str,
+    row_index: int,
+    on_article_done: Optional[callable] = None
+) -> List[tuple]:
+    """Парсит несколько артикулов Armtek с использованием одного драйвера из пула"""
+    results = []
+    
+    if not numbers:
+        return results
+    
+    # Получаем драйвер из пула
+    driver = get_armtek_driver_from_pool()
+    if driver is None:
+        log_debug(f"Armtek: не удалось получить драйвер для строки {row_index + 1}")
+        return results
+    
+    try:
+        for num in numbers:
+            # Проверяем кэш
+            cached = get_cached_brands(num, 'armtek')
+            if cached is not None:
+                if cached:
+                    results.extend([(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in cached])
+                else:
+                    results.append((brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek'))
+                if on_article_done:
+                    on_article_done(num)
+                continue
+            
+            try:
+                # Парсим с использованием существующего драйвера
+                brands = parse_armtek_with_driver(driver, num)
+                
+                # Сохраняем в кэш
+                set_cached_brands(num, 'armtek', brands)
+                
+                if brands:
+                    filtered_brands = filter_armtek_brands(brands)
+                    if filtered_brands:
+                        results.extend([(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in filtered_brands])
+                    else:
+                        results.append((brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek'))
+                else:
+                    results.append((brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek'))
+                
+                if on_article_done:
+                    on_article_done(num)
+                    
+            except Exception as e:
+                log_debug(f"Armtek: ошибка парсинга {num}: {str(e)}")
+                # Если драйвер сломался - пересоздаем
+                try:
+                    driver.quit()
+                except:
+                    pass
+                driver = get_armtek_driver_from_pool()
+                if driver is None:
+                    log_debug(f"Armtek: не удалось восстановить драйвер для {num}")
+                    break
+                # Пробуем этот артикул еще раз с новым драйвером
+                try:
+                    brands = parse_armtek_with_driver(driver, num)
+                    set_cached_brands(num, 'armtek', brands)
+                    if brands:
+                        filtered_brands = filter_armtek_brands(brands)
+                        if filtered_brands:
+                            results.extend([(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in filtered_brands])
+                        else:
+                            results.append((brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek'))
+                    else:
+                        results.append((brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek'))
+                    if on_article_done:
+                        on_article_done(num)
+                except Exception as e2:
+                    log_debug(f"Armtek: повторная ошибка для {num}: {str(e2)}")
+                    results.append((brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek'))
+                    if on_article_done:
+                        on_article_done(num)
+    
+    finally:
+        # Возвращаем драйвер в пул
+        return_armtek_driver_to_pool(driver)
+    
+    return results
+
+
 
 
 def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] = None, logger=None) -> Optional[List[str]]:
@@ -2990,6 +3227,11 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
     - отключаем Selenium fallback после нескольких критических ошибок,
       чтобы один артикул не зависал на минуты и не создавал тысячи процессов Chrome.
     """
+    cached = get_cached_brands(artikul, 'emex')
+    if cached is not None:
+        log_debug(f"Emex: глобальный кэш для {artikul} ({len(cached)} брендов)")
+        return cached
+    
     global EMEX_SELENIUM_FAILURES, EMEX_SELENIUM_DISABLED
     try:
         if not _emex_use_proxy_enabled():
@@ -3336,6 +3578,7 @@ def get_brands_by_artikul_emex(artikul: str, proxy: Optional[str] = None) -> Lis
         
     except Exception as e:
         log_debug(f"Ошибка Emex для {artikul}: {str(e)}")
+        set_cached_brands(artikul, 'emex', [])
         return []
 
 # Инициализация прокси при импорте модуля
