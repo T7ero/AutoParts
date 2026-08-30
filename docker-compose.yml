@@ -14,14 +14,6 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
-    deploy:
-      resources:
-        limits:
-          memory: 1024M
-          cpus: '0.5'
-        reservations:
-          memory: 512M
-          cpus: '0.2'
 
   redis:
     image: redis:7
@@ -31,14 +23,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-          cpus: '0.2'
-        reservations:
-          memory: 128M
-          cpus: '0.1'
 
   backend:
     build: 
@@ -63,6 +47,8 @@ services:
       - DATABASE_URL=postgres://postgres:postgres@db:5432/autoparts
       - ALLOWED_HOSTS=87.228.101.164,localhost,127.0.0.1,backend,172.17.0.98
       - CORS_ALLOWED_ORIGINS=http://87.228.101.164,http://localhost:3000,http://127.0.0.1:3000
+      # Если нужно принудительно переустановить пароль admin из secret.env:
+      # - FORCE_ADMIN_PASSWORD=1
       - POSTGRES_DB=autoparts
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
@@ -74,18 +60,17 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2048M
-          cpus: '0.5'
+          memory: 4096M
+          cpus: '2.0'
         reservations:
-          memory: 1024M
-          cpus: '0.2'
+          memory: 2048M
+          cpus: '1.0'
 
   celery:
     build: 
       context: ./backend
       dockerfile: Dockerfile.alternative
-    # ===== ОПТИМАЛЬНАЯ КОНФИГУРАЦИЯ: 2 потока, но с защитой от перегрузки =====
-    command: celery -A backend worker -l info --concurrency=2 --max-tasks-per-child=10 --prefetch-multiplier=1
+    command: celery -A backend worker -l info --concurrency=2 --max-tasks-per-child=5 --prefetch-multiplier=1
     volumes:
       - ./backend:/app
       - ./backend/media:/app/media
@@ -105,6 +90,8 @@ services:
       - DATABASE_URL=postgres://postgres:postgres@db:5432/autoparts
       - ALLOWED_HOSTS=87.228.101.164,localhost,127.0.0.1,backend,172.17.0.98
       - CORS_ALLOWED_ORIGINS=http://87.228.101.164,http://localhost:3000,http://127.0.0.1:3000
+      # Если нужно принудительно переустановить пароль admin из secret.env:
+      # - FORCE_ADMIN_PASSWORD=1
       - POSTGRES_DB=autoparts
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
@@ -118,27 +105,20 @@ services:
       - CHROME_REMOTE_DEBUGGING_PORT=0
       - DEBUG=False
       - PYTHONUNBUFFERED=1
-      # ===== ОПТИМАЛЬНЫЕ НАСТРОЙКИ ДЛЯ СКОРОСТИ И СТАБИЛЬНОСТИ =====
-      - CHROME_MAX_PROCESSES=6
+      - CHROME_MAX_PROCESSES=10
       - ARMTEK_CLEANUP_INTERVAL=3
-      - SELENIUM_TIMEOUT=20
-      - PAGE_LOAD_TIMEOUT=25
-      # Autopiter: 2 потока, но с увеличенным интервалом
-      - AUTOPITER_MAX_WORKERS=2
-      - AUTOPITER_GLOBAL_MIN_INTERVAL=0.35
-      - AUTOPITER_PROXY_RETRIES=2
-      # Отключаем прокси для Emex (он и так работает)
-      - EMEX_USE_PROXY=0
+      - SELENIUM_TIMEOUT=15
+      - PAGE_LOAD_TIMEOUT=20
     restart: always
     deploy:
       resources:
         limits:
-          memory: 7168M
-          cpus: '1.8'
+          memory: 8192M
+          cpus: '2.0'
         reservations:
           memory: 4096M
-          cpus: '0.8'
-    shm_size: '2gb'
+          cpus: '2.0'
+    shm_size: '4gb'
     ulimits:
       nproc: 65535
       nofile:
@@ -168,14 +148,6 @@ services:
       - DEBUG=False
       - PYTHONUNBUFFERED=1
     restart: always
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-          cpus: '0.2'
-        reservations:
-          memory: 128M
-          cpus: '0.1'
 
   frontend:
     build:
@@ -184,14 +156,6 @@ services:
     depends_on:
       - backend
     restart: always
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-          cpus: '0.2'
-        reservations:
-          memory: 128M
-          cpus: '0.1'
 
   nginx:
     image: nginx:1.25
@@ -203,15 +167,8 @@ services:
       - ./backend/static:/static
       - ./backend/media:/media
       - ./frontend/proxy-manager.html:/app/frontend/proxy-manager.html:ro
+      # - ./nginx/certs:/etc/nginx/certs:ro  # если нужен HTTPS
     depends_on:
       - backend
       - frontend
     restart: always
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-          cpus: '0.2'
-        reservations:
-          memory: 128M
-          cpus: '0.1'
