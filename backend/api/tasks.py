@@ -21,6 +21,7 @@ from .autopiter_parser import (
     filter_armtek_brands,
     reset_armtek_selenium_state,
     PROXY_LIST,
+    reset_autopiter_selenium_state,
 )
 import re
 import unicodedata
@@ -514,6 +515,18 @@ def split_large_file(file_path: str, max_rows_per_batch: int = 100) -> List[str]
 
 @shared_task(bind=True, time_limit=360000, soft_time_limit=350000)  # 100 часов максимум, 97 часов мягкий лимит
 def process_parsing_task(self, task_id):
+    # Сброс состояния Selenium для новой задачи
+    from .autopiter_parser import (
+        reset_autopiter_selenium_state,
+        reset_armtek_selenium_state,
+        reset_emex_parser_state,
+        cleanup_chrome_processes,
+        cleanup_driver_pool,
+    )
+    reset_autopiter_selenium_state()
+    reset_armtek_selenium_state()
+    reset_emex_parser_state()
+    
     # Проверяем, не завершена ли уже задача
     try:
         task = ParsingTask.objects.get(id=task_id)
@@ -568,8 +581,6 @@ def process_parsing_task(self, task_id):
             
             # Рассчитываем прогресс
             progress = 0
-            # В первую очередь считаем по количеству кросс-номеров (артикулов),
-            # если эта статистика уже посчитана.
             if hasattr(task, '_total_cross_numbers') and getattr(task, '_total_cross_numbers', 0) > 0:
                 progress = min(100, int((getattr(task, '_processed_cross_numbers', 0) / task._total_cross_numbers) * 100))
             elif hasattr(task, '_total_rows') and task._total_rows > 0:
@@ -583,8 +594,8 @@ def process_parsing_task(self, task_id):
                         'id': task.id,
                         'status': task.status,
                         'error_message': task.error_message,
-                        'result_files': {},  # Поле отсутствует в модели
-                        'log': '',  # Поле отсутствует в модели
+                        'result_files': {},
+                        'log': '',
                         'progress': progress,
                         'current_row': getattr(task, '_current_row', 0),
                         'total_rows': getattr(task, '_total_rows', 0),
@@ -596,7 +607,6 @@ def process_parsing_task(self, task_id):
                 }
             )
         except Exception as e:
-            # Логируем ошибку но не прерываем выполнение
             log(f"Ошибка ws_send: {str(e)}")
     
     try:
@@ -617,25 +627,21 @@ def process_parsing_task(self, task_id):
             from datetime import datetime as _dt
             timestamp = _dt.now().strftime('%d.%m.%Y, %H:%M:%S')
             line = f"[{timestamp}] {msg}"
-            # Пишем в память, stdout и celery-лог
             log_messages.append(line)
             try:
                 logger.info(line)
             except Exception:
                 pass
             print(line)
-            # Дублируем в файловый лог
             if log_file_path:
                 try:
                     with open(log_file_path, 'a', encoding='utf-8') as f:
                         f.write(line + '\n')
                 except Exception:
-                    # Не роняем задачу при ошибке записи лога
                     pass
 
         # Проверяем размер файла и разбиваем на части если нужно
         df = pd.read_excel(task.file.path)
-        # Очищаем DataFrame от пустых строк
         df.dropna(how='all', inplace=True)
         
         # Если файл очень большой (>200 строк), разбиваем на части
@@ -670,15 +676,14 @@ def process_parsing_task(self, task_id):
         
         # Инициализируем таймаут и счетчики
         task._timeout_check = time.time()
-        task._processed_rows = 0  # количество обработанных строк исходного файла
-        task._total_rows = total_rows  # общее количество строк
-        task._current_row = 0  # текущая обрабатываемая строка
-        # Счётчики по кросс-номерам (артикулам) из столбца G/F
+        task._processed_rows = 0
+        task._total_rows = total_rows
+        task._current_row = 0
         task._total_cross_numbers = 0
         task._processed_cross_numbers = 0
         task._current_number = ''
         
-        # Быстрый проход по DataFrame, чтобы посчитать общее количество кросс-номеров.
+        # Быстрый проход по DataFrame, чтобы посчитать общее количество кросс-номеров
         try:
             total_cross = 0
             total_cross_raw = 0
@@ -690,10 +695,8 @@ def process_parsing_task(self, task_id):
                     continue
                 nums = [n.strip() for n in str(numbers_source_value).split(';') if n and str(n).strip()]
                 total_cross_raw += len(nums)
-                # Прогресс должен совпадать с реальной обработкой: мы дедуплим артикули
-                # через normalize_article_for_compare(), поэтому здесь тоже делаем дедупликацию.
-                deduped_numbers: list = []
-                seen_norm_articles: set = set()
+                deduped_numbers = []
+                seen_norm_articles = set()
                 for num in nums:
                     norm = normalize_article_for_compare(num)
                     if not norm:
@@ -709,7 +712,7 @@ def process_parsing_task(self, task_id):
             log(f"Ошибка подсчёта общего количества кросс-номеров: {e}")
             task._total_cross_numbers = 0
         
-        # Сохраняем метаданные в sources для доступа через API / WebSocket.
+        # Сохраняем метаданные в sources
         if not isinstance(task.sources, dict):
             task.sources = {}
         task.sources['_meta'] = {
@@ -723,7 +726,7 @@ def process_parsing_task(self, task_id):
         }
         update_task_fields(sources=task.sources)
 
-        # Чтение выбранных источников (autopiter, emex, armtek) из полей задачи, если есть
+        # Чтение выбранных источников
         selected_sources = {"autopiter", "emex", "armtek"}
         try:
             raw_sources = None
@@ -733,7 +736,6 @@ def process_parsing_task(self, task_id):
                     raw_sources = val
                     break
             if isinstance(raw_sources, str):
-                # Пытаемся распарсить JSON, либо разделенный запятыми список
                 import json as _json
                 try:
                     parsed = _json.loads(raw_sources)
@@ -764,6 +766,7 @@ def process_parsing_task(self, task_id):
 
         log(f"Начинаем обработку {total_rows} строк")
         ws_send()
+        
         # Батч-обработка: по 25 строк с промежуточным сохранением результатов
         batch_size = 25
         cross_progress_lock = threading.Lock()
@@ -866,7 +869,7 @@ def process_parsing_task(self, task_id):
             selected = 1 if use_single else configured_workers
             return max(1, min(nnums, selected))
 
-        # --- Armtek adaptive parallelism (Selenium stability vs speed) ---
+        # Armtek adaptive parallelism
         armtek_adaptive_lock = threading.Lock()
         armtek_adaptive_state = {
             'timeout_events': deque(maxlen=20),
@@ -963,7 +966,7 @@ def process_parsing_task(self, task_id):
             selected = 1 if use_single else configured_workers
             return max(1, min(nnums, selected))
         
-        # Параллельный парсинг по всем кросс-номерам строки сразу (раньше — по одному, пул потоков не использовался)
+        # Параллельный парсинг по всем кросс-номерам строки сразу
         def parse_all_parallel(numbers, brand, part_number, name, row_index, on_article_done=None):
             results = {'autopiter': [], 'emex': []}
             state = {"emex_disabled": False, "emex_failures": 0}
@@ -974,10 +977,8 @@ def process_parsing_task(self, task_id):
                 total_proxies = len(PROXY_LIST)
             except Exception:
                 total_proxies = 0
-            # Emex: до 8 параллельных HTTP при наличии прокси; без прокси — 2 (осторожно с rate limit)
+            # Emex: до 8 параллельных HTTP при наличии прокси; без прокси — 2
             if total_proxies > 0:
-                # Фиксируем 2 параллельных потока для Emex, чтобы не менять нагрузку
-                # и не провоцировать лишние сбои при смене прокси/окружения.
                 emex_parallel = 5
             else:
                 emex_parallel = 5
@@ -987,8 +988,6 @@ def process_parsing_task(self, task_id):
                 cpu_n = os.cpu_count() or 4
             except Exception:
                 cpu_n = 4
-            # Дефолт для Autopiter — 2 потока (через env, без хардкода в UI).
-            # При росте таймаутов adaptive-логика временно откатит до 1.
             nnums = len(numbers)
             default_ap_workers = "3"
             try:
@@ -998,7 +997,7 @@ def process_parsing_task(self, task_id):
             autopiter_workers_cfg = max(1, min(8, autopiter_workers_cfg))
             AUTOPITER_MAX_WORKERS = _resolve_autopiter_workers(nnums, autopiter_workers_cfg, row_index)
 
-            # Autopiter через прокси: auto = включить, если прокси загружены в файл.
+            # Autopiter через прокси
             autopiter_proxy_enabled = is_autopiter_proxy_enabled()
             if 'autopiter' in selected_sources:
                 proxy_mode = os.getenv("AUTOPITER_USE_PROXY", "auto").strip() or "auto"
@@ -1022,8 +1021,6 @@ def process_parsing_task(self, task_id):
                     for attempt in range(max_retries):
                         try:
                             if site == 'autopiter' and autopiter_proxy_enabled:
-                                # Для Autopiter: всегда ходим через прокси (и ротируем при ретрае),
-                                # иначе смысла в retry нет — лимит останется на том же IP.
                                 proxy = get_proxy_string()
                                 log_debug(f"{site}: попытка {attempt+1} с прокси для {num}")
                             elif attempt == 0:
@@ -1057,8 +1054,6 @@ def process_parsing_task(self, task_id):
                                 time.sleep(0.1)
                             else:
                                 log(f"Failed to parse {site} for {num} after {max_retries} attempts")
-                                # При rate-limit/403 от Autopiter не кэшируем пустое,
-                                # иначе бренды "застревают" в NEGATIVE_CACHE_EXPIRATION.
                                 if isinstance(e, (
                                     AutopiterRateLimitException,
                                     AutopiterForbiddenException,
@@ -1142,7 +1137,7 @@ def process_parsing_task(self, task_id):
                         return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in cached_result]
                     return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
         
-                max_retries = 1  # Только 1 попытка, чтобы не накапливать драйверы
+                max_retries = 1
                 for attempt in range(max_retries):
                     try:
                         if attempt == 0:
@@ -1175,7 +1170,7 @@ def process_parsing_task(self, task_id):
                             set_cache(num, 'armtek', [], True)
                             return []
                     finally:
-                        # ===== ОЧИСТКА ПОСЛЕ КАЖДОГО АРТИКУЛА =====
+                        # Очистка после каждого артикула
                         try:
                             cleanup_chrome_processes()
                         except Exception:
@@ -1227,10 +1222,10 @@ def process_parsing_task(self, task_id):
             }
         }
 
-        # Основной цикл с улучшенной обработкой ошибок и предотвращением бесконечного цикла
+        # Основной цикл с улучшенной обработкой ошибок
         for index, row in df.iterrows():
             try:
-                # Проверка таймаута каждые 100 строк для менее частой проверки
+                # Проверка таймаута каждые 100 строк
                 if index % 100 == 0:
                     elapsed_time = time.time() - task._timeout_check
                     if elapsed_time > 350000:  # 97 часов - мягкий лимит
@@ -1240,19 +1235,12 @@ def process_parsing_task(self, task_id):
                         log(f"Task timeout reached ({elapsed_time/3600:.1f} hours), forcing stop...")
                         break
                 
-                # Правильное чтение данных из Excel с защитой от NaN
-                # A1: "Бренд № 1" - данные из колонки E входного файла (индекс 4)
+                # Правильное чтение данных из Excel
                 brand_from_e_raw = safe_cell_to_str(row.iloc[4]) if len(row) > 4 else ''
-                # Для "Бренд № 1" используем данные из входного файла БЕЗ фильтрации мусорных слов
-                # Фильтруем только явные артикулы (начинается с d- и содержит цифры)
-                # Мусорные слова фильтруются только в результатах парсинга (Бренд № 2), а не во входных данных
                 brand_from_e = brand_from_e_raw.strip() if brand_from_e_raw else ''
                 
                 if brand_from_e:
                     brand_from_e_raw_lower = brand_from_e.lower()
-                    
-                    # Проверяем, не является ли это явным артикулом (начинается с d- и содержит цифры, или чисто цифровой)
-                    # НЕ фильтруем мусорные слова из входного файла - они могут быть валидными брендами
                     is_article = (
                         (brand_from_e_raw_lower.startswith('d-') and any(c.isdigit() for c in brand_from_e)) or
                         (brand_from_e_raw_lower.startswith('dz') and any(c.isdigit() for c in brand_from_e)) or
@@ -1261,36 +1249,25 @@ def process_parsing_task(self, task_id):
                     )
                     
                     if is_article:
-                        # Это явный артикул, не бренд - оставляем пустым
                         stats['brand1_filtered_as_article'] += 1
                         log(f"Строка {index + 1}: фильтруем 'Бренд № 1' '{brand_from_e}' как артикул")
                         brand_from_e = ''
                     else:
-                        # Используем значение из входного файла как есть (включая "Дизель" и другие)
                         log(f"Строка {index + 1}: используем 'Бренд № 1' '{brand_from_e}' из входного файла")
                 
-                # B1: "Артикул по Бренду № 1" - данные из колонки F входного файла (индекс 5) - для записи в итоговый файл
                 part_number_from_f = safe_cell_to_str(row.iloc[5]) if len(row) > 5 else ''
-                # C1: "Наименование" - данные из колонки B входного файла (индекс 1)
                 name_from_b = safe_cell_to_str(row.iloc[1]) if len(row) > 1 else ''
-                # E1: "Артикул по Бренду № 2" - данные из колонки G входного файла (индекс 6) - для парсинга
                 cross_number_from_g = safe_cell_to_str(row.iloc[6]) if len(row) > 6 else ''
                 
-                # Для парсинга используем кросс-номера из столбца G (если есть),
-                # иначе fallback: используем артикул из столбца F
                 numbers_source_value = cross_number_from_g if cross_number_from_g else part_number_from_f
                 if not numbers_source_value:
                     log(f"Пропускаем строку {index + 1}: нет кросс-номеров и артикула для парсинга (G/F пустые)")
                     task._processed_rows += 1
                     continue
                 
-                # Создаем список кросс-номеров для парсинга (только из столбца G)
                 numbers_to_parse = [n.strip() for n in numbers_source_value.split(';') if n.strip()]
-                # В исходных файлах иногда встречаются дубли одного и того же артикула в разных форматах
-                # (например, "D-129942" и "D129942"). Это удваивает запросы и провоцирует Autopiter 429,
-                # из-за чего итоговое число брендов резко падает.
-                deduped_numbers: list = []
-                seen_norm_articles: set = set()
+                deduped_numbers = []
+                seen_norm_articles = set()
                 for num in numbers_to_parse:
                     norm = normalize_article_for_compare(num)
                     if not norm:
@@ -1301,14 +1278,12 @@ def process_parsing_task(self, task_id):
                     deduped_numbers.append(num)
                 numbers_to_parse = deduped_numbers
                 
-                # Если нет артикулов для парсинга, пропускаем
                 if not numbers_to_parse:
                     log(f"Пропускаем строку {index + 1}: нет артикулов для парсинга")
-                    task._processed_rows += 1  # Увеличиваем счетчик
+                    task._processed_rows += 1
                     continue
                 
                 log(f"Обрабатываем строку {index + 1}: {len(numbers_to_parse)} артикулов")
-                # Обновляем статус для отображения в интерфейсе
                 task.status = 'in_progress'
                 update_task_fields(status='in_progress')
                 ws_send()
@@ -1330,7 +1305,7 @@ def process_parsing_task(self, task_id):
                             })
                             ws_send()
 
-                    # Все кросс-номера строки параллельно (Autopiter HTTP + Emex с семафором)
+                    # Все кросс-номера строки параллельно
                     parallel_results = parse_all_parallel(
                         numbers_to_parse,
                         brand_from_e,
@@ -1340,139 +1315,118 @@ def process_parsing_task(self, task_id):
                         on_article_done=on_cross_article_done,
                     )
 
-                    # Обрабатываем результаты Autopiter по строке
+                    # Обрабатываем результаты Autopiter
                     for (b1, pn1, n1, b2, pn2, src) in parallel_results['autopiter']:
-                            # Фильтруем бренд № 2 (результат парсинга)
                             if b2 and b2.strip():
-                                # Разбиваем бренды с запятыми на отдельные (например, "БРТ, Балаково" -> "БРТ" и "Балаково")
                                 split_brands = _split_comma_separated_brands(b2.strip())
                                 
-                                # Обрабатываем каждый бренд отдельно
                                 for single_brand in split_brands:
-                                    # Дополнительная проверка: если single_brand похож на артикул, пропускаем
                                     single_brand_lower = single_brand.lower().strip()
-                                    # Проверяем, не является ли single_brand артикулом (начинается с цифр, содержит много цифр и т.д.)
                                     if (single_brand_lower.startswith('d-') or single_brand_lower.startswith('dz') or 
                                         single_brand[0].isdigit() if single_brand else False or
                                         sum(1 for c in single_brand if c.isdigit()) > len(single_brand) * 0.5):
                                         stats['brand2_filtered_as_article'] += 1
-                                        continue  # Пропускаем, если это артикул
+                                        continue
                                     
-                                    # Убираем ведущие подчеркивания (например, "_Балаково" -> "Балаково")
                                     single_brand = single_brand.lstrip('_').strip()
                                     if not single_brand:
                                         continue
                                     
                                     filtered_brands = filter_garbage_brands([single_brand], source='autopiter')
                                     if filtered_brands:
-                                        # Создаем отдельную запись для каждого отфильтрованного бренда
                                         for filtered_brand in filtered_brands:
-                                            # Дополнительная проверка: убеждаемся, что это не артикул
                                             if (filtered_brand.lower().startswith('d-') or 
                                                 filtered_brand.lower().startswith('dz') or
                                                 (filtered_brand and filtered_brand[0].isdigit()) or
                                                 sum(1 for c in filtered_brand if c.isdigit()) > len(filtered_brand) * 0.6):
                                                 stats['brand2_filtered_as_article'] += 1
-                                                continue  # Пропускаем артикулы
+                                                continue
                                             
-                                            # Нормализуем артикул для предотвращения дублей
                                             normalized_article = normalize_article_for_compare(pn2)
-                                            if normalized_article:  # Только если артикул не пустой после нормализации
+                                            if normalized_article:
                                                 d = {
-                                                    'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                                                    'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                                    'Бренд № 2': clean_excel_string(filtered_brand),  # Результат парсинга
-                                                    'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                                    'Бренд № 1': clean_excel_string(brand_from_e),
+                                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
+                                                    'Наименование': clean_excel_string(name_from_b),
+                                                    'Бренд № 2': clean_excel_string(filtered_brand),
+                                                    'Артикул по Бренду № 2': clean_excel_string(pn2),
                                                     'Источник': src
                                                 }
                                                 results_autopiter.append(d)
                                                 stats['unique_brands']['autopiter'].add(filtered_brand)
                             else:
-                                # Если b2 пустой, но есть артикул, все равно проверяем b2 на мусор
                                 if b2:
                                     filtered_b2 = filter_garbage_brands([b2], source='autopiter')
                                     if not filtered_b2:
                                         stats['brand2_filtered_as_garbage'] += 1
-                                        continue  # Пропускаем, если это мусорный бренд
+                                        continue
                                     b2 = filtered_b2[0] if filtered_b2 else ''
                                 
-                                # Нормализуем артикул для предотвращения дублей
                                 normalized_article = normalize_article_for_compare(pn2)
-                                if normalized_article:  # Только если артикул не пустой после нормализации
+                                if normalized_article:
                                     d = {
-                                        'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                                        'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                                        'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                        'Бренд № 2': clean_excel_string(b2) if b2 else '',  # Результат парсинга (только если не пустой)
-                                        'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                        'Бренд № 1': clean_excel_string(brand_from_e),
+                                        'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
+                                        'Наименование': clean_excel_string(name_from_b),
+                                        'Бренд № 2': clean_excel_string(b2) if b2 else '',
+                                        'Артикул по Бренду № 2': clean_excel_string(pn2),
                                         'Источник': src
                                     }
                                     results_autopiter.append(d)
                                     if b2:
                                         stats['unique_brands']['autopiter'].add(b2)
 
-                    # Обрабатываем результаты Emex по строке
+                    # Обрабатываем результаты Emex
                     for (b1, pn1, n1, b2, pn2, src) in parallel_results['emex']:
-                            # Фильтруем бренд № 2 (результат парсинга)
                             if b2 and b2.strip():
-                                # Разбиваем бренды с запятыми на отдельные (на случай, если они не были разбиты в парсере)
                                 split_brands = _split_comma_separated_brands(b2.strip())
                                 
-                                # Обрабатываем каждый бренд отдельно
                                 for single_brand in split_brands:
-                                    # Дополнительная проверка: если single_brand похож на артикул, пропускаем
                                     single_brand_lower = single_brand.lower().strip()
-                                    # Проверяем, не является ли single_brand артикулом (начинается с цифр, содержит много цифр и т.д.)
                                     if (single_brand_lower.startswith('d-') or single_brand_lower.startswith('dz') or 
                                         single_brand[0].isdigit() if single_brand else False or
                                         sum(1 for c in single_brand if c.isdigit()) > len(single_brand) * 0.5):
                                         stats['brand2_filtered_as_article'] += 1
-                                        continue  # Пропускаем, если это артикул
+                                        continue
                                     
                                     filtered_brands = filter_garbage_brands([single_brand], source='emex')
                                     if filtered_brands:
-                                        # Создаем отдельную запись для каждого отфильтрованного бренда
                                         for filtered_brand in filtered_brands:
-                                            # Дополнительная проверка: убеждаемся, что это не артикул
                                             if (filtered_brand.lower().startswith('d-') or 
                                                 filtered_brand.lower().startswith('dz') or
                                                 (filtered_brand and filtered_brand[0].isdigit()) or
                                                 sum(1 for c in filtered_brand if c.isdigit()) > len(filtered_brand) * 0.6):
                                                 stats['brand2_filtered_as_article'] += 1
-                                                continue  # Пропускаем артикулы
+                                                continue
                                             
-                                            # Нормализуем артикул для предотвращения дублей
                                             normalized_article = normalize_article_for_compare(pn2)
-                                            if normalized_article:  # Только если артикул не пустой после нормализации
+                                            if normalized_article:
                                                 d = {
-                                                    'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                                                    'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                                    'Бренд № 2': clean_excel_string(filtered_brand),  # Результат парсинга
-                                                    'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                                    'Бренд № 1': clean_excel_string(brand_from_e),
+                                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
+                                                    'Наименование': clean_excel_string(name_from_b),
+                                                    'Бренд № 2': clean_excel_string(filtered_brand),
+                                                    'Артикул по Бренду № 2': clean_excel_string(pn2),
                                                     'Источник': src
                                                 }
                                                 results_emex.append(d)
                                                 stats['unique_brands']['emex'].add(filtered_brand)
                             else:
-                                # Если b2 пустой, но есть артикул, все равно проверяем b2 на мусор
                                 if b2:
                                     filtered_b2 = filter_garbage_brands([b2], source='emex')
                                     if not filtered_b2:
                                         stats['brand2_filtered_as_garbage'] += 1
-                                        continue  # Пропускаем, если это мусорный бренд
+                                        continue
                                     b2 = filtered_b2[0] if filtered_b2 else ''
                                 
-                                # Нормализуем артикул для предотвращения дублей
                                 normalized_article = normalize_article_for_compare(pn2)
-                                if normalized_article:  # Только если артикул не пустой после нормализации
+                                if normalized_article:
                                     d = {
-                                        'Бренд № 1': clean_excel_string(brand_from_e),  # Из колонки E входного файла
-                                        'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),  # Из колонки F входного файла
-                                        'Наименование': clean_excel_string(name_from_b),  # Из колонки B входного файла
-                                        'Бренд № 2': clean_excel_string(b2) if b2 else '',  # Результат парсинга (только если не пустой)
-                                        'Артикул по Бренду № 2': clean_excel_string(pn2),  # Конкретный найденный артикул
+                                        'Бренд № 1': clean_excel_string(brand_from_e),
+                                        'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
+                                        'Наименование': clean_excel_string(name_from_b),
+                                        'Бренд № 2': clean_excel_string(b2) if b2 else '',
+                                        'Артикул по Бренду № 2': clean_excel_string(pn2),
                                         'Источник': src
                                     }
                                     results_emex.append(d)
@@ -1503,12 +1457,9 @@ def process_parsing_task(self, task_id):
                 
                 # Обновляем текущую обрабатываемую строку
                 task._current_row = index + 1
-                
-                # Увеличиваем счетчик обработанных строк
                 task._processed_rows += 1
                 stats['rows_processed'] += 1
                 
-                # Обновляем метаданные в sources для доступа через API
                 if not isinstance(task.sources, dict):
                     task.sources = {}
                 if '_meta' not in task.sources:
@@ -1519,17 +1470,15 @@ def process_parsing_task(self, task_id):
                     'total_rows': task._total_rows
                 })
                 
-                # Обновляем статус каждые 3 строки для более частого обновления
+                # Обновляем статус каждые 3 строки
                 if (index + 1) % 3 == 0 or index == total_rows - 1:
-                    # task.log = '\n'.join(log_messages[-100:])  # Поле отсутствует в модели
                     task.status = 'in_progress'
                     update_task_fields(status='in_progress', sources=task.sources)
                     ws_send()
                     
-                    # Принудительная очистка памяти
                     gc.collect()
                     
-                    # Периодическая очистка процессов Chrome каждые 5 строк для предотвращения накопления процессов
+                    # Периодическая очистка Chrome каждые 5 строк
                     if (index + 1) % 5 == 0:
                         try:
                             cleanup_chrome_processes()
@@ -1538,11 +1487,10 @@ def process_parsing_task(self, task_id):
                         except Exception as e:
                             log(f"Error during Chrome cleanup: {str(e)}")
 
-                # Чекпоинт каждые batch_size строк — записываем на диск промежуточные результаты
+                # Чекпоинт каждые batch_size строк
                 if (index + 1) % batch_size == 0:
                     try:
                         if results_autopiter:
-                            # Удаляем дубли
                             results_autopiter = dedupe_rows(results_autopiter)
                             df_autopiter = pd.DataFrame(results_autopiter)
                             autopiter_file = f'media/results/autopiter_results_{task.id}.xlsx'
@@ -1570,9 +1518,7 @@ def process_parsing_task(self, task_id):
                 
             except Exception as e:
                 log(f"Error processing row {index + 1}: {str(e)}")
-                task._processed_rows += 1  # Увеличиваем счетчик даже при ошибке
-                
-                # Логирование ошибки (без сохранения в БД)
+                task._processed_rows += 1
                 error_log = f"[{datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Ошибка обработки строки {index + 1}: {str(e)}"
                 print(f"[DEBUG] {error_log}")
                 ensure_not_cancelled()
@@ -1580,24 +1526,20 @@ def process_parsing_task(self, task_id):
         
         completion_log = f"[{datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Обработка завершена. Обработано строк: {task._processed_rows} из {total_rows}"
         log(completion_log)
-        
-        # Логирование завершения (без сохранения в БД)
         print(f"[DEBUG] {completion_log}")
         ensure_not_cancelled()
         
-        # Создаем результаты с улучшенной обработкой ошибок
+        # Создаем результаты
         try:
             if results_autopiter:
                 results_autopiter = dedupe_rows(results_autopiter)
                 df_autopiter = pd.DataFrame(results_autopiter)
                 autopiter_file = f'media/results/autopiter_results_{task.id}.xlsx'
                 try:
-                    # Используем openpyxl engine для лучшей совместимости
                     df_autopiter.to_excel(autopiter_file, index=False, engine='openpyxl')
                     log(f"Создан файл Autopiter: {autopiter_file}")
                 except Exception as e:
                     log(f"Ошибка создания файла Autopiter: {str(e)}")
-                    # Пробуем без engine
                     df_autopiter.to_excel(autopiter_file, index=False)
                     log(f"Создан файл Autopiter (без engine): {autopiter_file}")
                 task.result_files = task.result_files or {}
@@ -1609,12 +1551,10 @@ def process_parsing_task(self, task_id):
                 df_armtek = pd.DataFrame(results_armtek)
                 armtek_file = f'media/results/armtek_results_{task.id}.xlsx'
                 try:
-                    # Используем openpyxl engine для лучшей совместимости
                     df_armtek.to_excel(armtek_file, index=False, engine='openpyxl')
                     log(f"Создан файл Armtek: {armtek_file}")
                 except Exception as e:
                     log(f"Ошибка создания файла Armtek: {str(e)}")
-                    # Пробуем без engine
                     df_armtek.to_excel(armtek_file, index=False)
                     log(f"Создан файл Armtek (без engine): {armtek_file}")
                 task.result_files = task.result_files or {}
@@ -1626,12 +1566,10 @@ def process_parsing_task(self, task_id):
                 df_emex = pd.DataFrame(results_emex)
                 emex_file = f'media/results/emex_results_{task.id}.xlsx'
                 try:
-                    # Используем openpyxl engine для лучшей совместимости
                     df_emex.to_excel(emex_file, index=False, engine='openpyxl')
                     log(f"Создан файл Emex: {emex_file}")
                 except Exception as e:
                     log(f"Ошибка создания файла Emex: {str(e)}")
-                    # Пробуем без engine
                     df_emex.to_excel(emex_file, index=False)
                     log(f"Создан файл Emex (без engine): {emex_file}")
                 task.result_files = task.result_files or {}
@@ -1672,7 +1610,7 @@ def process_parsing_task(self, task_id):
                     task.sources = {}
                 task.sources.setdefault('_meta', {})['armtek_quality'] = armtek_q
 
-            # Сохраняем summary в Excel (чтобы Excel открывался без ошибок)
+            # Сохраняем summary в Excel
             summary_df = pd.DataFrame([line.split(': ', 1) for line in summary_lines if line],
                                       columns=['Показатель', 'Значение'])
             summary_path = f"media/results/summary_{task.id}.xlsx"
@@ -1681,7 +1619,7 @@ def process_parsing_task(self, task_id):
             task.result_files['summary'] = summary_path
             log(f"Создан файл summary (xlsx): {summary_path}")
 
-            # Экспорт уникальных брендов в отдельный Excel
+            # Экспорт уникальных брендов
             unique_rows = []
             for source_name, brands_set in stats['unique_brands'].items():
                 for b in sorted(brands_set):
@@ -1707,11 +1645,10 @@ def process_parsing_task(self, task_id):
         # Финальная очистка и подтверждение завершения
         log(f"Task {task_id} успешно завершена. Обработано строк: {task._processed_rows}")
         
-        # Возвращаем результат для предотвращения повторного выполнения
         return {
             'status': 'completed',
             'task_id': task_id,
-            'result_files': {},  # Поле отсутствует в модели
+            'result_files': {},
             'processed_rows': task._processed_rows,
             'message': 'Task completed successfully'
         }

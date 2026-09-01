@@ -25,14 +25,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import gc
 
 try:
-	import fcntl  # Linux/Docker: межпроцессная блокировка создания Chrome
+    import fcntl  # Linux/Docker: межпроцессная блокировка создания Chrome
 except ImportError:
-	fcntl = None  # type: ignore
+    fcntl = None  # type: ignore
 
 try:
-	import redis  # type: ignore
+    import redis  # type: ignore
 except Exception:
-	redis = None
+    redis = None
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -57,7 +57,7 @@ PAGE_LOAD_TIMEOUT = 30  # Увеличиваем для стабильности
 
 # Настройки для пула драйверов
 DRIVER_POOL_SIZE = 1
-DRIVER_CREATION_RETRIES = 2
+DRIVER_CREATION_RETRIES = 4  # Увеличиваем с 2 до 4
 DRIVER_TIMEOUT_RETRIES = 3  # Увеличиваем количество попыток
 
 # Один Chrome на воркер — иначе в Docker ловим "failed to start a thread"
@@ -69,6 +69,11 @@ ARMTEK_SELENIUM_FAILURES = 0
 ARMTEK_SELENIUM_DISABLED = False
 MAX_ARMTEK_SELENIUM_FAILURES = 2
 
+# Autopiter Selenium: отключаем после серии ошибок
+AUTOPITER_SELENIUM_FAILURES = 0
+AUTOPITER_SELENIUM_DISABLED = False
+MAX_AUTOPITER_SELENIUM_FAILURES = 2
+
 # сброс плохих прокси по времени:
 BAD_PROXIES_EXPIRE = 300  # 5 минут
 BAD_PROXIES_TIMESTAMP = {}  # словарь для отслеживания времени
@@ -78,72 +83,74 @@ CHROME_MAX_PROCESSES = int(os.getenv("CHROME_MAX_PROCESSES", "10"))
 ARMTEK_CLEANUP_INTERVAL = int(os.getenv("ARMTEK_CLEANUP_INTERVAL", "3"))
 
 class _ChromeCreateLock:
-	"""Сериализует запуск Chrome между потоками и celery fork-процессами."""
+    """Сериализует запуск Chrome между потоками и celery fork-процессами."""
 
-	def __enter__(self):
-		CHROME_CREATE_SEMAPHORE.acquire()
-		self._fp = None
-		if fcntl is not None:
-			try:
-				self._fp = open(_CHROME_CREATE_LOCK_PATH, "a+", encoding="utf-8")
-				fcntl.flock(self._fp.fileno(), fcntl.LOCK_EX)
-			except Exception as e:
-				log_debug(f"Chrome lock (fcntl) недоступен: {e}")
-		return self
+    def __enter__(self):
+        CHROME_CREATE_SEMAPHORE.acquire()
+        self._fp = None
+        if fcntl is not None:
+            try:
+                self._fp = open(_CHROME_CREATE_LOCK_PATH, "a+", encoding="utf-8")
+                fcntl.flock(self._fp.fileno(), fcntl.LOCK_EX)
+            except Exception as e:
+                log_debug(f"Chrome lock (fcntl) недоступен: {e}")
+        return self
 
-	def __exit__(self, exc_type, exc, tb):
-		if self._fp is not None:
-			try:
-				fcntl.flock(self._fp.fileno(), fcntl.LOCK_UN)
-				self._fp.close()
-			except Exception:
-				pass
-		CHROME_CREATE_SEMAPHORE.release()
-		return False
+    def __exit__(self, exc_type, exc, tb):
+        if self._fp is not None:
+            try:
+                fcntl.flock(self._fp.fileno(), fcntl.LOCK_UN)
+                self._fp.close()
+            except Exception:
+                pass
+        CHROME_CREATE_SEMAPHORE.release()
+        return False
+
+
+def reset_autopiter_selenium_state() -> None:
+    """Сброс счётчика ошибок Autopiter Selenium."""
+    global AUTOPITER_SELENIUM_FAILURES, AUTOPITER_SELENIUM_DISABLED
+    AUTOPITER_SELENIUM_FAILURES = 0
+    AUTOPITER_SELENIUM_DISABLED = False
 
 
 def reset_armtek_selenium_state() -> None:
-	"""Сброс счётчика ошибок Armtek Selenium (начало новой задачи парсинга)."""
-	global ARMTEK_SELENIUM_FAILURES, ARMTEK_SELENIUM_DISABLED
-	ARMTEK_SELENIUM_FAILURES = 0
-	ARMTEK_SELENIUM_DISABLED = False
+    """Сброс счётчика ошибок Armtek Selenium (начало новой задачи парсинга)."""
+    global ARMTEK_SELENIUM_FAILURES, ARMTEK_SELENIUM_DISABLED
+    ARMTEK_SELENIUM_FAILURES = 0
+    ARMTEK_SELENIUM_DISABLED = False
 
 
 def reset_emex_parser_state() -> None:
-	"""Сброс глобального состояния Emex между задачами Celery (воркер живёт долго)."""
-	global EMEX_SELENIUM_FAILURES, EMEX_SELENIUM_DISABLED
-	EMEX_SELENIUM_FAILURES = 0
-	EMEX_SELENIUM_DISABLED = False
+    """Сброс глобального состояния Emex между задачами Celery (воркер живёт долго)."""
+    global EMEX_SELENIUM_FAILURES, EMEX_SELENIUM_DISABLED
+    EMEX_SELENIUM_FAILURES = 0
+    EMEX_SELENIUM_DISABLED = False
 
 
 def _emex_use_proxy_enabled() -> bool:
-	return os.getenv('EMEX_USE_PROXY', '0').strip().lower() in ('1', 'true', 'yes')
+    return os.getenv('EMEX_USE_PROXY', '0').strip().lower() in ('1', 'true', 'yes')
 
 
 def _note_armtek_selenium_driver_failure() -> None:
-	global ARMTEK_SELENIUM_FAILURES, ARMTEK_SELENIUM_DISABLED
-	ARMTEK_SELENIUM_FAILURES += 1
-	if ARMTEK_SELENIUM_FAILURES >= MAX_ARMTEK_SELENIUM_FAILURES:
-		ARMTEK_SELENIUM_DISABLED = True
-		log_debug(
-			f"Armtek Selenium отключён после {ARMTEK_SELENIUM_FAILURES} ошибок Chrome "
-			f"(используем HTTP fallback)"
-		)
+    global ARMTEK_SELENIUM_FAILURES, ARMTEK_SELENIUM_DISABLED
+    ARMTEK_SELENIUM_FAILURES += 1
+    if ARMTEK_SELENIUM_FAILURES >= MAX_ARMTEK_SELENIUM_FAILURES:
+        ARMTEK_SELENIUM_DISABLED = True
+        log_debug(
+            f"Armtek Selenium отключён после {ARMTEK_SELENIUM_FAILURES} ошибок Chrome "
+            f"(используем HTTP fallback)"
+        )
 
 _ARMTEK_BRAND_SPAN_SELECTOR = (
-	'span.font__body2.brand--selecting, span.font_body2.brand--selecting, '
-	'span.font__caption1.brand--selectable, span.brand--selecting, '
-	'span.brand--selectable, [class*="brand--selecting"], [class*="brand--selectable"]'
+    'span.font__body2.brand--selecting, span.font_body2.brand--selecting, '
+    'span.font__caption1.brand--selectable, span.brand--selecting, '
+    'span.brand--selectable, [class*="brand--selecting"], [class*="brand--selectable"]'
 )
 
 
 def _selenium_remote_http_timeout_seconds() -> float:
-    """Таймаут HTTP к локальному chromedriver (Selenium Wire Protocol).
-
-    По умолчанию в Selenium ~120s на read + retries urllib3: при «мёртвом» Chrome
-    воркер зависает на минуты на вызовах вроде driver.title / return_driver_to_pool.
-    Задаётся env AUTOPITER_SELENIUM_HTTP_TIMEOUT (секунды).
-    """
+    """Таймаут HTTP к локальному chromedriver (Selenium Wire Protocol)."""
     try:
         v = float(os.getenv("AUTOPITER_SELENIUM_HTTP_TIMEOUT", "30"))
     except Exception:
@@ -210,23 +217,23 @@ MAX_EMEX_SELENIUM_FAILURES = 3
 
 
 class AutopiterRateLimitException(Exception):
-    """Autopiter вернул rate-limit и нам нужно повторить позже.
-
-    Важно: такие ответы нельзя негативно кэшировать, иначе бренды будут
-    пропущены надолго (NEGATIVE_CACHE_EXPIRATION).
-    """
+    """Autopiter вернул rate-limit и нам нужно повторить позже."""
+    pass
 
 
 class AutopiterForbiddenException(Exception):
     """Autopiter временно запретил доступ (403), требуется повторить позже."""
+    pass
 
 
 class AutopiterNetworkException(Exception):
     """Сетевая ошибка/таймаут Autopiter. Нельзя негативно кэшировать надолго."""
+    pass
 
 
 class AutopiterBlockedException(Exception):
     """Autopiter показал captcha/страницу ошибки вместо каталога."""
+    pass
 
 
 _AUTOPITER_BLOCK_MARKERS = (
@@ -275,8 +282,6 @@ def looks_like_analytics_garbage_token(text: str) -> bool:
     return False
 
 # Autopiter очень чувствителен к burst-нагрузке.
-# Даже при небольшом ThreadPoolExecutor легко ловится 429/403, что приводит к пустым результатам.
-# Этот лимитер делает "плавный" поток запросов в рамках одного процесса celery-worker.
 class _AutopiterAdaptiveLimiter:
     def __init__(self, min_interval: float = 0.25, max_interval: float = 2.5) -> None:
         self._min_interval = float(min_interval)
@@ -292,10 +297,8 @@ class _AutopiterAdaptiveLimiter:
                 now = time.time()
                 wait_for = self._next_allowed - now
                 if wait_for <= 0:
-                    # резервируем следующий слот прямо сейчас
                     self._next_allowed = now + self._interval
                     return
-            # sleep вне lock
             time.sleep(min(0.25, max(0.01, wait_for)))
 
     def penalize(self, cooldown: float) -> None:
@@ -318,9 +321,7 @@ class _AutopiterAdaptiveLimiter:
 
 _AUTOPITER_LIMITER = _AutopiterAdaptiveLimiter(min_interval=0.05, max_interval=3.0)
 
-
 # Глобальный throttle (на все процессы celery), чтобы избежать "волн" 429.
-# Redis у вас уже включен для Celery, поэтому используем его.
 _REDIS_THROTTLE_COOLDOWN_KEY = "autopiter:cooldown_until"
 _REDIS_THROTTLE_LAST_TS_KEY = "autopiter:last_ts"
 _REDIS_THROTTLE_EXPIRE_SECONDS = 120
@@ -336,7 +337,6 @@ def _get_redis_client():
     if client is not None:
         return client
     try:
-        # host "redis" подходит для docker-compose.
         host = os.getenv("REDIS_HOST", "redis")
         port = int(os.getenv("REDIS_PORT", "6379"))
         db = int(os.getenv("REDIS_DB", "0"))
@@ -348,10 +348,7 @@ def _get_redis_client():
 
 
 def _global_autopiter_throttle_wait() -> None:
-    """
-    Резервирует слот для следующего запроса к Autopiter.
-    За счет Lua скрипта это атомарно между процессами.
-    """
+    """Резервирует слот для следующего запроса к Autopiter."""
     client = _get_redis_client()
     if client is None:
         return
@@ -365,14 +362,9 @@ def _global_autopiter_throttle_wait() -> None:
         local cooldown_until = tonumber(redis.call('GET', KEYS[1]) or '0')
         local last_ts = tonumber(redis.call('GET', KEYS[2]) or '0')
 
-        -- Важно: даже если мы сейчас в глобальном кулдауне,
-        -- нужно РЕЗЕРВИРОВАТЬ следующий слот через last_ts,
-        -- иначе несколько потоков проснутся одновременно и дадут новый burst 429.
         if now < cooldown_until then
           local next_allowed = cooldown_until
           if last_ts ~= nil and last_ts > 0 then
-            -- Если last_ts уже сдвинут (другой поток зарезервировал слот),
-            -- то следующий слот ставим строго дальше.
             local staggered = last_ts + min_interval
             if staggered > next_allowed then
               next_allowed = staggered
@@ -403,15 +395,10 @@ def _global_autopiter_throttle_wait() -> None:
         end
         return wait_for
         """
-        # Возвращает wait_for в секундах (может быть 0)
         wait_for = float(client.eval(lua, 2, _REDIS_THROTTLE_COOLDOWN_KEY, _REDIS_THROTTLE_LAST_TS_KEY, now, _AUTOPITER_GLOBAL_MIN_INTERVAL))
         if wait_for > 0:
-            # Важно: не ограничиваем сон до 0.5s, иначе мы нарушаем рассчитанный лимит
-            # и снова получаем "волны" 429.
-            # Кулдауны после 429 могут быть > 5s, поэтому лимит на сон должен быть выше.
             time.sleep(min(20.0, wait_for))
     except Exception:
-        # Если Redis недоступен — просто работаем локально.
         return
 
 
@@ -422,8 +409,6 @@ def _global_autopiter_penalize(cooldown: float) -> None:
     try:
         cooldown = float(cooldown)
         now = time.time()
-        # Не делаем слишком длинные кулдауны, иначе резко падает throughput.
-        # Наша цель — уменьшить "волны" 429, но не убить скорость.
         mult = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_MULT", "1.8"))
         min_cooldown = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_MIN", "2.0"))
         cap_cooldown = float(os.getenv("AUTOPITER_GLOBAL_COOLDOWN_CAP", "60.0"))
@@ -450,76 +435,76 @@ def log_debug(message):
 
 
 def _is_chrome_resource_error(exc: Exception) -> bool:
-	text = str(exc).lower()
-	markers = (
-		"failed to start a thread",
-		"session not created",
-		"resource temporarily unavailable",
-		"cannot allocate memory",
-		"too many open files",
-		"errno 11",
-		"errno 12",
-		"errno 13",
-	)
-	return any(marker in text for marker in markers)
+    text = str(exc).lower()
+    markers = (
+        "failed to start a thread",
+        "session not created",
+        "resource temporarily unavailable",
+        "cannot allocate memory",
+        "too many open files",
+        "errno 11",
+        "errno 12",
+        "errno 13",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _normalize_proxy_arg(proxy: Optional[Union[str, Dict[str, str]]]) -> Optional[str]:
-	"""Приводит прокси к строке ip:port или login:pass@ip:port для Selenium/HTTP."""
-	if not proxy:
-		return None
-	if isinstance(proxy, dict):
-		proxy_url = proxy.get('http') or proxy.get('https') or ''
-		if isinstance(proxy_url, str) and proxy_url.startswith('http://'):
-			return proxy_url[7:]
-		if isinstance(proxy_url, str) and proxy_url.startswith('https://'):
-			return proxy_url[8:]
-		return None
-	if isinstance(proxy, str):
-		value = proxy.strip()
-		if value.startswith('http://'):
-			return value[7:]
-		if value.startswith('https://'):
-			return value[8:]
-		return value or None
-	return None
+    """Приводит прокси к строке ip:port или login:pass@ip:port для Selenium/HTTP."""
+    if not proxy:
+        return None
+    if isinstance(proxy, dict):
+        proxy_url = proxy.get('http') or proxy.get('https') or ''
+        if isinstance(proxy_url, str) and proxy_url.startswith('http://'):
+            return proxy_url[7:]
+        if isinstance(proxy_url, str) and proxy_url.startswith('https://'):
+            return proxy_url[8:]
+        return None
+    if isinstance(proxy, str):
+        value = proxy.strip()
+        if value.startswith('http://'):
+            return value[7:]
+        if value.startswith('https://'):
+            return value[8:]
+        return value or None
+    return None
 
 
 def _is_selenium_fatal_error(exc: Exception) -> bool:
-	text = str(exc).lower()
-	markers = (
-		"tab crashed",
-		"chrome not reachable",
-		"connection refused",
-		"timed out receiving message from renderer",
-		"script timeout",
-		"httpconnectionpool",
-		"read timed out",
-		"failed to establish a new connection",
-		"remote end closed",
-		"invalid session id",
-		"session not created",
-		"no such window",
-		"failed to start a thread",
-	)
-	return any(marker in text for marker in markers)
+    text = str(exc).lower()
+    markers = (
+        "tab crashed",
+        "chrome not reachable",
+        "connection refused",
+        "timed out receiving message from renderer",
+        "script timeout",
+        "httpconnectionpool",
+        "read timed out",
+        "failed to establish a new connection",
+        "remote end closed",
+        "invalid session id",
+        "session not created",
+        "no such window",
+        "failed to start a thread",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _recover_armtek_driver(
-	old_driver: Optional[webdriver.Chrome],
-	proxy: Optional[str] = None,
+    old_driver: Optional[webdriver.Chrome],
+    proxy: Optional[str] = None,
 ) -> Optional[webdriver.Chrome]:
-	"""Закрывает битый драйвер и создаёт новый с уникальным user-data-dir."""
-	if old_driver is not None:
-		try:
-			old_driver.quit()
-		except Exception:
-			pass
-	temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_{uuid.uuid4().hex[:8]}_")
-	effective_proxy = _normalize_proxy_arg(proxy)
-	if effective_proxy and '@' in effective_proxy:
-		effective_proxy = None
-	return _create_chrome_driver_robust(temp_dir, effective_proxy)
+    """Закрывает битый драйвер и создаёт новый с уникальным user-data-dir."""
+    if old_driver is not None:
+        try:
+            old_driver.quit()
+        except Exception:
+            pass
+    temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_{uuid.uuid4().hex[:8]}_")
+    effective_proxy = _normalize_proxy_arg(proxy)
+    if effective_proxy and '@' in effective_proxy:
+        effective_proxy = None
+    return _create_chrome_driver_robust(temp_dir, effective_proxy)
 
 
 def get_driver_from_pool() -> Optional[webdriver.Chrome]:
@@ -556,8 +541,6 @@ def return_driver_to_pool(driver: webdriver.Chrome):
     
     try:
         # Крашнутый/битый драйвер нельзя возвращать в пул.
-        # Важно: проверку делаем с коротким HTTP-timeout к chromedriver, иначе при зависшем
-        # процессе Chrome один вызов driver.title может занять минуты (дефолт Selenium + retries).
         ce = getattr(driver, "command_executor", None)
         old_http_timeout = None
         health_ok = False
@@ -623,21 +606,21 @@ def cleanup_driver_pool():
     cleanup_chrome_processes()
 
 def get_proxies_file_path() -> str:
-	"""Путь к файлу прокси в writable media/temp (не /app/proxies.txt на volume mount)."""
-	backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-	return os.path.join(backend_dir, 'media', 'temp', 'proxies.txt')
+    """Путь к файлу прокси в writable media/temp (не /app/proxies.txt на volume mount)."""
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(backend_dir, 'media', 'temp', 'proxies.txt')
 
 
 def _resolve_proxies_file_path(file_path: Optional[str] = None) -> str:
-	if file_path:
-		return file_path
-	primary = get_proxies_file_path()
-	if os.path.exists(primary):
-		return primary
-	legacy = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'proxies.txt')
-	if os.path.exists(legacy):
-		return legacy
-	return primary
+    if file_path:
+        return file_path
+    primary = get_proxies_file_path()
+    if os.path.exists(primary):
+        return primary
+    legacy = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'proxies.txt')
+    if os.path.exists(legacy):
+        return legacy
+    return primary
 
 
 def load_proxies_from_file(file_path: Optional[str] = None) -> List[str]:
@@ -657,190 +640,196 @@ def load_proxies_from_file(file_path: Optional[str] = None) -> List[str]:
 
 
 def _looks_like_host_port(part: str) -> bool:
-	"""True, если строка похожа на host:port (порт — число)."""
-	if ':' not in part:
-		return False
-	host, port = part.rsplit(':', 1)
-	if not port.isdigit():
-		return False
-	if re.fullmatch(r'\d{1,3}(\.\d{1,3}){3}', host):
-		return True
-	return '.' in host
+    """True, если строка похожа на host:port (порт — число)."""
+    if ':' not in part:
+        return False
+    host, port = part.rsplit(':', 1)
+    if not port.isdigit():
+        return False
+    if re.fullmatch(r'\d{1,3}(\.\d{1,3}){3}', host):
+        return True
+    return '.' in host
 
 
 def parse_proxy_line(proxy_str: str) -> Optional[Dict[str, str]]:
-	"""Парсит строку прокси в dict для requests.
+    """Парсит строку прокси в dict для requests.
 
-	Поддерживаемые форматы:
-	- ip:port@login:password (формат загрузки в UI)
-	- login:password@ip:port (стандартный URL-формат)
-	- ip:port
-	"""
-	proxy_str = (proxy_str or '').strip()
-	if not proxy_str or proxy_str.startswith('#'):
-		return None
+    Поддерживаемые форматы:
+    - login:password@host (без порта, порт будет добавлен автоматически)
+    - login:password@ip:port
+    - login:password@domain
+    - ip:port
+    """
+    proxy_str = (proxy_str or '').strip()
+    if not proxy_str or proxy_str.startswith('#'):
+        return None
 
-	if '@' not in proxy_str:
-		try:
-			host, port = proxy_str.rsplit(':', 1)
-			url = f'http://{host}:{port}'
-			return {'http': url, 'https': url}
-		except ValueError:
-			return None
+    # Если нет @, это просто host:port или host
+    if '@' not in proxy_str:
+        # Проверяем, есть ли порт
+        if ':' in proxy_str:
+            try:
+                host, port = proxy_str.rsplit(':', 1)
+                if port.isdigit():
+                    url = f'http://{host}:{port}'
+                    return {'http': url, 'https': url}
+            except ValueError:
+                pass
+        # Если порта нет, генерируем случайный
+        random_port = random.randint(10000, 10999)
+        url = f'http://{proxy_str}:{random_port}'
+        return {'http': url, 'https': url}
 
-	left, right = proxy_str.split('@', 1)
-	if _looks_like_host_port(left):
-		host, port = left.rsplit(':', 1)
-		if ':' not in right:
-			return None
-		login, password = right.split(':', 1)
-	elif _looks_like_host_port(right):
-		if ':' not in left:
-			return None
-		login, password = left.split(':', 1)
-		host, port = right.rsplit(':', 1)
-	else:
-		try:
-			host, port = left.rsplit(':', 1)
-			login, password = right.split(':', 1)
-		except ValueError:
-			return None
-
-	url = f'http://{quote(login, safe="")}:{quote(password, safe="")}@{host}:{port}'
-	return {'http': url, 'https': url}
+    # Разбираем login:password@host
+    left, right = proxy_str.split('@', 1)
+    
+    # Проверяем, есть ли порт в правой части
+    if ':' in right:
+        host, port = right.rsplit(':', 1)
+        if port.isdigit():
+            # login:password@host:port
+            login, password = left.split(':', 1)
+            url = f'http://{quote(login, safe="")}:{quote(password, safe="")}@{host}:{port}'
+            return {'http': url, 'https': url}
+    
+    # login:password@host (без порта) - генерируем случайный порт
+    login, password = left.split(':', 1)
+    random_port = random.randint(10000, 10999)
+    url = f'http://{quote(login, safe="")}:{quote(password, safe="")}@{right}:{random_port}'
+    return {'http': url, 'https': url}
 
 
 def _session_set_proxy(session, proxy: Optional[Union[str, Dict[str, str]]]) -> Optional[Dict[str, str]]:
-	"""Настраивает requests.Session на прокси. Возвращает dict прокси или None."""
-	session.proxies.clear()
-	if not proxy:
-		return None
-	if isinstance(proxy, dict):
-		session.proxies.update(proxy)
-		return proxy
-	proxy_value = str(proxy).strip()
-	if proxy_value.startswith('http://'):
-		proxy_value = proxy_value[7:]
-	elif proxy_value.startswith('https://'):
-		proxy_value = proxy_value[8:]
-	proxy_dict = parse_proxy_line(proxy_value)
-	if not proxy_dict:
-		proxy_dict = {
-			'http': f'http://{proxy_value}',
-			'https': f'http://{proxy_value}',
-		}
-	session.proxies.update(proxy_dict)
-	return proxy_dict
+    """Настраивает requests.Session на прокси. Возвращает dict прокси или None."""
+    session.proxies.clear()
+    if not proxy:
+        return None
+    if isinstance(proxy, dict):
+        session.proxies.update(proxy)
+        return proxy
+    proxy_value = str(proxy).strip()
+    if proxy_value.startswith('http://'):
+        proxy_value = proxy_value[7:]
+    elif proxy_value.startswith('https://'):
+        proxy_value = proxy_value[8:]
+    proxy_dict = parse_proxy_line(proxy_value)
+    if not proxy_dict:
+        proxy_dict = {
+            'http': f'http://{proxy_value}',
+            'https': f'http://{proxy_value}',
+        }
+    session.proxies.update(proxy_dict)
+    return proxy_dict
 
 
 def _parse_proxy_credentials(proxy_value: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
-	"""Возвращает (host, port, login, password) из строки прокси."""
-	proxy_dict = parse_proxy_line(proxy_value)
-	if not proxy_dict:
-		return None, None, None, None
-	url = proxy_dict.get('http', '')
-	if url.startswith('http://'):
-		url = url[7:]
-	if '@' not in url:
-		if ':' in url:
-			host, port = url.rsplit(':', 1)
-			return host, port, None, None
-		return None, None, None, None
-	auth_part, host_port = url.rsplit('@', 1)
-	if ':' not in auth_part or ':' not in host_port:
-		return None, None, None, None
-	login, password = auth_part.split(':', 1)
-	host, port = host_port.rsplit(':', 1)
-	return host, port, unquote(login), unquote(password)
+    """Возвращает (host, port, login, password) из строки прокси."""
+    proxy_dict = parse_proxy_line(proxy_value)
+    if not proxy_dict:
+        return None, None, None, None
+    url = proxy_dict.get('http', '')
+    if url.startswith('http://'):
+        url = url[7:]
+    if '@' not in url:
+        if ':' in url:
+            host, port = url.rsplit(':', 1)
+            return host, port, None, None
+        return None, None, None, None
+    auth_part, host_port = url.rsplit('@', 1)
+    if ':' not in auth_part or ':' not in host_port:
+        return None, None, None, None
+    login, password = auth_part.split(':', 1)
+    host, port = host_port.rsplit(':', 1)
+    return host, port, unquote(login), unquote(password)
 
 
 def _create_proxy_auth_extension(host: str, port: str, username: str, password: str) -> str:
-	"""Создаёт временное Chrome-расширение для HTTP-прокси с авторизацией."""
-	plugin_dir = tempfile.mkdtemp(prefix='chrome_proxy_auth_')
-	manifest_json = json.dumps({
-		"version": "1.0.0",
-		"manifest_version": 2,
-		"name": "Chrome Proxy Auth",
-		"permissions": [
-			"proxy",
-			"tabs",
-			"unlimitedStorage",
-			"storage",
-			"<all_urls>",
-			"webRequest",
-			"webRequestBlocking",
-		],
-		"background": {"scripts": ["background.js"]},
-		"minimum_chrome_version": "76.0.0",
-	}, ensure_ascii=True)
-	background_js = f"""
+    """Создаёт временное Chrome-расширение для HTTP-прокси с авторизацией."""
+    plugin_dir = tempfile.mkdtemp(prefix='chrome_proxy_auth_')
+    manifest_json = json.dumps({
+        "version": "1.0.0",
+        "manifest_version": 2,
+        "name": "Chrome Proxy Auth",
+        "permissions": [
+            "proxy",
+            "tabs",
+            "unlimitedStorage",
+            "storage",
+            "<all_urls>",
+            "webRequest",
+            "webRequestBlocking",
+        ],
+        "background": {"scripts": ["background.js"]},
+        "minimum_chrome_version": "76.0.0",
+    }, ensure_ascii=True)
+    background_js = f"""
 var config = {{
-	mode: "fixed_servers",
-	rules: {{
-		singleProxy: {{
-			scheme: "http",
-			host: {json.dumps(host)},
-			port: parseInt({json.dumps(str(port))}, 10)
-		}},
-		bypassList: ["localhost", "127.0.0.1"]
-	}}
+    mode: "fixed_servers",
+    rules: {{
+        singleProxy: {{
+            scheme: "http",
+            host: {json.dumps(host)},
+            port: parseInt({json.dumps(str(port))}, 10)
+        }},
+        bypassList: ["localhost", "127.0.0.1"]
+    }}
 }};
 chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
 
 function callbackFn(details) {{
-	return {{
-		authCredentials: {{
-			username: {json.dumps(username)},
-			password: {json.dumps(password)}
-		}}
-	}};
+    return {{
+        authCredentials: {{
+            username: {json.dumps(username)},
+            password: {json.dumps(password)}
+        }}
+    }};
 }}
 
 chrome.webRequest.onAuthRequired.addListener(
-	callbackFn,
-	{{urls: ["<all_urls>"]}},
-	['blocking']
+    callbackFn,
+    {{urls: ["<all_urls>"]}},
+    ['blocking']
 );
 """
-	with open(os.path.join(plugin_dir, 'manifest.json'), 'w', encoding='utf-8') as f:
-		f.write(manifest_json)
-	with open(os.path.join(plugin_dir, 'background.js'), 'w', encoding='utf-8') as f:
-		f.write(background_js)
-	return plugin_dir
+    with open(os.path.join(plugin_dir, 'manifest.json'), 'w', encoding='utf-8') as f:
+        f.write(manifest_json)
+    with open(os.path.join(plugin_dir, 'background.js'), 'w', encoding='utf-8') as f:
+        f.write(background_js)
+    return plugin_dir
 
 
 def _configure_chrome_proxy(chrome_options: Options, proxy: Optional[str]) -> bool:
-	"""Настраивает прокси в Chrome. Возвращает True, если загружено auth-расширение."""
-	if not proxy:
-		return False
-	proxy_value = str(proxy).strip()
-	if proxy_value.startswith('http://'):
-		proxy_value = proxy_value[7:]
-	elif proxy_value.startswith('https://'):
-		proxy_value = proxy_value[8:]
-	host, port, login, password = _parse_proxy_credentials(proxy_value)
-	if host and port and login and password:
-		ext_dir = _create_proxy_auth_extension(host, port, login, password)
-		chrome_options.add_argument(f'--load-extension={ext_dir}')
-		log_debug(f"Selenium: прокси с авторизацией {_proxy_url_to_host_port(f'{login}:***@{host}:{port}')}")
-		return True
-	if host and port:
-		chrome_options.add_argument(f'--proxy-server=http://{host}:{port}')
-		log_debug(f"Selenium: прокси без авторизации {host}:{port}")
-		return False
-	chrome_options.add_argument(f'--proxy-server=http://{proxy_value}')
-	log_debug(f"Selenium: прокси {proxy_value}")
-	return False
+    """Настраивает прокси в Chrome. Возвращает True, если загружено auth-расширение."""
+    if not proxy:
+        return False
+    proxy_value = str(proxy).strip()
+    if proxy_value.startswith('http://'):
+        proxy_value = proxy_value[7:]
+    elif proxy_value.startswith('https://'):
+        proxy_value = proxy_value[8:]
+    host, port, login, password = _parse_proxy_credentials(proxy_value)
+    if host and port and login and password:
+        ext_dir = _create_proxy_auth_extension(host, port, login, password)
+        chrome_options.add_argument(f'--load-extension={ext_dir}')
+        log_debug(f"Selenium: прокси с авторизацией {_proxy_url_to_host_port(f'{login}:***@{host}:{port}')}")
+        return True
+    if host and port:
+        chrome_options.add_argument(f'--proxy-server=http://{host}:{port}')
+        log_debug(f"Selenium: прокси без авторизации {host}:{port}")
+        return False
+    chrome_options.add_argument(f'--proxy-server=http://{proxy_value}')
+    log_debug(f"Selenium: прокси {proxy_value}")
+    return False
 
 
 def _proxy_url_to_host_port(proxy_url: str) -> str:
-	"""host:port из http://login:pass@host:port для логов."""
-	value = proxy_url
-	if value.startswith('http://'):
-		value = value[7:]
-	if '@' in value:
-		value = value.split('@', 1)[1]
-	return value
+    """host:port из http://login:pass@host:port для логов."""
+    value = proxy_url
+    if value.startswith('http://'):
+        value = value[7:]
+    if '@' in value:
+        value = value.split('@', 1)[1]
+    return value
 
 
 def get_next_proxy() -> Optional[Dict[str, str]]:
@@ -866,14 +855,11 @@ def get_next_proxy() -> Optional[Dict[str, str]]:
         if proxy_str in BAD_PROXIES:
             continue
         
-        # Генерируем случайный порт
-        random_port = random.randint(10000, 10999)
-        proxy_str_with_port = f"{proxy_str}:{random_port}"
-        
         try:
-            proxy_dict = parse_proxy_line(proxy_str_with_port)
+            # Парсим прокси и возвращаем словарь
+            proxy_dict = parse_proxy_line(proxy_str)
             if proxy_dict:
-                log_debug(f"Используется прокси: {_proxy_url_to_host_port(proxy_dict['http'])} с портом {random_port}")
+                log_debug(f"Используется прокси: {_proxy_url_to_host_port(proxy_dict['http'])}")
                 return proxy_dict
         except Exception as e:
             log_debug(f"Ошибка парсинга прокси: {e}")
@@ -887,20 +873,21 @@ def get_next_proxy() -> Optional[Dict[str, str]]:
     BAD_PROXIES_TIMESTAMP.clear()
     return None
 
+
 def _proxy_is_bad(proxy_line: str, proxy_dict: Optional[Dict[str, str]] = None) -> bool:
-	"""Проверяет, помечен ли прокси как проблемный (по строке файла или host:port)."""
-	if proxy_line in BAD_PROXIES:
-		return True
-	if proxy_dict:
-		host_port = _proxy_url_to_host_port(proxy_dict.get('http', ''))
-		if host_port and host_port in BAD_PROXIES:
-			return True
-	parsed = parse_proxy_line(proxy_line)
-	if parsed:
-		host_port = _proxy_url_to_host_port(parsed.get('http', ''))
-		if host_port and host_port in BAD_PROXIES:
-			return True
-	return False
+    """Проверяет, помечен ли прокси как проблемный (по строке файла или host:port)."""
+    if proxy_line in BAD_PROXIES:
+        return True
+    if proxy_dict:
+        host_port = _proxy_url_to_host_port(proxy_dict.get('http', ''))
+        if host_port and host_port in BAD_PROXIES:
+            return True
+    parsed = parse_proxy_line(proxy_line)
+    if parsed:
+        host_port = _proxy_url_to_host_port(parsed.get('http', ''))
+        if host_port and host_port in BAD_PROXIES:
+            return True
+    return False
 
 
 def mark_proxy_bad(proxy_repr: str) -> None:
@@ -937,13 +924,7 @@ def get_proxy_string() -> Optional[str]:
 
 
 def is_autopiter_proxy_enabled() -> bool:
-    """Нужно ли ходить на Autopiter через прокси.
-
-    AUTOPITER_USE_PROXY:
-    - auto (по умолчанию): включить, если в файле есть прокси
-    - 1/true: включить (если прокси есть)
-    - 0/false: выключить
-    """
+    """Нужно ли ходить на Autopiter через прокси."""
     explicit = os.getenv("AUTOPITER_USE_PROXY", "auto").strip().lower()
     if not PROXY_LIST:
         load_proxies_from_file()
@@ -998,38 +979,31 @@ def make_request(
     timeout: int = 10,
     cache_key: Optional[str] = None,
 ) -> Optional[requests.Response]:
-    """Выполняет HTTP-запрос с поддержкой прокси и повторными попытками.
-    Параметр cache_key зарезервирован для возможного кеширования (пока не используется).
-    """
-
-    # Настройка сессии (пул соединений на поток)
+    """Выполняет HTTP-запрос с поддержкой прокси и повторными попытками."""
     session = _get_thread_requests_session()
     proxy_dict = _session_set_proxy(session, proxy)
     if proxy_dict:
         log_debug(f"Используется прокси: {_proxy_url_to_host_port(proxy_dict.get('http', ''))}")
     
-    # Настройка заголовков — используем «современные» заголовки из HEADERS
     session.headers.update(HEADERS)
     
-    # Выполнение запроса с повторными попытками
     for attempt in range(1, max_retries + 1):
         try:
             log_debug(f"Попытка {attempt} {'с прокси' if proxy else 'без прокси'} для {url}")
             
             response = session.get(url, timeout=timeout, allow_redirects=True)
             
-            # Проверяем статус ответа
             if response.status_code == 200:
                 return response
             elif response.status_code == 403:
                 log_debug(f"403 Forbidden для {url} (попытка {attempt})")
                 if attempt < max_retries:
-                    time.sleep(2 ** attempt)  # Экспоненциальная задержка
+                    time.sleep(2 ** attempt)
                     continue
             elif response.status_code == 429:
                 log_debug(f"429 Rate Limit для {url} (попытка {attempt})")
                 if attempt < max_retries:
-                    wait_time = 30 * (2 ** attempt)  # Еще более агрессивная задержка: 30, 60, 120 секунд
+                    wait_time = 30 * (2 ** attempt)
                     log_debug(f"Ждем {wait_time} секунд перед повторной попыткой")
                     time.sleep(wait_time)
                     continue
@@ -1058,17 +1032,149 @@ def make_request(
     
     log_debug(f"Все попытки исчерпаны для {url}")
     return None
+
+
+def _create_chrome_driver_robust(temp_dir: Optional[str] = None, proxy: Optional[str] = None) -> Optional[webdriver.Chrome]:
+    """Создает Chrome драйвер с улучшенной обработкой ошибок и retry логикой"""
+    
+    # Агрессивная очистка перед созданием
+    for _ in range(2):
+        try:
+            subprocess.run(['pkill', '-9', '-f', 'chrome'], timeout=3, capture_output=True)
+            subprocess.run(['pkill', '-9', '-f', 'chromedriver'], timeout=3, capture_output=True)
+        except Exception:
+            pass
+    gc.collect()
+    time.sleep(0.5)
+    
+    if not temp_dir:
+        temp_dir = tempfile.mkdtemp(prefix=f"chrome_{uuid.uuid4().hex[:8]}_")
+    
+    with _ChromeCreateLock():
+        for attempt in range(DRIVER_CREATION_RETRIES):
+            try:
+                chrome_options = Options()
+                chrome_options.add_argument('--headless=new')
+                chrome_options.add_argument('--no-sandbox')
+                chrome_options.add_argument('--disable-dev-shm-usage')
+                chrome_options.add_argument('--disable-gpu')
+                chrome_options.add_argument('--window-size=1920,1080')
+                chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+                chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+                chrome_options.add_experimental_option('useAutomationExtension', False)
+                
+                # ===== НОВЫЕ АРГУМЕНТЫ ДЛЯ СТАБИЛЬНОСТИ =====
+                chrome_options.add_argument('--disable-software-rasterizer')
+                chrome_options.add_argument('--disable-features=VizDisplayCompositor')
+                chrome_options.add_argument('--disable-features=IsolateOrigins,site-per-process')
+                chrome_options.add_argument('--disable-background-timer-throttling')
+                chrome_options.add_argument('--disable-backgrounding-occluded-windows')
+                chrome_options.add_argument('--disable-renderer-backgrounding')
+                chrome_options.add_argument('--disable-features=TranslateUI')
+                chrome_options.add_argument('--disable-ipc-flooding-protection')
+                chrome_options.add_argument('--disable-logging')
+                chrome_options.add_argument('--disable-crash-reporter')
+                chrome_options.add_argument('--disable-in-process-stack-traces')
+                chrome_options.add_argument('--log-level=3')
+                chrome_options.add_argument('--silent')
+                chrome_options.add_argument('--disable-dev-tools')
+                chrome_options.add_argument('--no-first-run')
+                chrome_options.add_argument('--no-default-browser-check')
+                
+                # ===== ВАЖНО: ограничиваем память для Chrome =====
+                chrome_options.add_argument('--memory-pressure-off')
+                chrome_options.add_argument('--max_old_space_size=2048')
+                
+                # ===== ВАЖНО: ограничиваем количество процессов =====
+                chrome_options.add_argument('--renderer-process-limit=2')
+                
+                # ===== ВАЖНО: отключаем ненужные фичи =====
+                chrome_options.add_argument('--disable-extensions')
+                chrome_options.add_argument('--disable-plugins')
+                chrome_options.add_argument('--disable-images')
+                chrome_options.add_argument('--disable-web-security')
+                
+                # ===== НОВОЕ: игнорируем прокси с авторизацией =====
+                effective_proxy = None
+                if proxy and '@' in str(proxy):
+                    log_debug(f"Прокси с авторизацией не используется для Selenium, работаем без прокси")
+                else:
+                    effective_proxy = proxy
+
+                proxy_extension_loaded = _configure_chrome_proxy(chrome_options, effective_proxy)
+                if not proxy_extension_loaded:
+                    chrome_options.add_argument('--disable-extensions')
+                
+                chrome_options.add_argument(f'--user-data-dir={temp_dir}')
+                chrome_options.add_argument('--allow-running-insecure-content')
+
+                # Пытаемся найти ChromeDriver в разных местах
+                service = None
+                chrome_paths = [
+                    '/usr/bin/chromedriver',
+                    '/usr/local/bin/chromedriver',
+                    'chromedriver',
+                    './chromedriver'
+                ]
+
+                for chrome_path in chrome_paths:
+                    try:
+                        service = Service(executable_path=chrome_path)
+                        break
+                    except Exception:
+                        continue
+
+                if service is None:
+                    service = Service()
+
+                chrome_options.page_load_strategy = 'eager'
+                driver = webdriver.Chrome(service=service, options=chrome_options)
+                _set_selenium_remote_command_timeout(driver, _selenium_remote_http_timeout_seconds())
+
+                driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+                driver.set_script_timeout(max(20, PAGE_LOAD_TIMEOUT))
+                driver.implicitly_wait(1)
+
+                return driver
+
+            except Exception as e:
+                log_debug(f"Попытка {attempt + 1} создания Chrome драйвера: {str(e)}")
+                if _is_chrome_resource_error(e):
+                    cleanup_chrome_processes()
+                    time.sleep(3 + attempt * 2)
+                    break
+                if attempt < DRIVER_CREATION_RETRIES - 1:
+                    time.sleep(2 ** (attempt + 1))  # экспоненциальная задержка
+                else:
+                    log_debug(f"Не удалось создать Chrome драйвер после {DRIVER_CREATION_RETRIES} попыток")
+                    return None
+
+    return None
+
+
 def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[str]:
     """Selenium-парсинг АвтоПитер с полной загрузкой страницы и самовосстановлением сессии."""
+    global AUTOPITER_SELENIUM_FAILURES, AUTOPITER_SELENIUM_DISABLED
+
+    if AUTOPITER_SELENIUM_DISABLED:
+        log_debug(f"Autopiter Selenium отключён, пропускаем {artikul}")
+        return []
+
+    # Игнорируем прокси с авторизацией для Selenium
+    effective_proxy = None
+    if proxy and '@' in str(proxy):
+        log_debug(f"Прокси с авторизацией не подходит для Selenium, работаем без прокси для {artikul}")
+    else:
+        effective_proxy = proxy
+
     last_error = None
 
-    # Иногда драйвер "залипает": первые артикулы отдает, потом стабильно 0 строк.
-    # По умолчанию делаем 1 попытку (быстрее), повтор можно включить env-переменной.
     try:
         selenium_attempts = int(os.getenv("AUTOPITER_SELENIUM_ATTEMPTS", "1"))
     except Exception:
         selenium_attempts = 1
     selenium_attempts = max(1, min(2, selenium_attempts))
+    
     for selenium_attempt in range(selenium_attempts):
         driver = None
         driver_broken = False
@@ -1076,20 +1182,21 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
         temp_dir = tempfile.mkdtemp(prefix=f"chrome_autopiter_")
 
         try:
-            # С пулом переиспользуется драйвер без прокси — при captcha это критично.
-            if proxy:
-                driver = _create_chrome_driver_robust(temp_dir, proxy)
+            # Создаем драйвер (с игнорированием авторизованного прокси)
+            if effective_proxy:
+                driver = _create_chrome_driver_robust(temp_dir, effective_proxy)
             elif not force_fresh_driver:
                 driver = get_driver_from_pool()
                 if not driver:
                     driver = _create_chrome_driver_robust(temp_dir, None)
             else:
                 driver = _create_chrome_driver_robust(temp_dir, None)
+            
             if not driver:
                 log_debug(f"АвтоПитер: не удалось создать Selenium-драйвер для {artikul}")
                 return []
 
-            # Очистка cookies ухудшает прохождение captcha — по умолчанию не трогаем сессию.
+            # Очистка cookies ухудшает прохождение captcha
             if os.getenv("AUTOPITER_CLEAR_COOKIES", "0").strip().lower() in ("1", "true", "yes", "on"):
                 try:
                     driver.delete_all_cookies()
@@ -1148,7 +1255,7 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
                     log_debug(f"АвтоПитер: прекращаем прокрутку после {scroll_attempts} попыток (нет изменений)")
                     break
 
-            # Дополнительная прокрутка: вверх, затем постепенно вниз для гарантированной загрузки.
+            # Дополнительная прокрутка
             driver.execute_script("window.scrollTo(0, 0);")
             time.sleep(1)
 
@@ -1187,11 +1294,13 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
                 except:
                     pass
 
-            # Если страницы явно "пустые" (0 строк и 0 брендов) — лечим пересозданием драйвера.
             if final_rows_count == 0 and selenium_attempt < (selenium_attempts - 1):
                 log_debug(f"АвтоПитер: пустая страница для {artikul}, пересоздаем драйвер и повторяем")
                 driver_broken = True
                 continue
+            
+            # Успех - сбрасываем счетчик ошибок
+            AUTOPITER_SELENIUM_FAILURES = 0
             return brands
 
         except AutopiterBlockedException:
@@ -1199,13 +1308,26 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
         except Exception as e:
             last_error = e
             msg = str(e).lower()
+            
+            # Обработка критических ошибок
             if (
                 "tab crashed" in msg
                 or "invalid session id" in msg
                 or "timed out receiving message from renderer" in msg
                 or "timeout: timed out receiving message from renderer" in msg
+                or "connection refused" in msg
+                or "remotedisconnected" in msg
             ):
                 driver_broken = True
+                # Увеличиваем счетчик ошибок
+                AUTOPITER_SELENIUM_FAILURES += 1
+                if AUTOPITER_SELENIUM_FAILURES >= MAX_AUTOPITER_SELENIUM_FAILURES:
+                    AUTOPITER_SELENIUM_DISABLED = True
+                    log_debug(
+                        f"Autopiter Selenium отключён после {AUTOPITER_SELENIUM_FAILURES} ошибок " 
+                        f"для {artikul}: {str(e)}"
+                    )
+            
             log_debug(f"Ошибка Selenium парсинга АвтоПитер: {str(e)}")
             if selenium_attempt < (selenium_attempts - 1):
                 driver_broken = True
@@ -1213,7 +1335,7 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
             return []
         finally:
             if driver:
-                if driver_broken or proxy:
+                if driver_broken or effective_proxy:
                     try:
                         driver.quit()
                     except Exception:
@@ -1224,32 +1346,30 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
             shutil.rmtree(temp_dir, ignore_errors=True)
 
             try:
-                  subprocess.run(['pkill', '-9', '-f', 'chrome'], timeout=3, capture_output=True)
-                  subprocess.run(['pkill', '-9', '-f', 'chromedriver'], timeout=3, capture_output=True)
+                subprocess.run(['pkill', '-9', '-f', 'chrome'], timeout=3, capture_output=True)
+                subprocess.run(['pkill', '-9', '-f', 'chromedriver'], timeout=3, capture_output=True)
             except Exception:
-                  pass
+                pass
 
     if last_error:
         log_debug(f"АвтоПитер: не удалось восстановить Selenium-сессию для {artikul}: {last_error}")
     return []
+
 
 def get_brands_by_artikul(
     artikul: str,
     proxy: Optional[str] = None,
     force_http: bool = False,
 ) -> List[str]:
-    """Получает бренды с Autopiter по артикулу.
-    Новая логика: сначала пробуем HTTP (быстро), Selenium — только как fallback.
-    """
+    """Получает бренды с Autopiter по артикулу."""
+    global AUTOPITER_SELENIUM_DISABLED
+    
     try:
-        # ===== НОВАЯ ЛОГИКА: Сначала HTTP, Selenium только как fallback =====
-        # Если force_http уже True, значит мы уже внутри HTTP-режима (рекурсивно не идём)
         if not force_http:
             # Пытаемся получить прокси для HTTP-запроса
             http_proxy_dict = get_next_proxy()
             
             if http_proxy_dict:
-                # Извлекаем строку прокси (без 'http://') для передачи в функцию
                 http_proxy_url = http_proxy_dict.get('http', '')
                 if http_proxy_url.startswith('http://'):
                     http_proxy = http_proxy_url[7:]
@@ -1258,7 +1378,6 @@ def get_brands_by_artikul(
                 
                 log_debug(f"АвтоПитер: пробуем быстрый HTTP-запрос для {artikul} через прокси {_proxy_url_to_host_port(http_proxy_url)}")
                 
-                # Вызываем функцию с force_http=True (это заставит её использовать HTTP-режим)
                 brands = get_brands_by_artikul(artikul, http_proxy, force_http=True)
                 
                 if brands:
@@ -1269,29 +1388,29 @@ def get_brands_by_artikul(
             else:
                 log_debug(f"АвтоПитер: не удалось получить прокси для HTTP, сразу пробуем Selenium")
 
-            # Если HTTP не сработал или не было прокси — пробуем Selenium
-            try:
-                brands = parse_autopiter_selenium(artikul, proxy)
-                if brands:
-                    log_debug(f"АвтоПитер: Selenium успешно вернул {len(brands)} брендов для {artikul}")
-                    return brands
-            except AutopiterBlockedException:
-                log_debug(f"АвтоПитер: Selenium упал на капчу для {artikul}, возвращаем пустой результат")
-                # Если Selenium упал на капчу — возвращаем []
-                return []
-            except Exception as e:
-                log_debug(f"АвтоПитер: Selenium ошибка для {artikul}: {str(e)}")
-                return []
+            # Если HTTP не сработал и Selenium не отключен — пробуем Selenium
+            if not AUTOPITER_SELENIUM_DISABLED:
+                try:
+                    brands = parse_autopiter_selenium(artikul, proxy)
+                    if brands:
+                        log_debug(f"АвтоПитер: Selenium успешно вернул {len(brands)} брендов для {artikul}")
+                        return brands
+                except AutopiterBlockedException:
+                    log_debug(f"АвтоПитер: Selenium упал на капчу для {artikul}, возвращаем пустой результат")
+                    return []
+                except Exception as e:
+                    log_debug(f"АвтоПитер: Selenium ошибка для {artikul}: {str(e)}")
+                    return []
+            else:
+                log_debug(f"АвтоПитер: Selenium отключён, пропускаем для {artikul}")
 
-            # Если ни HTTP, ни Selenium не вернули бренды — возвращаем пустой список
             return []
 
         log_debug(f"АвтоПитер: начинаем парсинг {artikul}")
         
-        # HTTP-режим (включается только при AUTOPITER_TRANSPORT=http)
+        # HTTP-режим
         url = f"https://autopiter.ru/goods/{quote(artikul)}"
         
-        # Пул соединений на поток (не создаём новую Session на каждый артикул)
         session = _get_thread_requests_session()
         session.headers.update({
             **HEADERS,
@@ -1306,62 +1425,40 @@ def get_brands_by_artikul(
         })
         session.proxies.clear()
         
-        # Настройка прокси, если указан
         if proxy:
-            # Если прокси передан в функцию — используем его
             proxy_dict = _session_set_proxy(session, proxy)
             if proxy_dict:
                 log_debug(f"АвтоПитер: использование прокси {_proxy_url_to_host_port(proxy_dict.get('http', ''))}")
         else:
-            # Если прокси не передан — принудительно берем новый на каждый артикул
-            # get_next_proxy() возвращает словарь {'http': '...', 'https': '...'}
             new_proxy_dict = get_next_proxy()
             if new_proxy_dict:
-                # Очищаем старые прокси
                 session.proxies.clear()
-                # Применяем новый словарь прокси к сессии
                 session.proxies.update(new_proxy_dict)
                 
-                # Извлекаем строку прокси БЕЗ 'http://' для логов и передачи в Selenium
                 raw_proxy_url = new_proxy_dict.get('http', '')
                 if raw_proxy_url.startswith('http://'):
-                    proxy_for_selenium = raw_proxy_url[7:]  # Убираем 'http://'
+                    proxy_for_selenium = raw_proxy_url[7:]
                 else:
                     proxy_for_selenium = raw_proxy_url
                 
                 log_debug(f"АвтоПитер: принудительная ротация прокси на {_proxy_url_to_host_port(raw_proxy_url)} перед артикулом {artikul}")
-                
-                # ВАЖНО: передаем правильную строку дальше в Selenium/HTTP
                 proxy = proxy_for_selenium
             else:
                 log_debug(f"АвтоПитер: не удалось получить новый прокси для {artikul}, работаем без прокси")
                 proxy = None
 
-        # Autopiter чувствителен к параллельности: на `429/403` важно повторять запрос.
-        # Иначе в задачи улетает пустой результат, который затем кэшируется.
-        # Компромисс между полнотой и скоростью:
-        # при слишком долгом backoff поток(и) простаивают и скорость падает.
-        # Поэтому делаем ограниченное число попыток и cap на backoff.
-        # Практика показала: при волнах 429 повторные попытки по ТОМУ ЖЕ артикулу почти всегда снова 429
-        # и просто съедают время. Поэтому:
-        # - сеть/таймауты: пробуем до 3 раз
-        # - 429/403: 1 попытка (сильный глобальный cooldown), дальше переходим к следующему артикулу
-        # Для fast-fallback после Selenium используем более "короткий" HTTP-профиль,
-        # чтобы не зависать по 40-60 секунд на одном артикуле.
         max_attempts = 1 if force_http else 4
         request_timeout = 25 if force_http else 30
+        
         for attempt in range(max_attempts):
-            # Лёгкий джиттер + глобальный лимитер, чтобы не стрелять бурстами и не ловить 429 пачками
             time.sleep(random.uniform(0.0, 0.05))
             _global_autopiter_throttle_wait()
             _AUTOPITER_LIMITER.wait()
 
             try:
                 time.sleep(random.uniform(0.3, 0.8))
-                # Увеличенный timeout снижает количество "Read timed out"
                 response = session.get(url, timeout=request_timeout, allow_redirects=True)
             except requests.exceptions.Timeout as e:
-                # Таймаут часто идет вслед за 429-волнами: нужно наказать глобально и повторить.
                 backoff = max(0.4, min(5.0, 0.6 * (2 ** attempt)))
                 global_penalty = min(120.0, max(6.0, 5.0 * (2 ** attempt)))
                 log_debug(
@@ -1381,7 +1478,6 @@ def get_brands_by_artikul(
             except requests.exceptions.RequestException as e:
                 err_text = str(e).lower()
                 
-                # ВАЖНО: если прокси требует авторизацию, но не получает её — мгновенно меняем
                 if '407' in err_text or 'proxy authentication required' in err_text:
                     if proxy:
                         mark_proxy_bad(str(proxy))
@@ -1400,7 +1496,6 @@ def get_brands_by_artikul(
                         else:
                             raise AutopiterNetworkException(f"Autopiter 504 for {artikul}: {e}")
 
-                # Остальные ошибки сети/прокси
                 backoff = max(0.4, min(6.0, 0.8 * (2 ** attempt)))
                 global_penalty = min(120.0, max(6.0, 6.0 * (2 ** attempt)))
                 log_debug(
@@ -1417,6 +1512,7 @@ def get_brands_by_artikul(
                     raise AutopiterNetworkException(f"Autopiter network error for {artikul}: {e}")
                 time.sleep(backoff)
                 continue
+            
             if response.status_code == 200:
                 brands = parse_autopiter_response(response.text, artikul)
                 log_debug(f"АвтоПитер requests: найдено {len(brands)} брендов (attempt {attempt + 1})")
@@ -1424,7 +1520,6 @@ def get_brands_by_artikul(
                 return brands
 
             if response.status_code in (429, 403):
-                # backoff зависит от `Retry-After`, если сервер его отдаёт.
                 retry_after = None
                 try:
                     ra = response.headers.get("Retry-After")
@@ -1433,12 +1528,10 @@ def get_brands_by_artikul(
                 except Exception:
                     retry_after = None
 
-                # Если сервер сказал ждать - ждем столько, сколько он сказал.
                 if retry_after is not None:
                     backoff = max(1.0, min(10.0, retry_after))
                     global_penalty = min(120.0, max(10.0, retry_after * 3.0))
                 else:
-                    # Если сервер не сказал - увеличиваем паузу экспоненциально.
                     backoff = max(1.0, min(10.0, 2.0 * (2 ** attempt)))
                     global_penalty = min(120.0, max(10.0, 10.0 * (2 ** attempt)))
 
@@ -1447,7 +1540,6 @@ def get_brands_by_artikul(
                     f"(attempt {attempt + 1}/{max_attempts}), global_penalty {global_penalty:.1f}s"
                 )
 
-                # Применяем штрафы и чистим куки
                 _global_autopiter_penalize(global_penalty)
                 _AUTOPITER_LIMITER.penalize(backoff)
                 try:
@@ -1455,25 +1547,20 @@ def get_brands_by_artikul(
                 except Exception:
                     pass
 
-                # ЖДЕМ! Это критично, чтобы сайт разблокировал IP.
                 time.sleep(backoff)
 
-                # Если это была последняя попытка - возвращаем пустой список, НЕ выкидываем исключение.
                 if attempt == max_attempts - 1:
                     log_debug(f"АвтоПитер: исчерпаны попытки для {artikul} из-за {response.status_code}, возвращаем []")
                     return []
                 
-                # Иначе пробуем следующую попытку
                 continue
 
-            # Для других HTTP кодов не делаем много повторов
             log_debug(f"АвтоПитер: HTTP {response.status_code} для {artikul} (attempt {attempt + 1})")
             break
 
         return []
         
     except (AutopiterRateLimitException, AutopiterForbiddenException, AutopiterBlockedException):
-        # Пробрасываем выше, чтобы tasks.py не делал negative-cache.
         raise
     except AutopiterNetworkException:
         raise
@@ -1481,10 +1568,9 @@ def get_brands_by_artikul(
         log_debug(f"Ошибка АвтоПитер для {artikul}: {str(e)}")
         return []
 
+
 def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
-    """
-    Парсит ответ Autopiter и извлекает бренды используя точный селектор
-    """
+    """Парсит ответ Autopiter и извлекает бренды используя точный селектор"""
     brands = set()
     
     try:
@@ -1593,7 +1679,7 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             log_debug(f"Autopiter: не найден #main-content для {artikul}")
             main_content = soup
 
-        # ========== ОСНОВНОЙ ПУТЬ: ищем бренды в строках таблицы ==========
+        # ========== ОСНОВНОЙ ПУТЬ ==========
         table = main_content.select_one('div[class*="Table__table"]')
         rows = table.select('div[class*="IndividualTableRow"]') if table else []
         
@@ -1604,26 +1690,20 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                 found_brand = None
                 source_desc = None
 
-                # ====== ГЛАВНЫЙ СПОСОБ (Самый надежный): ищем в brandLink ======
-                # бренд лежит внутри span.IndividualTableRow__brandLink
                 brand_link = row.select_one('span[class*="IndividualTableRow__brandLink"] a[href*="/brands/"]')
                 if not brand_link:
-                    # Fallback: если не нашли по brandLink, ищем по infoColumn
                     info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
                     if info_column:
-                        # Вместо WebDriverWait делаем 2 короткие попытки с паузой
-                        # Это эмулирует ожидание появления элемента без драйвера
                         for _ in range(2):
                             brand_link = info_column.select_one('span a[href*="/brands/"]')
                             if brand_link:
                                 break
-                            time.sleep(0.4)  # Ждем 0.4 секунды и пробуем снова
+                            time.sleep(0.4)
 
                 if brand_link:
                     found_brand = brand_link.get_text(strip=True)
                     source_desc = f"строка {row_idx + 1} brandLink (или infoLink)"
                 else:
-                    # ====== ВТОРОЙ СПОСОБ: ищем title в infoColumn ======
                     info_column = row.select_one('div[class*="IndividualTableRow__infoColumn"]')
                     if info_column and not found_brand:
                         title_span = info_column.select_one('span[title]')
@@ -1638,7 +1718,6 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                                     found_brand = first_part
                                     source_desc = f"строка {row_idx + 1} info-text"
 
-                # ====== ТРЕТИЙ СПОСОБ: любой элемент с классом brand ======
                 if not found_brand:
                     brand_elements = row.select('[class*="brand"]')
                     for el in brand_elements:
@@ -1648,7 +1727,6 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
                             source_desc = f"строка {row_idx + 1} brand-class"
                             break
 
-                # Регистрируем найденный бренд
                 if found_brand:
                     register_brand(found_brand, source_desc or f"строка {row_idx + 1}")
 
@@ -1658,21 +1736,17 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
             else:
                 log_debug(f"Autopiter: не найдены строки IndividualTableRow для {artikul}")
 
-        # ========== FALLBACK: если бренды не найдены в основном пути ==========
         if not brands:
-            # Ищем бренды через ссылки на /brands/ во всей странице
             for a_tag in soup.select('a[href*="/brands/"]'):
                 brand_text = a_tag.get_text(strip=True)
                 if brand_text and len(brand_text) > 1:
                     register_brand(brand_text, "fallback-link")
 
-            # Ищем бренды через элементы с data-brand
             for el in soup.select('[data-brand]'):
                 brand_text = el.get('data-brand', '').strip()
                 if brand_text:
                     register_brand(brand_text, "fallback-data-brand")
 
-        # Дополнительно собираем бренды из блока "Производители" (чипы над таблицей)
         brand_chip_selectors = [
             "div[class*='Brands_root'] span[class*='ModalButton__button']",
             "div[class*='Brands_root'] span[title]",
@@ -1692,6 +1766,16 @@ def parse_autopiter_response(html_content: str, artikul: str) -> List[str]:
     
     return sorted(list(brands))
 
+
+def _split_comma_separated_brands(brand_str: str) -> List[str]:
+    """Разбивает бренды, разделенные запятыми, на отдельные бренды."""
+    if not brand_str or not brand_str.strip():
+        return []
+    
+    parts = [part.strip() for part in brand_str.split(',')]
+    return [part for part in parts if part]
+
+
 def split_combined_brands(brands: List[str]) -> List[str]:
     """Разделяет объединенные бренды на отдельные"""
     result = set()
@@ -1701,10 +1785,8 @@ def split_combined_brands(brands: List[str]) -> List[str]:
         if not brand_clean:
             continue
             
-        # Разделяем по разделителям (без одиночного дефиса — иначе ломается ВАТИ-АВТО).
         separators = [', ', ',', ' / ', '/', ' & ', '&', ' + ', '+', ' | ', '|']
         
-        # Проверяем, есть ли разделители
         has_separator = False
         if ' - ' in brand_clean:
             has_separator = True
@@ -1724,11 +1806,8 @@ def split_combined_brands(brands: List[str]) -> List[str]:
                             result.add(part_clean)
                     break
         
-        # Если нет разделителей, пробуем разделить по заглавным буквам
         if not has_separator:
-            # Ищем паттерны типа "BPWSKUBATRUCKMAX" -> "BPW", "SKUBA", "TRUCKMAX"
             if brand_clean.isupper() and len(brand_clean) > 10:
-                # Разделяем по заглавным буквам, но сохраняем известные бренды
                 known_brands = ['BPW', 'SKUBA', 'TRUCKMAX', 'DAF', 'OPEL', 'FORD', 'MANSONS', 'TRP', 
                                'BLUMAQ', 'EXOVO', 'SAMPASCANIA', 'SIMPECO', 'FRUEHAUF', 'GIGANT', 
                                'SMB', 'EUROPARTS', 'AFURAL', 'AIC', 'ASAMAUGER', 'DDA', 'FACET',
@@ -1737,16 +1816,13 @@ def split_combined_brands(brands: List[str]) -> List[str]:
                                'AURADIA', 'AUTOGAMMA', 'CARGO', 'AKINTECH', 'ABALAD', 'KUHNER',
                                'ANALOG DEVICES', 'ARVIN ROSI', 'CONELASTRA', 'CARDONE']
                 
-                # Сначала проверяем, есть ли известные бренды
                 found_known = False
                 for known_brand in known_brands:
                     if known_brand in brand_clean:
                         result.add(known_brand)
                         found_known = True
                 
-                # Если не нашли известные, пробуем разделить по заглавным
                 if not found_known:
-                    # Разделяем по заглавным буквам, но не разбиваем короткие части
                     parts = re.findall(r'[A-Z][a-z]*', brand_clean)
                     if len(parts) > 1:
                         for part in parts:
