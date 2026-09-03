@@ -83,6 +83,8 @@ BAD_PROXIES_TIMESTAMP = {}  # словарь для отслеживания в�
 CHROME_MAX_PROCESSES = int(os.getenv("CHROME_MAX_PROCESSES", "10"))
 ARMTEK_CLEANUP_INTERVAL = int(os.getenv("ARMTEK_CLEANUP_INTERVAL", "3"))
 
+_AUTOPITER_REQUEST_LOCK = threading.Lock()
+
 class _ChromeCreateLock:
     """Сериализует запуск Chrome между потоками и celery fork-процессами."""
 
@@ -1294,8 +1296,8 @@ def get_brands_by_artikul(
             _AUTOPITER_LIMITER.wait()
 
             try:
-                time.sleep(random.uniform(0.3, 0.8))
-                response = session.get(url, timeout=request_timeout, allow_redirects=True)
+                with _AUTOPITER_REQUEST_LOCK:
+                     response = session.get(url, timeout=request_timeout, allow_redirects=True)
             except requests.exceptions.Timeout as e:
                 backoff = max(0.4, min(5.0, 0.6 * (2 ** attempt)))
                 log_debug(f"АвтоПитер: timeout для {artikul}, backoff {backoff:.1f}s (attempt {attempt + 1}/{max_attempts})")
@@ -1334,8 +1336,28 @@ def get_brands_by_artikul(
                 return brands
 
             if response.status_code in (429, 403):
+                # Жестко помечаем текущий IP как плохой и меняем его
+                current_proxy_dict = session.proxies.get('http')
+                if current_proxy_dict:
+                    try:
+                        mark_proxy_bad(current_proxy_dict.replace('http://', ''))
+                        log_debug(f"АвтоПитер: прокси {_proxy_url_to_host_port(current_proxy_dict)} помечен как BAD из-за {response.status_code}")
+                    except Exception:
+                        pass
+                
+                # Мгновенно достаем новый IP из пула и обновляем сессию
+                new_proxy_dict = get_next_proxy()
+                if new_proxy_dict:
+                    session.proxies.clear()
+                    session.proxies.update(new_proxy_dict)
+                    log_debug(f"АвтоПитер: СМЕНА ПРОКСИ на {_proxy_url_to_host_port(new_proxy_dict.get('http', ''))} для {artikul}")
+                    # Небольшая пауза, чтобы не создавать мгновенный залп
+                    time.sleep(0.4)
+                    continue # Повторяем запрос немедленно
+                
+                # Если новых прокси нет — используем старую логику с ожиданием
                 backoff = max(1.0, min(10.0, 2.0 * (2 ** attempt)))
-                log_debug(f"АвтоПитер: HTTP {response.status_code} для {artikul}, backoff {backoff:.1f}s")
+                log_debug(f"АвтоПитер: HTTP {response.status_code}, нет нового прокси, backoff {backoff:.1f}s")
                 _AUTOPITER_LIMITER.penalize(backoff)
                 if attempt == max_attempts - 1:
                     return []
