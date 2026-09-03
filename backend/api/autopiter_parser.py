@@ -65,14 +65,14 @@ CHROME_CREATE_SEMAPHORE = threading.Semaphore(1)
 _CHROME_CREATE_LOCK_PATH = os.path.join(tempfile.gettempdir(), "autoparts_chrome_create.lock")
 
 # Armtek Selenium: отключаем после серии ошибок ресурсов, чтобы не спамить chromedriver
-ARMTEK_SELENIUM_FAILURES = 0
-ARMTEK_SELENIUM_DISABLED = False
-MAX_ARMTEK_SELENIUM_FAILURES = 2
+#ARMTEK_SELENIUM_FAILURES = 0
+#ARMTEK_SELENIUM_DISABLED = False
+#MAX_ARMTEK_SELENIUM_FAILURES = 2
 
 # Autopiter Selenium: отключаем после серии ошибок
-AUTOPITER_SELENIUM_FAILURES = 0
-AUTOPITER_SELENIUM_DISABLED = False
-MAX_AUTOPITER_SELENIUM_FAILURES = 2
+#AUTOPITER_SELENIUM_FAILURES = 0
+#AUTOPITER_SELENIUM_DISABLED = False
+#MAX_AUTOPITER_SELENIUM_FAILURES = 2
 
 # сброс плохих прокси по времени:
 BAD_PROXIES_EXPIRE = 300  # 5 минут
@@ -1189,206 +1189,8 @@ def _create_chrome_driver_robust(temp_dir: Optional[str] = None, proxy: Optional
 
 
 def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[str]:
-    """Selenium-парсинг АвтоПитер с полной загрузкой страницы и самовосстановлением сессии."""
-    global AUTOPITER_SELENIUM_FAILURES, AUTOPITER_SELENIUM_DISABLED
-
-    if AUTOPITER_SELENIUM_DISABLED:
-        log_debug(f"Autopiter Selenium отключён, пропускаем {artikul}")
-        return []
-
-    # Игнорируем прокси с авторизацией для Selenium
-    effective_proxy = None
-    if proxy and '@' in str(proxy):
-        log_debug(f"Прокси с авторизацией не подходит для Selenium, работаем без прокси для {artikul}")
-    else:
-        effective_proxy = proxy
-
-    last_error = None
-
-    try:
-        selenium_attempts = int(os.getenv("AUTOPITER_SELENIUM_ATTEMPTS", "1"))
-    except Exception:
-        selenium_attempts = 1
-    selenium_attempts = max(1, min(2, selenium_attempts))
-    
-    for selenium_attempt in range(selenium_attempts):
-        driver = None
-        driver_broken = False
-        force_fresh_driver = selenium_attempt > 0
-        temp_dir = tempfile.mkdtemp(prefix=f"chrome_autopiter_")
-
-        try:
-            # Создаем драйвер (с игнорированием авторизованного прокси)
-            if effective_proxy:
-                driver = _create_chrome_driver_robust(temp_dir, effective_proxy)
-            elif not force_fresh_driver:
-                driver = get_driver_from_pool()
-                if not driver:
-                    driver = _create_chrome_driver_robust(temp_dir, None)
-            else:
-                driver = _create_chrome_driver_robust(temp_dir, None)
-            
-            if not driver:
-                log_debug(f"АвтоПитер: не удалось создать Selenium-драйвер для {artikul}")
-                return []
-
-            # Очистка cookies ухудшает прохождение captcha
-            if os.getenv("AUTOPITER_CLEAR_COOKIES", "0").strip().lower() in ("1", "true", "yes", "on"):
-                try:
-                    driver.delete_all_cookies()
-                except Exception as e:
-                    log_debug(f"Не удалось очистить cookies: {str(e)}")
-
-            url = f"https://autopiter.ru/goods/{quote(artikul)}"
-            driver.get(url)
-
-            # Ждем полной загрузки страницы
-            wait = WebDriverWait(driver, SELENIUM_TIMEOUT)
-            try:
-                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#main-content")))
-            except TimeoutException:
-                log_debug(f"АвтоПитер: таймаут ожидания #main-content для {artikul}")
-
-            time.sleep(1.5)
-
-            if _autopiter_page_blocked(driver.page_source):
-                log_debug(f"АвтоПитер: captcha/блокировка для {artikul}, пропускаем Selenium-парсинг")
-                raise AutopiterBlockedException(f"Autopiter captcha/block for {artikul}")
-
-            # Прокручиваем страницу для подгрузки ВСЕХ данных
-            last_height = driver.execute_script("return document.body.scrollHeight")
-            last_row_count = 0
-
-            max_scrolls = 30
-            scroll_attempts = 0
-            no_change_count = 0
-
-            for _ in range(max_scrolls):
-                scroll_attempts += 1
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(2)
-
-                try:
-                    rows = driver.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')
-                    current_row_count = len(rows)
-                    if current_row_count > last_row_count:
-                        last_row_count = current_row_count
-                        no_change_count = 0
-                        log_debug(f"АвтоПитер: найдено {current_row_count} строк после прокрутки {scroll_attempts}")
-                    else:
-                        no_change_count += 1
-                except Exception as e:
-                    log_debug(f"Ошибка проверки строк: {str(e)}")
-
-                new_height = driver.execute_script("return document.body.scrollHeight")
-                if new_height == last_height:
-                    no_change_count += 1
-                else:
-                    last_height = new_height
-                    no_change_count = 0
-
-                if no_change_count >= 3:
-                    log_debug(f"АвтоПитер: прекращаем прокрутку после {scroll_attempts} попыток (нет изменений)")
-                    break
-
-            # Дополнительная прокрутка
-            driver.execute_script("window.scrollTo(0, 0);")
-            time.sleep(1)
-
-            scroll_step = 500
-            current_position = 0
-            max_position = driver.execute_script("return document.body.scrollHeight")
-
-            while current_position < max_position:
-                current_position += scroll_step
-                driver.execute_script(f"window.scrollTo(0, {current_position});")
-                time.sleep(0.3)
-
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(2)
-
-            try:
-                wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')) > 0)
-            except TimeoutException:
-                log_debug(f"АвтоПитер: таймаут ожидания строк таблицы для {artikul}")
-
-            final_rows_count = 0
-            try:
-                final_rows = driver.find_elements(By.CSS_SELECTOR, 'div[class*="IndividualTableRow"]')
-                final_rows_count = len(final_rows)
-                log_debug(f"АвтоПитер: итоговое количество строк в таблице: {final_rows_count}")
-            except Exception as e:
-                log_debug(f"Ошибка подсчета строк: {str(e)}")
-
-            full_html = driver.page_source
-            brands = parse_autopiter_response(full_html, artikul)
-            if not brands:
-                try:
-                    with open(f'/tmp/autopiter_debug_{artikul}.html', 'w', encoding='utf-8') as f:
-                        f.write(driver.page_source)
-                    log_debug(f"АвтоПитер: HTML сохранен для отладки: /tmp/autopiter_debug_{artikul}.html")
-                except:
-                    pass
-
-            if final_rows_count == 0 and selenium_attempt < (selenium_attempts - 1):
-                log_debug(f"АвтоПитер: пустая страница для {artikul}, пересоздаем драйвер и повторяем")
-                driver_broken = True
-                continue
-            
-            # Успех - сбрасываем счетчик ошибок
-            AUTOPITER_SELENIUM_FAILURES = 0
-            return brands
-
-        except AutopiterBlockedException:
-            raise
-        except Exception as e:
-            last_error = e
-            msg = str(e).lower()
-            
-            # Обработка критических ошибок
-            if (
-                "tab crashed" in msg
-                or "invalid session id" in msg
-                or "timed out receiving message from renderer" in msg
-                or "timeout: timed out receiving message from renderer" in msg
-                or "connection refused" in msg
-                or "remotedisconnected" in msg
-            ):
-                driver_broken = True
-                # Увеличиваем счетчик ошибок
-                AUTOPITER_SELENIUM_FAILURES += 1
-                if AUTOPITER_SELENIUM_FAILURES >= MAX_AUTOPITER_SELENIUM_FAILURES:
-                    AUTOPITER_SELENIUM_DISABLED = True
-                    log_debug(
-                        f"Autopiter Selenium отключён после {AUTOPITER_SELENIUM_FAILURES} ошибок " 
-                        f"для {artikul}: {str(e)}"
-                    )
-            
-            log_debug(f"Ошибка Selenium парсинга АвтоПитер: {str(e)}")
-            if selenium_attempt < (selenium_attempts - 1):
-                driver_broken = True
-                continue
-            return []
-        finally:
-            if driver:
-                if driver_broken or effective_proxy:
-                    try:
-                        driver.quit()
-                    except Exception:
-                        pass
-                    DRIVER_LAST_USED.pop(id(driver), None)
-                else:
-                    return_driver_to_pool(driver)
-            shutil.rmtree(temp_dir, ignore_errors=True)
-
-            try:
-                subprocess.run(['pkill', '-9', '-f', 'chrome'], timeout=3, capture_output=True)
-                subprocess.run(['pkill', '-9', '-f', 'chromedriver'], timeout=3, capture_output=True)
-            except Exception:
-                pass
-
-    if last_error:
-        log_debug(f"АвтоПитер: не удалось восстановить Selenium-сессию для {artikul}: {last_error}")
+    """Selenium для Autopiter отключён (используется только HTTP)."""
+    log_debug(f"Autopiter Selenium отключён, пропускаем {artikul}")
     return []
 
 
@@ -1397,54 +1199,12 @@ def get_brands_by_artikul(
     proxy: Optional[str] = None,
     force_http: bool = False,
 ) -> List[str]:
-    """Получает бренды с Autopiter по артикулу."""
+    """Получает бренды с Autopiter по артикулу (только HTTP)."""
     global AUTOPITER_SELENIUM_DISABLED
     
     try:
-        if not force_http:
-            # Пытаемся получить прокси для HTTP-запроса
-            http_proxy_dict = get_next_proxy()
-            
-            if http_proxy_dict:
-                http_proxy_url = http_proxy_dict.get('http', '')
-                if http_proxy_url.startswith('http://'):
-                    http_proxy = http_proxy_url[7:]
-                else:
-                    http_proxy = http_proxy_url
-                
-                log_debug(f"АвтоПитер: пробуем быстрый HTTP-запрос для {artikul} через прокси {_proxy_url_to_host_port(http_proxy_url)}")
-                
-                brands = get_brands_by_artikul(artikul, http_proxy, force_http=True)
-                
-                if brands:
-                    log_debug(f"АвтоПитер: HTTP-запрос успешно вернул {len(brands)} брендов для {artikul}")
-                    return brands
-                else:
-                    log_debug(f"АвтоПитер: HTTP-запрос вернул 0 брендов для {artikul}, пробуем Selenium")
-            else:
-                log_debug(f"АвтоПитер: не удалось получить прокси для HTTP, сразу пробуем Selenium")
-
-            # Если HTTP не сработал и Selenium не отключен — пробуем Selenium
-            if not AUTOPITER_SELENIUM_DISABLED:
-                try:
-                    brands = parse_autopiter_selenium(artikul, proxy)
-                    if brands:
-                        log_debug(f"АвтоПитер: Selenium успешно вернул {len(brands)} брендов для {artikul}")
-                        return brands
-                except AutopiterBlockedException:
-                    log_debug(f"АвтоПитер: Selenium упал на капчу для {artikul}, возвращаем пустой результат")
-                    return []
-                except Exception as e:
-                    log_debug(f"АвтоПитер: Selenium ошибка для {artikul}: {str(e)}")
-                    return []
-            else:
-                log_debug(f"АвтоПитер: Selenium отключён, пропускаем для {artikul}")
-
-            return []
-
         log_debug(f"АвтоПитер: начинаем парсинг {artikul}")
         
-        # HTTP-режим
         url = f"https://autopiter.ru/goods/{quote(artikul)}"
         
         session = _get_thread_requests_session()
@@ -1470,24 +1230,12 @@ def get_brands_by_artikul(
             if new_proxy_dict:
                 session.proxies.clear()
                 session.proxies.update(new_proxy_dict)
-                
-                raw_proxy_url = new_proxy_dict.get('http', '')
-                if raw_proxy_url.startswith('http://'):
-                    proxy_for_selenium = raw_proxy_url[7:]
-                else:
-                    proxy_for_selenium = raw_proxy_url
-                
-                log_debug(f"АвтоПитер: принудительная ротация прокси на {_proxy_url_to_host_port(raw_proxy_url)} перед артикулом {artikul}")
-                proxy = proxy_for_selenium
-            else:
-                log_debug(f"АвтоПитер: не удалось получить новый прокси для {artikul}, работаем без прокси")
-                proxy = None
+                log_debug(f"АвтоПитер: использование прокси {_proxy_url_to_host_port(new_proxy_dict.get('http', ''))}")
 
-        max_attempts = 1 if force_http else 4
-        request_timeout = 25 if force_http else 30
+        max_attempts = 3
+        request_timeout = 30
         
         for attempt in range(max_attempts):
-            time.sleep(random.uniform(0.0, 0.05))
             _global_autopiter_throttle_wait()
             _AUTOPITER_LIMITER.wait()
 
@@ -1496,57 +1244,22 @@ def get_brands_by_artikul(
                 response = session.get(url, timeout=request_timeout, allow_redirects=True)
             except requests.exceptions.Timeout as e:
                 backoff = max(0.4, min(5.0, 0.6 * (2 ** attempt)))
-                global_penalty = min(120.0, max(6.0, 5.0 * (2 ** attempt)))
-                log_debug(
-                    f"АвтоПитер: timeout для {artikul}, backoff {backoff:.1f}s "
-                    f"(attempt {attempt + 1}/{max_attempts}), global_penalty {global_penalty:.1f}s: {e}"
-                )
-                _global_autopiter_penalize(global_penalty)
+                log_debug(f"АвтоПитер: timeout для {artikul}, backoff {backoff:.1f}s (attempt {attempt + 1}/{max_attempts})")
                 _AUTOPITER_LIMITER.penalize(backoff)
-                try:
-                    session.cookies.clear()
-                except Exception:
-                    pass
                 if attempt == max_attempts - 1:
-                    raise AutopiterNetworkException(f"Autopiter timeout for {artikul}")
+                    return []
                 time.sleep(backoff)
                 continue
             except requests.exceptions.RequestException as e:
                 err_text = str(e).lower()
-                
                 if '407' in err_text or 'proxy authentication required' in err_text:
                     if proxy:
                         mark_proxy_bad(str(proxy))
-                        log_debug(f"АвтоПитер: 407 на прокси {proxy}, мгновенно меняем прокси")
-                        if attempt < max_attempts - 1:
-                            continue
-                        else:
-                            raise AutopiterNetworkException(f"Autopiter 407 for {artikul}: {e}")
-
-                if '504' in err_text or 'timed out' in err_text:
-                    if proxy:
-                        mark_proxy_bad(str(proxy))
-                        log_debug(f"АвтоПитер: 504 на прокси {proxy}, мгновенно меняем")
-                        if attempt < max_attempts - 1:
-                            continue
-                        else:
-                            raise AutopiterNetworkException(f"Autopiter 504 for {artikul}: {e}")
-
-                backoff = max(0.4, min(6.0, 0.8 * (2 ** attempt)))
-                global_penalty = min(120.0, max(6.0, 6.0 * (2 ** attempt)))
-                log_debug(
-                    f"АвтоПитер: network error для {artikul}, backoff {backoff:.1f}s "
-                    f"(attempt {attempt + 1}/{max_attempts}), global_penalty {global_penalty:.1f}s: {e}"
-                )
-                _global_autopiter_penalize(global_penalty)
-                _AUTOPITER_LIMITER.penalize(backoff)
-                try:
-                    session.cookies.clear()
-                except Exception:
-                    pass
+                        log_debug(f"АвтоПитер: 407 на прокси, меняем")
+                    continue
                 if attempt == max_attempts - 1:
-                    raise AutopiterNetworkException(f"Autopiter network error for {artikul}: {e}")
-                time.sleep(backoff)
+                    return []
+                time.sleep(0.5)
                 continue
             
             if response.status_code == 200:
@@ -1556,44 +1269,21 @@ def get_brands_by_artikul(
                 return brands
 
             if response.status_code in (429, 403):
-                retry_after = None
-                try:
-                    ra = response.headers.get("Retry-After")
-                    if ra is not None:
-                        retry_after = float(ra)
-                except Exception:
-                    retry_after = None
-
-                if retry_after is not None:
-                    backoff = max(1.0, min(10.0, retry_after))
-                    global_penalty = min(120.0, max(10.0, retry_after * 3.0))
-                else:
-                    backoff = max(1.0, min(10.0, 2.0 * (2 ** attempt)))
-                    global_penalty = min(120.0, max(10.0, 10.0 * (2 ** attempt)))
-
-                log_debug(
-                    f"АвтоПитер: HTTP {response.status_code} для {artikul}, backoff {backoff:.1f}s "
-                    f"(attempt {attempt + 1}/{max_attempts}), global_penalty {global_penalty:.1f}s"
-                )
-
-                _global_autopiter_penalize(global_penalty)
+                backoff = max(1.0, min(10.0, 2.0 * (2 ** attempt)))
+                log_debug(f"АвтоПитер: HTTP {response.status_code} для {artikul}, backoff {backoff:.1f}s")
                 _AUTOPITER_LIMITER.penalize(backoff)
-                try:
-                    session.cookies.clear()
-                except Exception:
-                    pass
-
-                time.sleep(backoff)
-
                 if attempt == max_attempts - 1:
-                    log_debug(f"АвтоПитер: исчерпаны попытки для {artikul} из-за {response.status_code}, возвращаем []")
                     return []
-                
+                time.sleep(backoff)
                 continue
 
-            log_debug(f"АвтоПитер: HTTP {response.status_code} для {artikul} (attempt {attempt + 1})")
+            log_debug(f"АвтоПитер: HTTP {response.status_code} для {artikul}")
             break
 
+        return []
+        
+    except Exception as e:
+        log_debug(f"Ошибка АвтоПитер для {artikul}: {str(e)}")
         return []
         
     except (AutopiterRateLimitException, AutopiterForbiddenException, AutopiterBlockedException):

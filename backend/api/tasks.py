@@ -21,7 +21,6 @@ from .autopiter_parser import (
     filter_armtek_brands,
     reset_armtek_selenium_state,
     PROXY_LIST,
-    reset_autopiter_selenium_state,
 )
 import re
 import unicodedata
@@ -1120,14 +1119,14 @@ def process_parsing_task(self, task_id):
             results = []
             reset_armtek_selenium_state()
             log(f"Armtek: начало обработки {len(numbers)} артикулов для строки {row_index + 1}")
-            
+
             # Принудительная очистка перед началом строки
             try:
                 cleanup_chrome_processes()  # Только очистка процессов, пул не трогаем
                 log("Armtek: очистка перед началом строки")
             except Exception as e:
                 log(f"Ошибка очистки: {e}")
-        
+
             def parse_one_armtek(num):
                 cached_result = get_from_cache(num, 'armtek')
                 if cached_result is not None:
@@ -1135,7 +1134,7 @@ def process_parsing_task(self, task_id):
                     if cached_result:
                         return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in cached_result]
                     return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
-        
+
                 max_retries = 1
                 for attempt in range(max_retries):
                     try:
@@ -1145,13 +1144,13 @@ def process_parsing_task(self, task_id):
                         else:
                             proxy = get_next_proxy()
                             log_debug(f"Armtek: попытка {attempt+1} с прокси для {num}")
-        
+
                         from .autopiter_parser import get_brands_by_artikul_armtek
                         brands = get_brands_by_artikul_armtek(num, proxy)
-        
+
                         is_empty = len(brands) == 0
                         set_cache(num, 'armtek', brands, is_empty)
-        
+
                         if brands:
                             filtered_brands = filter_armtek_brands(brands)
                             if filtered_brands:
@@ -1178,7 +1177,7 @@ def process_parsing_task(self, task_id):
                         
             # Armtek: ВСЕГДА 1 ПОТОК
             armtek_workers = 1
-            
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=armtek_workers) as executor:
                 future_map = {executor.submit(parse_one_armtek, num): num for num in numbers}
                 for future in concurrent.futures.as_completed(future_map):
@@ -1191,14 +1190,14 @@ def process_parsing_task(self, task_id):
                     except Exception as e:
                         log(f"Error processing armtek result for {num}: {str(e)}")
                         _record_armtek_event(_is_timeout_like_armtek_error(e), row_index)
-        
+
             # Финальная очистка после всей строки
             try:
                 cleanup_chrome_processes()
                 log(f"Armtek: финальная очистка после строки {row_index + 1}")
             except Exception as e:
                 log(f"Ошибка финальной очистки: {e}")
-        
+
             log(f"Armtek: завершена обработка для строки {row_index + 1}, найдено {len(results)} результатов")
             return results
         
