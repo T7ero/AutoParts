@@ -1116,15 +1116,14 @@ def process_parsing_task(self, task_id):
             return results
 
         def parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b, row_index: int):
-            """Armtek (Selenium) — последовательно по артикулам, но каждый раз заново получаем драйвер."""
+            """Armtek (Selenium) — последовательно по артикулам, каждый раз новый драйвер."""
             results = []
             reset_armtek_selenium_state()
             log(f"Armtek: начало обработки {len(numbers)} артикулов для строки {row_index + 1}")
             
-            # Принудительная очистка перед началом
+            # Принудительная очистка перед началом строки
             try:
-                cleanup_driver_pool()
-                cleanup_chrome_processes()
+                cleanup_chrome_processes()  # Только очистка процессов, пул не трогаем
                 log("Armtek: очистка перед началом строки")
             except Exception as e:
                 log(f"Ошибка очистки: {e}")
@@ -1170,20 +1169,16 @@ def process_parsing_task(self, task_id):
                             set_cache(num, 'armtek', [], True)
                             return []
                     finally:
-                        # ВАЖНО: очистка после каждого артикула, чтобы освободить ресурсы
+                        # ВАЖНО: Очищаем ТОЛЬКО процессы Chrome, НЕ пул драйверов
+                        # Драйвер закрывается внутри parse_armtek_selenium в finally
                         try:
-                            # Принудительно закрываем все Chrome-процессы после каждого артикула
-                            # Это гарантирует, что битый драйвер не помешает следующему артикулу
                             cleanup_chrome_processes()
-                            # Также очищаем пул, чтобы следующий артикул получил свежий драйвер
-                            cleanup_driver_pool()
                         except Exception:
                             pass
                         
-            # Armtek: ВСЕГДА 1 ПОТОК, но каждый артикул обрабатывается отдельно
+            # Armtek: ВСЕГДА 1 ПОТОК
             armtek_workers = 1
             
-            # Используем ThreadPoolExecutor для последовательной обработки (max_workers=1)
             with concurrent.futures.ThreadPoolExecutor(max_workers=armtek_workers) as executor:
                 future_map = {executor.submit(parse_one_armtek, num): num for num in numbers}
                 for future in concurrent.futures.as_completed(future_map):
@@ -1197,9 +1192,8 @@ def process_parsing_task(self, task_id):
                         log(f"Error processing armtek result for {num}: {str(e)}")
                         _record_armtek_event(_is_timeout_like_armtek_error(e), row_index)
         
-            # Финальная очистка после строки
+            # Финальная очистка после всей строки
             try:
-                cleanup_driver_pool()
                 cleanup_chrome_processes()
                 log(f"Armtek: финальная очистка после строки {row_index + 1}")
             except Exception as e:
