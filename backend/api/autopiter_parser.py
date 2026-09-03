@@ -2341,6 +2341,11 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
                         except Exception:
                             pass
                         # Создаём новый
+                        if temp_dir:
+                            try:
+                                shutil.rmtree(temp_dir, ignore_errors=True)
+                            except Exception:
+                                pass
                         temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_{uuid.uuid4().hex[:8]}_")
                         driver = _create_chrome_driver_robust(temp_dir, effective_proxy)
                         if driver is None:
@@ -2356,38 +2361,32 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
                         return []
                 
                 if page_attempt < DRIVER_TIMEOUT_RETRIES - 1:
-                    time.sleep(2)  # Увеличиваем паузу между попытками
+                    time.sleep(2)
                 else:
                     log_debug("Не удалось загрузить страницу после всех попыток")
                     return []
         
-        # 4) Явные ожидания появления результатов с улучшенной логикой
+        # 4) Явные ожидания появления результатов
         wait = WebDriverWait(driver, SELENIUM_TIMEOUT)
         selectors_to_wait = [
-            # Основные контейнеры результатов
             (By.CSS_SELECTOR, '.results'),
             (By.CSS_SELECTOR, '.search-results'),
             (By.CSS_SELECTOR, '.results-list__items'),
-            # Бренды - обновленные селекторы
             (By.CSS_SELECTOR, 'span.font__body2.brand--selecting'),
             (By.CSS_SELECTOR, 'span.font_body2.brand--selecting'),
             (By.CSS_SELECTOR, '.brand--selecting'),
             (By.CSS_SELECTOR, '.font__caption1.brand--selectable'),
-            # Карточки товаров
             (By.CSS_SELECTOR, '.product-card'),
             (By.CSS_SELECTOR, '.catalog-item'),
             (By.CSS_SELECTOR, 'project-ui-article-card'),
-            # Более общие селекторы для fallback
             (By.CSS_SELECTOR, '[class*="result"]'),
             (By.CSS_SELECTOR, '[class*="item"]'),
         ]
         
         page_loaded = False
-        # Ограничиваем количество попыток для ускорения
         max_attempts = min(5, len(selectors_to_wait))
         for i, (by, sel) in enumerate(selectors_to_wait[:max_attempts]):
             try:
-                # Ждем видимости, а не только наличия в DOM
                 wait.until(EC.visibility_of_any_elements_located((by, sel)))
                 log_debug(f"Armtek Selenium: найден элемент {sel}")
                 page_loaded = True
@@ -2398,7 +2397,6 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
         
         if not page_loaded:
             log_debug("Armtek Selenium: страница не загрузилась или нет результатов")
-            # Сохраняем HTML для отладки
             try:
                 html_content = driver.page_source
                 debug_file = f"/tmp/armtek_debug_{artikul}.html"
@@ -2408,7 +2406,6 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
             except Exception as e:
                 log_debug(f"Armtek Selenium: не удалось сохранить HTML: {str(e)}")
             
-            # Пробуем fallback - ждем просто загрузки страницы
             try:
                 WebDriverWait(driver, 2).until(lambda d: d.execute_script("return document.readyState") == "complete")
                 log_debug("Armtek Selenium: страница загружена, но нет ожидаемых элементов")
@@ -2416,7 +2413,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
                 log_debug("Armtek Selenium: страница не загрузилась полностью")
                 return []
         
-        # 5) Быстрая прокрутка страницы для подгрузки контента
+        # 5) Быстрая прокрутка страницы
         try:
             driver.execute_script('window.scrollTo(0, document.body.scrollHeight/2);')
             time.sleep(0.05)
@@ -2425,9 +2422,8 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
         except Exception:
             pass
         
-        # 6) Ранний выход: проверяем блок "ничего не найдено"
+        # 6) Проверка "ничего не найдено"
         try:
-            # Несколько надежных путей для текста "ничего не найдено"
             nf = driver.find_elements(By.CSS_SELECTOR, 'div.not-found__title p.font__headline5, p.font__headline5')
             if not nf:
                 nf = driver.find_elements(By.XPATH, "//p[contains(@class,'font__headline5') and contains(translate(., 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ', 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя'), 'ничего не найдено')]")
@@ -2443,7 +2439,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
         except Exception:
             pass
 
-        # 7) Секции «Искомый товар» / «Возможные замены» — только внутри списка результатов.
+        # 7) Секции «Искомый товар» / «Возможные замены»
         try:
             _armtek_wait_for_results(driver, max(12.0, float(SELENIUM_TIMEOUT) + 4.0))
         except Exception:
@@ -2454,12 +2450,15 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
             log_debug(f"Armtek Selenium: Chrome упал при чтении секций для {artikul}, пересоздаём драйвер")
             driver_broken = True
             try:
-                # Закрываем старый драйвер
                 try:
                     driver.quit()
                 except Exception:
                     pass
-                # Создаём новый
+                if temp_dir:
+                    try:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    except Exception:
+                        pass
                 temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_{uuid.uuid4().hex[:8]}_")
                 driver = _create_chrome_driver_robust(temp_dir, effective_proxy)
                 if driver is None:
@@ -2500,7 +2499,6 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
             log_debug(
                 f"Armtek Selenium: в секции 'Искомый товар' найдено {len(filtered_early)} брендов для {artikul}"
             )
-            # Успешно - сбрасываем счётчик ошибок
             ARMTEK_SELENIUM_FAILURES = 0
             return filtered_early
 
@@ -2534,7 +2532,6 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
                         brands.add(text)
                         log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
                 
-                # Ранний выход при нахождении достаточного количества брендов
                 if len(brands) >= 3:
                     log_debug(f"Armtek Selenium: найдено достаточно брендов ({len(brands)}), прерываем поиск")
                     break
@@ -2544,7 +2541,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
                     driver_broken = True
                     break
         
-        # 10) Если точные селекторы не дали результатов, пробуем упрощенный поиск
+        # 10) Если точные селекторы не дали результатов
         if not brands and not driver_broken:
             log_debug("Armtek Selenium: точные селекторы не дали результатов, пробуем упрощенный поиск")
             simple_selectors = [
@@ -2564,7 +2561,6 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
                                 brands.add(text)
                                 log_debug(f"Armtek Selenium: найден бренд '{text}' по селектору '{selector}'")
                     
-                    # Ранний выход при нахождении брендов
                     if brands:
                         break
                 except Exception as e:
@@ -2573,7 +2569,6 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
         # 11) Если брендов нет — пробуем из HTML и XPath
         if not brands:
             log_debug("Armtek Selenium: селекторы не дали результатов, пробуем парсинг HTML/XPath")
-            # XPath вариант извлечения брендов
             try:
                 xpath_elems = driver.find_elements(
                     By.XPATH,
@@ -2588,7 +2583,6 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
             except Exception:
                 pass
 
-            # HTML эвристика
             if not brands:
                 try:
                     page_source = driver.page_source
@@ -2622,12 +2616,22 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
         
     finally:
         # ВАЖНО: возвращаем драйвер в пул или закрываем
-        if driver:
-            if driver_broken:
+        if driver is not None:
+            # Проверяем, жив ли драйвер перед возвратом в пул
+            driver_alive = False
+            try:
+                # Пытаемся выполнить простую команду, чтобы проверить живость
+                _ = driver.current_url
+                driver_alive = True
+            except Exception:
+                driver_alive = False
+                log_debug(f"Armtek Selenium: драйвер {id(driver)} не отвечает, закрываем")
+            
+            if driver_broken or not driver_alive:
                 try:
                     driver.quit()
-                except Exception:
-                    pass
+                except Exception as e:
+                    log_debug(f"Armtek Selenium: ошибка при закрытии драйвера: {e}")
                 try:
                     driver_id = id(driver)
                     DRIVER_LAST_USED.pop(driver_id, None)
@@ -2635,14 +2639,15 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
                 except Exception:
                     pass
             else:
+                # Возвращаем в пул только живой драйвер
                 return_driver_to_pool(driver)
         
         # Очищаем временную директорию
         if temp_dir:
             try:
                 shutil.rmtree(temp_dir, ignore_errors=True)
-            except Exception:
-                pass
+            except Exception as e:
+                log_debug(f"Armtek Selenium: ошибка очистки temp_dir: {e}")
 
 def _create_chrome_driver_robust(temp_dir: Optional[str] = None, proxy: Optional[str] = None) -> Optional[webdriver.Chrome]:
     """Создает Chrome драйвер с улучшенной обработкой ошибок и retry логикой"""
