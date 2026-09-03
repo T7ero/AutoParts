@@ -930,7 +930,7 @@ def _proxy_is_bad(proxy_line: str, proxy_dict: Optional[Dict[str, str]] = None) 
 
 
 def mark_proxy_bad(proxy_repr: str) -> None:
-    """Помечает прокси как проблемный с временной меткой"""
+    """Помечает прокси как проблемный с временной меткой (по host:port!)"""
     global BAD_PROXIES, BAD_PROXIES_TIMESTAMP
     
     try:
@@ -944,12 +944,13 @@ def mark_proxy_bad(proxy_repr: str) -> None:
     if not proxy_repr:
         return
         
-    # Находим базовую строку без порта
-    base_proxy = proxy_repr.split(':')[0] if ':' in proxy_repr else proxy_repr
-    
-    BAD_PROXIES.add(base_proxy)
-    BAD_PROXIES_TIMESTAMP[base_proxy] = time.time()
-    log_debug(f"Прокси помечен как проблемный: {base_proxy}")
+    # ВАЖНО: Отрезаем логин и пароль
+    if '@' in proxy_repr:
+        proxy_repr = proxy_repr.split('@')[-1] # берем host:port
+        
+    BAD_PROXIES.add(proxy_repr)
+    BAD_PROXIES_TIMESTAMP[proxy_repr] = time.time()
+    log_debug(f"Прокси помечен как проблемный: {proxy_repr}")
 
 def get_proxy_string() -> Optional[str]:
     """Возвращает строку прокси для использования в парсерах"""
