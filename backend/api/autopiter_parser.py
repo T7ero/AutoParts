@@ -11,6 +11,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.action_chains import ActionChains
 import logging
 import subprocess
 import os
@@ -65,9 +66,9 @@ CHROME_CREATE_SEMAPHORE = threading.Semaphore(1)
 _CHROME_CREATE_LOCK_PATH = os.path.join(tempfile.gettempdir(), "autoparts_chrome_create.lock")
 
 # Armtek Selenium: отключаем после серии ошибок ресурсов, чтобы не спамить chromedriver
-#ARMTEK_SELENIUM_FAILURES = 0
-#ARMTEK_SELENIUM_DISABLED = False
-#MAX_ARMTEK_SELENIUM_FAILURES = 2
+ARMTEK_SELENIUM_FAILURES = 0
+ARMTEK_SELENIUM_DISABLED = False
+MAX_ARMTEK_SELENIUM_FAILURES = 2
 
 # Autopiter Selenium: отключаем после серии ошибок
 #AUTOPITER_SELENIUM_FAILURES = 0
@@ -1194,6 +1195,59 @@ def parse_autopiter_selenium(artikul: str, proxy: Optional[str] = None) -> List[
     return []
 
 
+def parse_autopiter_selenium_fallback(artikul: str, proxy: Optional[str] = None) -> List[str]:
+    """Selenium-фолбэк для нажатия кнопки 'Я не робот' и повторного сбора данных."""
+    driver = None
+    temp_dir = None
+    try:
+        # Создаем уникальный профиль Chrome
+        temp_dir = tempfile.mkdtemp(prefix=f"chrome_autopiter_{uuid.uuid4().hex[:8]}_")
+        # Используем вашу функцию создания драйвера
+        driver = _create_chrome_driver_robust(temp_dir, proxy)
+        if not driver:
+            return []
+
+        url = f"https://autopiter.ru/goods/{quote(artikul)}"
+        driver.get(url)
+
+        # Ждем появления кнопки "Я не робот" (CSS селектор с вашего скриншота)
+        try:
+            button = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, ".Button__inner___ZjJiMW"))
+            )
+            # Имитация человеческого клика (двигаем мышь и ждем)
+            actions = ActionChains(driver)
+            actions.move_to_element(button).pause(0.5).click().perform()
+            log_debug(f"Autopiter: нажата кнопка 'Я не робот' для {artikul}")
+
+            # Ждем исчезновения экрана блокировки
+            WebDriverWait(driver, 15).until(
+                EC.invisibility_of_element_located((By.CSS_SELECTOR, ".ErrorPage__textCol___ODE4M2"))
+            )
+            time.sleep(1) # Даем странице обновиться
+            
+            # Забираем обновленный HTML и парсим его вашей штатной функцией
+            html = driver.page_source
+            return parse_autopiter_response(html, artikul)
+
+        except TimeoutException:
+            # Если кнопка не появилась (блокировки нет или она уже снята)
+            log_debug(f"Autopiter: кнопка не найдена, просто считываем страницу для {artikul}")
+            html = driver.page_source
+            return parse_autopiter_response(html, artikul)
+
+    except Exception as e:
+        log_debug(f"Autopiter Selenium fallback ошибка для {artikul}: {e}")
+        return []
+    finally:
+        # Аккуратно закрываем браузер и чистим папку
+        if driver:
+            try: driver.quit()
+            except: pass
+        if temp_dir:
+            try: shutil.rmtree(temp_dir, ignore_errors=True)
+            except: pass
+
 def get_brands_by_artikul(
     artikul: str,
     proxy: Optional[str] = None,
@@ -1263,6 +1317,17 @@ def get_brands_by_artikul(
                 continue
             
             if response.status_code == 200:
+                # Проверяем, не заблокирована ли страница
+                if _autopiter_page_blocked(response.text):
+                    log_debug(f"Autopiter: обнаружена блокировка, включаем Selenium fallback для {artikul}")
+                    brands = parse_autopiter_selenium_fallback(artikul, proxy)
+                    if brands:
+                        return brands
+                    # Если Selenium тоже не помог, возвращаем пусто
+                    log_debug("Autopiter: Selenium fallback не помог, пропускаем")
+                    return []
+                
+                # Если блокировки нет, парсим как обычно
                 brands = parse_autopiter_response(response.text, artikul)
                 log_debug(f"АвтоПитер requests: найдено {len(brands)} брендов (attempt {attempt + 1})")
                 _AUTOPITER_LIMITER.reward()
