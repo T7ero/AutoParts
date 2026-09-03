@@ -1,3 +1,4 @@
+import autopiter_parser
 import pandas as pd
 from celery import shared_task
 from django.core.files import File
@@ -20,7 +21,6 @@ from .autopiter_parser import (
     log_debug,
     filter_armtek_brands,
     reset_armtek_selenium_state,
-    PROXY_LIST,
 )
 import re
 import unicodedata
@@ -973,7 +973,7 @@ def process_parsing_task(self, task_id):
                 return results
 
             try:
-                total_proxies = len(PROXY_LIST)
+                total_proxies = len(autopiter_parser.PROXY_LIST)
             except Exception:
                 total_proxies = 0
             # Emex: до 8 параллельных HTTP при наличии прокси; без прокси — 2
@@ -1002,7 +1002,7 @@ def process_parsing_task(self, task_id):
                 proxy_mode = os.getenv("AUTOPITER_USE_PROXY", "auto").strip() or "auto"
                 log(
                     f"Autopiter: прокси {'включены' if autopiter_proxy_enabled else 'выключены'} "
-                    f"({len(PROXY_LIST)} в файле, AUTOPITER_USE_PROXY={proxy_mode})"
+                    f"({len(autopiter_parser.PROXY_LIST)} в файле, AUTOPITER_USE_PROXY={proxy_mode})"
                 )
             try:
                 autopiter_proxy_retries = int(os.getenv("AUTOPITER_PROXY_RETRIES", "2"))
