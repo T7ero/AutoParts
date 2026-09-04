@@ -1353,7 +1353,7 @@ def get_brands_by_artikul(
                     session.proxies.update(new_proxy_dict)
                     log_debug(f"АвтоПитер: СМЕНА ПРОКСИ на {_proxy_url_to_host_port(new_proxy_dict.get('http', ''))} для {artikul}")
                     # Небольшая пауза, чтобы не создавать мгновенный залп
-                    time.sleep(0.4)
+                    time.sleep(15)
                     continue # Повторяем запрос немедленно
                 
                 # Если новых прокси нет — используем старую логику с ожиданием
