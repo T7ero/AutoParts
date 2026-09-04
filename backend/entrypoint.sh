@@ -32,8 +32,27 @@ echo "⏳ Ожидание готовности базы данных..."
 max_attempts=120
 attempt=0
 
+echo "⏳ Ожидание готовности базы данных..."
+max_attempts=120
+attempt=0
+
 while [ $attempt -lt $max_attempts ]; do
-    if python3 manage.py check --database default 2>/dev/null; then
+    if python3 -c "
+import os, time
+import psycopg2
+
+host = os.getenv('POSTGRES_HOST', 'db')
+user = os.getenv('POSTGRES_USER', 'postgres')
+password = os.getenv('POSTGRES_PASSWORD', 'postgres')
+dbname = os.getenv('POSTGRES_DB', 'autoparts')
+
+try:
+    conn = psycopg2.connect(host=host, user=user, password=password, dbname=dbname, connect_timeout=2)
+    conn.close()
+    exit(0)
+except Exception:
+    exit(1)
+"; then
         echo "✅ База данных готова!"
         break
     fi
