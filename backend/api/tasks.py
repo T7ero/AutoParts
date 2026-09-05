@@ -1079,7 +1079,7 @@ def process_parsing_task(self, task_id):
             except Exception as e:
                 log(f"Error processing {source} for {num}: {str(e)}")
                 return []
-
+            
         # ===== УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ОБНОВЛЕНИЯ ПРОГРЕССА =====
         def update_progress(step_increment=1):
             """Увеличивает счётчик обработанных шагов и отправляет ws-обновление."""
