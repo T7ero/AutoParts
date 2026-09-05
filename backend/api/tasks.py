@@ -1134,7 +1134,7 @@ def process_parsing_task(self, task_id):
 
         # ===== ТРЕТИЙ ПРОХОД: ТОЛЬКО ARMTEK =====
         # УВЕЛИЧИЛИ С 1 ДО 2 ДЛЯ УСКОРЕНИЯ
-        armtek_workers = 2
+        armtek_workers = 1
         log(f"Начинаем обработку всех артикулов через ARMTEK ({len(all_records)} шт.), потоков: {armtek_workers}")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=armtek_workers) as executor:
