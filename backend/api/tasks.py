@@ -19,6 +19,7 @@ from .autopiter_parser import (
     is_autopiter_proxy_enabled,
     log_debug,
     filter_armtek_brands,
+    split_combined_brands,
     reset_armtek_selenium_state,
     PROXY_LIST,
 )
@@ -36,6 +37,7 @@ from typing import List, Dict, Optional, Set
 import os
 from celery.utils.log import get_task_logger
 from datetime import datetime
+
 # Кэш для ускорения работы парсера
 PARSER_CACHE = {}
 CACHE_EXPIRATION = 21600  # 6 часов вместо 1
@@ -965,245 +967,174 @@ def process_parsing_task(self, task_id):
             selected = 1 if use_single else configured_workers
             return max(1, min(nnums, selected))
         
-        # Параллельный парсинг по всем кросс-номерам строки сразу
-        def parse_all_parallel(numbers, brand, part_number, name, row_index, on_article_done=None):
-            results = {'autopiter': [], 'emex': []}
-            state = {"emex_disabled": False, "emex_failures": 0}
-            if not numbers:
-                return results
-
-            try:
-                total_proxies = len(PROXY_LIST)
-            except Exception:
-                total_proxies = 0
-            # Emex: до 8 параллельных HTTP при наличии прокси; без прокси — 2
-            if total_proxies > 0:
-                emex_parallel = 5
-            else:
-                emex_parallel = 5
-            emex_semaphore = threading.Semaphore(emex_parallel)
-
-            try:
-                cpu_n = os.cpu_count() or 4
-            except Exception:
-                cpu_n = 4
-            nnums = len(numbers)
-            default_ap_workers = "3"
-            try:
-                autopiter_workers_cfg = int(os.getenv("AUTOPITER_MAX_WORKERS", default_ap_workers))
-            except Exception:
-                autopiter_workers_cfg = int(default_ap_workers)
-            autopiter_workers_cfg = max(1, min(8, autopiter_workers_cfg))
-            AUTOPITER_MAX_WORKERS = _resolve_autopiter_workers(nnums, autopiter_workers_cfg, row_index)
-
-            # Autopiter через прокси
-            autopiter_proxy_enabled = is_autopiter_proxy_enabled()
-            if 'autopiter' in selected_sources:
-                proxy_mode = os.getenv("AUTOPITER_USE_PROXY", "auto").strip() or "auto"
-                log(
-                    f"Autopiter: прокси {'включены' if autopiter_proxy_enabled else 'выключены'} "
-                    f"({len(PROXY_LIST)} в файле, AUTOPITER_USE_PROXY={proxy_mode})"
+        # Собираем ВСЕ артикулы из файла, чтобы обработать их отдельными проходами
+        all_records = []  # (brand_from_e, part_number_from_f, name_from_b, num)
+        for _, row in df.iterrows():
+            brand_from_e_raw = safe_cell_to_str(row.iloc[4]) if len(row) > 4 else ''
+            brand_from_e = brand_from_e_raw.strip() if brand_from_e_raw else ''
+            
+            # Фильтрация бренда как артикула
+            if brand_from_e:
+                brand_from_e_raw_lower = brand_from_e.lower()
+                is_article = (
+                    (brand_from_e_raw_lower.startswith('d-') and any(c.isdigit() for c in brand_from_e)) or
+                    (brand_from_e_raw_lower.startswith('dz') and any(c.isdigit() for c in brand_from_e)) or
+                    (brand_from_e and brand_from_e[0].isdigit() and 
+                     sum(1 for c in brand_from_e if c.isdigit()) > len(brand_from_e) * 0.7)
                 )
+                if is_article:
+                    brand_from_e = ''
+
+            part_number_from_f = safe_cell_to_str(row.iloc[5]) if len(row) > 5 else ''
+            name_from_b = safe_cell_to_str(row.iloc[1]) if len(row) > 1 else ''
+            cross_number_from_g = safe_cell_to_str(row.iloc[6]) if len(row) > 6 else ''
+            numbers_source_value = cross_number_from_g if cross_number_from_g else part_number_from_f
+            
+            if not numbers_source_value:
+                continue
+            
+            numbers_to_parse = [n.strip() for n in numbers_source_value.split(';') if n.strip()]
+            deduped_numbers = []
+            seen_norm_articles = set()
+            for num in numbers_to_parse:
+                norm = normalize_article_for_compare(num)
+                if not norm or norm in seen_norm_articles:
+                    continue
+                seen_norm_articles.add(norm)
+                deduped_numbers.append(num)
+            
+            for num in deduped_numbers:
+                all_records.append((brand_from_e, part_number_from_f, name_from_b, num))
+
+        # Вспомогательная функция для обработки одного артикула в разных источниках
+        def process_single_record_for_source(source, record):
+            brand_from_e, part_number_from_f, name_from_b, num = record
             try:
-                autopiter_proxy_retries = int(os.getenv("AUTOPITER_PROXY_RETRIES", "2"))
-            except Exception:
-                autopiter_proxy_retries = 2
-            autopiter_proxy_retries = max(1, min(3, autopiter_proxy_retries))
-
-            def parse_one(site, parser_func, max_retries=1):
-                def inner(num, proxy=None):
-                    cached_result = get_from_cache(num, site)
-                    if cached_result is not None:
-                        log_debug(f"{site}: кэш {num} ({len(cached_result)} брендов)")
-                        return [(brand, part_number, name, b, num, site) for b in cached_result]
-
-                    for attempt in range(max_retries):
-                        try:
-                            if site == 'autopiter' and autopiter_proxy_enabled:
-                                proxy = get_proxy_string()
-                                log_debug(f"{site}: попытка {attempt+1} с прокси для {num}")
-                            elif attempt == 0:
-                                if site == 'emex' and proxy:
-                                    log_debug(f"{site}: попытка {attempt+1} с прокси для {num}")
-                                else:
-                                    proxy = None
-                                    log_debug(f"{site}: попытка {attempt+1} для {num}")
-                            else:
-                                proxy = get_next_proxy()
-                                log_debug(f"{site}: попытка {attempt+1} с прокси для {num}")
-
-                            time.sleep(0.01 if site == 'autopiter' else 0.01)
-                            brands = parser_func(num, proxy)
-
-                            if site == 'autopiter':
-                                brands = filter_garbage_brands(brands, source='autopiter')
-                            elif site == 'emex':
-                                brands = filter_garbage_brands(brands, source='emex')
-
-                            is_empty = len(brands) == 0
-                            set_cache(num, site, brands, is_empty)
-
-                            log_debug(f"{site}: {num} → {len(brands)} брендов")
-                            return [(brand, part_number, name, b, num, site) for b in brands]
-                        except Exception as e:
-                            log(f"Error parsing {site} for {num} (attempt {attempt + 1}): {str(e)}")
-                            if site == 'autopiter':
-                                _record_autopiter_event(_is_timeout_like_autopiter_error(e), row_index)
-                            if attempt < max_retries - 1:
-                                time.sleep(0.1)
-                            else:
-                                log(f"Failed to parse {site} for {num} after {max_retries} attempts")
-                                if isinstance(e, (
-                                    AutopiterRateLimitException,
-                                    AutopiterForbiddenException,
-                                    AutopiterNetworkException,
-                                    AutopiterBlockedException,
-                                )):
-                                    log_debug(f"{site}: rate-limit/403/network, пропускаем negative cache для {num}")
-                                    return []
-                                set_cache(num, site, [], True)
-                                return []
-                return inner
-
-            _emex_note = f", Emex параллельно: {emex_parallel}" if 'emex' in selected_sources else ""
-            log(f"Начинаем парсинг {len(numbers)} артикулов для строки {row_index + 1} (потоков Autopiter/строка: {AUTOPITER_MAX_WORKERS}{_emex_note})")
-
-            def worker(num):
-                local = {'autopiter': [], 'emex': []}
-                if 'autopiter' in selected_sources:
-                    ap_retries = autopiter_proxy_retries if autopiter_proxy_enabled else 1
-                    local['autopiter'].extend(parse_one('autopiter', get_brands_by_artikul, max_retries=ap_retries)(num))
-                if 'emex' in selected_sources and not state['emex_disabled']:
-                    with emex_semaphore:
-                        proxy = get_proxy_string()
-                        try:
-                            emex_res = parse_one('emex', get_brands_by_artikul_emex)(num, proxy)
-                            if emex_res:
-                                state['emex_failures'] = 0
-                            else:
-                                state['emex_failures'] += 1
-                            local['emex'].extend(emex_res)
-                            if state['emex_failures'] >= 5:
-                                state['emex_disabled'] = True
-                                log("Emex: слишком много неудач подряд, временно отключаем Emex для этой партии")
-                        except Exception as e:
-                            state['emex_failures'] += 1
-                            log(f"Emex: критическая ошибка для артикула {num}: {str(e)}")
-                return local
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=AUTOPITER_MAX_WORKERS) as executor:
-                future_map = {executor.submit(worker, num): num for num in numbers}
-                for future in concurrent.futures.as_completed(future_map):
-                    num = future_map[future]
-                    try:
-                        res = future.result()
-                        results['autopiter'].extend(res.get('autopiter', []))
-                        if 'autopiter' in selected_sources:
-                            _record_autopiter_event(False, row_index)
-                        results['emex'].extend(res.get('emex', []))
-                    except Exception as e:
-                        log(f"Ошибка обработки артикула {num}: {str(e)}")
-                        if 'autopiter' in selected_sources:
-                            _record_autopiter_event(_is_timeout_like_autopiter_error(e), row_index)
-                    finally:
-                        if callable(on_article_done):
-                            try:
-                                on_article_done(num)
-                            except Exception:
-                                pass
-
-            return results
-
-        def parse_armtek_parallel(numbers, brand_from_e, part_number_from_f, name_from_b, row_index: int):
-            """Armtek (Selenium) — последовательно по артикулам, каждый раз новый драйвер."""
-            results = []
-            reset_armtek_selenium_state()
-            log(f"Armtek: начало обработки {len(numbers)} артикулов для строки {row_index + 1}")
-
-            # Принудительная очистка перед началом строки
-            try:
-                cleanup_chrome_processes()  # Только очистка процессов, пул не трогаем
-                log("Armtek: очистка перед началом строки")
+                proxy = None
+                if source == 'autopiter' and autopiter_proxy_enabled:
+                    proxy = get_proxy_string()
+                elif source == 'emex' and emex_use_proxy_enabled:
+                    proxy = get_proxy_string()
+                
+                # Получаем бренды в зависимости от источника
+                if source == 'autopiter':
+                    brands = get_brands_by_artikul(num, proxy)
+                    brands = filter_garbage_brands(brands, source='autopiter')
+                elif source == 'emex':
+                    brands = get_brands_by_artikul_emex(num, proxy)
+                    brands = filter_garbage_brands(brands, source='emex')
+                else:  # armtek
+                    brands = get_brands_by_artikul_armtek(num, None)  # всегда без прокси
+                    if brands:
+                        brands = filter_armtek_brands(split_combined_brands(brands))
+                
+                records_for_source = []
+                if brands:
+                    for b2 in brands:
+                        for single_brand in _split_comma_separated_brands(b2):
+                            single_brand = single_brand.lstrip('_').strip()
+                            if not single_brand:
+                                continue
+                            # Не добавляем артикулы/цифровые мусорные значения
+                            if (single_brand.lower().startswith('d-') or
+                                single_brand.lower().startswith('dz') or
+                                (single_brand and single_brand[0].isdigit()) or
+                                sum(1 for c in single_brand if c.isdigit()) > len(single_brand) * 0.6):
+                                continue
+                            
+                            normalized_article = normalize_article_for_compare(num)
+                            if normalized_article:
+                                d = {
+                                    'Бренд № 1': clean_excel_string(brand_from_e),
+                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
+                                    'Наименование': clean_excel_string(name_from_b),
+                                    'Бренд № 2': clean_excel_string(single_brand),
+                                    'Артикул по Бренду № 2': clean_excel_string(num),
+                                    'Источник': source
+                                }
+                                records_for_source.append(d)
+                else:
+                    # Для Armtek добавляем запись "Бренды не найдены"
+                    if source == 'armtek':
+                        d = {
+                            'Бренд № 1': clean_excel_string(brand_from_e),
+                            'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
+                            'Наименование': clean_excel_string(name_from_b),
+                            'Бренд № 2': 'Бренды не найдены',
+                            'Артикул по Бренду № 2': clean_excel_string(num),
+                            'Источник': source
+                        }
+                        records_for_source.append(d)
+                return records_for_source
             except Exception as e:
-                log(f"Ошибка очистки: {e}")
+                log(f"Error processing {source} for {num}: {str(e)}")
+                return []
 
-            def parse_one_armtek(num):
-                cached_result = get_from_cache(num, 'armtek')
-                if cached_result is not None:
-                    log_debug(f"Armtek: кэш {num} ({len(cached_result)} брендов)")
-                    if cached_result:
-                        return [(brand_from_e, part_number_from_f, name_from_b, b, num, 'armtek') for b in cached_result]
-                    return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
+        def on_article_done(num):
+            """Прогресс по кросс-номерам: +1 после завершения Автопитера."""
+            with cross_progress_lock:
+                task._processed_cross_numbers = getattr(task, '_processed_cross_numbers', 0) + 1
+                task._current_number = str(num) if num is not None else ''
+                if not isinstance(task.sources, dict):
+                    task.sources = {}
+                if '_meta' not in task.sources:
+                    task.sources['_meta'] = {}
+                task.sources['_meta'].update({
+                    'current_number': task._current_number,
+                    'total_cross_numbers': getattr(task, '_total_cross_numbers', 0),
+                    'processed_cross_numbers': getattr(task, '_processed_cross_numbers', 0),
+                })
+                ws_send()
 
-                max_retries = 1
-                for attempt in range(max_retries):
-                    try:
-                        if attempt == 0:
-                            proxy = None
-                            log_debug(f"Armtek: попытка {attempt+1} без прокси для {num}")
-                        else:
-                            proxy = None
-                            log_debug(f"Armtek: попытка {attempt+1} с прокси для {num}")
+        autopiter_proxy_enabled = is_autopiter_proxy_enabled()
+        # определяем переменную для Emex
+        emex_use_proxy_enabled = os.getenv('EMEX_USE_PROXY', '0').strip().lower() in ('1', 'true', 'yes')
 
-                        from .autopiter_parser import get_brands_by_artikul_armtek
-                        brands = get_brands_by_artikul_armtek(num, proxy)
+        # ===== ПЕРВЫЙ ПРОХОД: ТОЛЬКО AUTOPITER =====
+        autopiter_workers = 1  # Автопитер лучше держать на одном потоке для стабильности
+        log(f"Начинаем обработку всех артикулов через AUTOPITER ({len(all_records)} шт.)")
 
-                        is_empty = len(brands) == 0
-                        set_cache(num, 'armtek', brands, is_empty)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=autopiter_workers) as executor:
+            future_map = {executor.submit(process_single_record_for_source, 'autopiter', rec): rec for rec in all_records}
+            for future in concurrent.futures.as_completed(future_map):
+                rec = future_map[future]
+                try:
+                    res_list = future.result()
+                    results_autopiter.extend(res_list)
+                    # Обновляем прогресс только на этом этапе
+                    on_article_done(rec[3])
+                except Exception as e:
+                    log(f"Ошибка обработки Autopiter для {rec[3]}: {str(e)}")
+                    
+        # ===== ВТОРОЙ ПРОХОД: ТОЛЬКО EMEX =====
+        emex_parallel = 5  # можно оставить как было
+        log(f"Начинаем обработку всех артикулов через EMEX ({len(all_records)} шт.)")
 
-                        if brands:
-                            filtered_brands = filter_armtek_brands(brands)
-                            if filtered_brands:
-                                log_debug(f"armtek: {num} → {len(filtered_brands)} брендов")
-                                return [(brand_from_e, part_number_from_f, name_from_b, brand, num, 'armtek') for brand in filtered_brands]
-                            return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
-                        return [(brand_from_e, part_number_from_f, name_from_b, 'Бренды не найдены', num, 'armtek')]
-                    except Exception as e:
-                        log(f"Error parsing armtek for {num} (attempt {attempt + 1}): {str(e)}")
-                        _record_armtek_event(_is_timeout_like_armtek_error(e), row_index)
-                        if attempt < max_retries - 1:
-                            time.sleep(0.1)
-                        else:
-                            log(f"Failed to parse armtek for {num} after {max_retries} attempts")
-                            set_cache(num, 'armtek', [], True)
-                            return []
-                    finally:
-                        # ВАЖНО: Очищаем ТОЛЬКО процессы Chrome, НЕ пул драйверов
-                        # Драйвер закрывается внутри parse_armtek_selenium в finally
-                        try:
-                            cleanup_chrome_processes()
-                        except Exception:
-                            pass
-                        
-            # Armtek: ВСЕГДА 1 ПОТОК
-            armtek_workers = 1
+        with concurrent.futures.ThreadPoolExecutor(max_workers=emex_parallel) as executor:
+            future_map = {executor.submit(process_single_record_for_source, 'emex', rec): rec for rec in all_records}
+            for future in concurrent.futures.as_completed(future_map):
+                rec = future_map[future]
+                try:
+                    results_emex.extend(future.result())
+                except Exception as e:
+                    log(f"Ошибка обработки Emex для {rec[3]}: {str(e)}")
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=armtek_workers) as executor:
-                future_map = {executor.submit(parse_one_armtek, num): num for num in numbers}
-                for future in concurrent.futures.as_completed(future_map):
-                    num = future_map[future]
-                    try:
-                        res_list = future.result()
-                        for res in res_list:
-                            results.append(res)
-                        _record_armtek_event(False, row_index)
-                    except Exception as e:
-                        log(f"Error processing armtek result for {num}: {str(e)}")
-                        _record_armtek_event(_is_timeout_like_armtek_error(e), row_index)
+        # ===== ТРЕТИЙ ПРОХОД: ТОЛЬКО ARMTEK =====
+        armtek_workers = 1
+        log(f"Начинаем обработку всех артикулов через ARMTEK ({len(all_records)} шт.)")
 
-            # Финальная очистка после всей строки
-            try:
-                cleanup_chrome_processes()
-                log(f"Armtek: финальная очистка после строки {row_index + 1}")
-            except Exception as e:
-                log(f"Ошибка финальной очистки: {e}")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=armtek_workers) as executor:
+            future_map = {executor.submit(process_single_record_for_source, 'armtek', rec): rec for rec in all_records}
+            for future in concurrent.futures.as_completed(future_map):
+                rec = future_map[future]
+                try:
+                    results_armtek.extend(future.result())
+                except Exception as e:
+                    log(f"Ошибка обработки Armtek для {rec[3]}: {str(e)}")
 
-            log(f"Armtek: завершена обработка для строки {row_index + 1}, найдено {len(results)} результатов")
-            return results
-        
-        # Статистика качества данных по ходу обработки
+        # Собираем статистику вручную (эмулируем старый цикл)
         stats = {
-            'rows_processed': 0,
+            'rows_processed': total_rows,
             'brand1_filtered_as_article': 0,
             'brand2_filtered_as_article': 0,
             'brand2_filtered_as_garbage': 0,
@@ -1213,308 +1144,13 @@ def process_parsing_task(self, task_id):
                 'armtek': set(),
             }
         }
-
-        # Основной цикл с улучшенной обработкой ошибок
-        for index, row in df.iterrows():
-            try:
-                # Проверка таймаута каждые 100 строк
-                if index % 100 == 0:
-                    elapsed_time = time.time() - task._timeout_check
-                    if elapsed_time > 350000:  # 97 часов - мягкий лимит
-                        log(f"Task timeout approaching ({elapsed_time/3600:.1f} hours), finishing up...")
-                        break
-                    elif elapsed_time > 360000:  # 100 часов - жесткий лимит
-                        log(f"Task timeout reached ({elapsed_time/3600:.1f} hours), forcing stop...")
-                        break
-                
-                # Правильное чтение данных из Excel
-                brand_from_e_raw = safe_cell_to_str(row.iloc[4]) if len(row) > 4 else ''
-                brand_from_e = brand_from_e_raw.strip() if brand_from_e_raw else ''
-                
-                if brand_from_e:
-                    brand_from_e_raw_lower = brand_from_e.lower()
-                    is_article = (
-                        (brand_from_e_raw_lower.startswith('d-') and any(c.isdigit() for c in brand_from_e)) or
-                        (brand_from_e_raw_lower.startswith('dz') and any(c.isdigit() for c in brand_from_e)) or
-                        (brand_from_e and brand_from_e[0].isdigit() and 
-                         sum(1 for c in brand_from_e if c.isdigit()) > len(brand_from_e) * 0.7)
-                    )
-                    
-                    if is_article:
-                        stats['brand1_filtered_as_article'] += 1
-                        log(f"Строка {index + 1}: фильтруем 'Бренд № 1' '{brand_from_e}' как артикул")
-                        brand_from_e = ''
-                    else:
-                        log(f"Строка {index + 1}: используем 'Бренд № 1' '{brand_from_e}' из входного файла")
-                
-                part_number_from_f = safe_cell_to_str(row.iloc[5]) if len(row) > 5 else ''
-                name_from_b = safe_cell_to_str(row.iloc[1]) if len(row) > 1 else ''
-                cross_number_from_g = safe_cell_to_str(row.iloc[6]) if len(row) > 6 else ''
-                
-                numbers_source_value = cross_number_from_g if cross_number_from_g else part_number_from_f
-                if not numbers_source_value:
-                    log(f"Пропускаем строку {index + 1}: нет кросс-номеров и артикула для парсинга (G/F пустые)")
-                    task._processed_rows += 1
-                    continue
-                
-                numbers_to_parse = [n.strip() for n in numbers_source_value.split(';') if n.strip()]
-                deduped_numbers = []
-                seen_norm_articles = set()
-                for num in numbers_to_parse:
-                    norm = normalize_article_for_compare(num)
-                    if not norm:
-                        continue
-                    if norm in seen_norm_articles:
-                        continue
-                    seen_norm_articles.add(norm)
-                    deduped_numbers.append(num)
-                numbers_to_parse = deduped_numbers
-                
-                if not numbers_to_parse:
-                    log(f"Пропускаем строку {index + 1}: нет артикулов для парсинга")
-                    task._processed_rows += 1
-                    continue
-                
-                log(f"Обрабатываем строку {index + 1}: {len(numbers_to_parse)} артикулов")
-                task.status = 'in_progress'
-                update_task_fields(status='in_progress')
-                ws_send()
-                
-                try:
-                    def on_cross_article_done(num):
-                        """Прогресс по кросс-номерам: +1 после завершения Autopiter/Emex по артикулу."""
-                        with cross_progress_lock:
-                            task._processed_cross_numbers = getattr(task, '_processed_cross_numbers', 0) + 1
-                            task._current_number = str(num) if num is not None else ''
-                            if not isinstance(task.sources, dict):
-                                task.sources = {}
-                            if '_meta' not in task.sources:
-                                task.sources['_meta'] = {}
-                            task.sources['_meta'].update({
-                                'current_number': task._current_number,
-                                'total_cross_numbers': getattr(task, '_total_cross_numbers', 0),
-                                'processed_cross_numbers': getattr(task, '_processed_cross_numbers', 0),
-                            })
-                            ws_send()
-
-                    # Все кросс-номера строки параллельно
-                    parallel_results = parse_all_parallel(
-                        numbers_to_parse,
-                        brand_from_e,
-                        part_number_from_f,
-                        name_from_b,
-                        index,
-                        on_article_done=on_cross_article_done,
-                    )
-
-                    # Обрабатываем результаты Autopiter
-                    for (b1, pn1, n1, b2, pn2, src) in parallel_results['autopiter']:
-                            if b2 and b2.strip():
-                                split_brands = _split_comma_separated_brands(b2.strip())
-                                
-                                for single_brand in split_brands:
-                                    single_brand_lower = single_brand.lower().strip()
-                                    if (single_brand_lower.startswith('d-') or single_brand_lower.startswith('dz') or 
-                                        single_brand[0].isdigit() if single_brand else False or
-                                        sum(1 for c in single_brand if c.isdigit()) > len(single_brand) * 0.5):
-                                        stats['brand2_filtered_as_article'] += 1
-                                        continue
-                                    
-                                    single_brand = single_brand.lstrip('_').strip()
-                                    if not single_brand:
-                                        continue
-                                    
-                                    filtered_brands = filter_garbage_brands([single_brand], source='autopiter')
-                                    if filtered_brands:
-                                        for filtered_brand in filtered_brands:
-                                            if (filtered_brand.lower().startswith('d-') or 
-                                                filtered_brand.lower().startswith('dz') or
-                                                (filtered_brand and filtered_brand[0].isdigit()) or
-                                                sum(1 for c in filtered_brand if c.isdigit()) > len(filtered_brand) * 0.6):
-                                                stats['brand2_filtered_as_article'] += 1
-                                                continue
-                                            
-                                            normalized_article = normalize_article_for_compare(pn2)
-                                            if normalized_article:
-                                                d = {
-                                                    'Бренд № 1': clean_excel_string(brand_from_e),
-                                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
-                                                    'Наименование': clean_excel_string(name_from_b),
-                                                    'Бренд № 2': clean_excel_string(filtered_brand),
-                                                    'Артикул по Бренду № 2': clean_excel_string(pn2),
-                                                    'Источник': src
-                                                }
-                                                results_autopiter.append(d)
-                                                stats['unique_brands']['autopiter'].add(filtered_brand)
-                            else:
-                                if b2:
-                                    filtered_b2 = filter_garbage_brands([b2], source='autopiter')
-                                    if not filtered_b2:
-                                        stats['brand2_filtered_as_garbage'] += 1
-                                        continue
-                                    b2 = filtered_b2[0] if filtered_b2 else ''
-                                
-                                normalized_article = normalize_article_for_compare(pn2)
-                                if normalized_article:
-                                    d = {
-                                        'Бренд № 1': clean_excel_string(brand_from_e),
-                                        'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
-                                        'Наименование': clean_excel_string(name_from_b),
-                                        'Бренд № 2': clean_excel_string(b2) if b2 else '',
-                                        'Артикул по Бренду № 2': clean_excel_string(pn2),
-                                        'Источник': src
-                                    }
-                                    results_autopiter.append(d)
-                                    if b2:
-                                        stats['unique_brands']['autopiter'].add(b2)
-
-                    # Обрабатываем результаты Emex
-                    for (b1, pn1, n1, b2, pn2, src) in parallel_results['emex']:
-                            if b2 and b2.strip():
-                                split_brands = _split_comma_separated_brands(b2.strip())
-                                
-                                for single_brand in split_brands:
-                                    single_brand_lower = single_brand.lower().strip()
-                                    if (single_brand_lower.startswith('d-') or single_brand_lower.startswith('dz') or 
-                                        single_brand[0].isdigit() if single_brand else False or
-                                        sum(1 for c in single_brand if c.isdigit()) > len(single_brand) * 0.5):
-                                        stats['brand2_filtered_as_article'] += 1
-                                        continue
-                                    
-                                    filtered_brands = filter_garbage_brands([single_brand], source='emex')
-                                    if filtered_brands:
-                                        for filtered_brand in filtered_brands:
-                                            if (filtered_brand.lower().startswith('d-') or 
-                                                filtered_brand.lower().startswith('dz') or
-                                                (filtered_brand and filtered_brand[0].isdigit()) or
-                                                sum(1 for c in filtered_brand if c.isdigit()) > len(filtered_brand) * 0.6):
-                                                stats['brand2_filtered_as_article'] += 1
-                                                continue
-                                            
-                                            normalized_article = normalize_article_for_compare(pn2)
-                                            if normalized_article:
-                                                d = {
-                                                    'Бренд № 1': clean_excel_string(brand_from_e),
-                                                    'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
-                                                    'Наименование': clean_excel_string(name_from_b),
-                                                    'Бренд № 2': clean_excel_string(filtered_brand),
-                                                    'Артикул по Бренду № 2': clean_excel_string(pn2),
-                                                    'Источник': src
-                                                }
-                                                results_emex.append(d)
-                                                stats['unique_brands']['emex'].add(filtered_brand)
-                            else:
-                                if b2:
-                                    filtered_b2 = filter_garbage_brands([b2], source='emex')
-                                    if not filtered_b2:
-                                        stats['brand2_filtered_as_garbage'] += 1
-                                        continue
-                                    b2 = filtered_b2[0] if filtered_b2 else ''
-                                
-                                normalized_article = normalize_article_for_compare(pn2)
-                                if normalized_article:
-                                    d = {
-                                        'Бренд № 1': clean_excel_string(brand_from_e),
-                                        'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
-                                        'Наименование': clean_excel_string(name_from_b),
-                                        'Бренд № 2': clean_excel_string(b2) if b2 else '',
-                                        'Артикул по Бренду № 2': clean_excel_string(pn2),
-                                        'Источник': src
-                                    }
-                                    results_emex.append(d)
-                                    if b2:
-                                        stats['unique_brands']['emex'].add(b2)
-
-                    if 'armtek' in selected_sources:
-                        armtek_results = parse_armtek_parallel(
-                            numbers_to_parse, brand_from_e, part_number_from_f, name_from_b, index
-                        )
-                        for (b1, pn1, n1, brand, original_num, src) in armtek_results:
-                            results_armtek.append({
-                                'Бренд № 1': clean_excel_string(brand_from_e),
-                                'Артикул по Бренду № 1': clean_excel_string(part_number_from_f),
-                                'Наименование': clean_excel_string(name_from_b),
-                                'Бренд № 2': clean_excel_string(brand),
-                                'Артикул по Бренду № 2': clean_excel_string(original_num),
-                                'Источник': src
-                            })
-                            if brand and str(brand).strip():
-                                stats['unique_brands']['armtek'].add(str(brand).strip())
-                        print(f"[DEBUG] {log_messages[-1] if log_messages else 'Обработка строки'}")
-                        ensure_not_cancelled()
-                        ws_send()
-
-                except Exception as e:
-                    log(f"Ошибка при обработке строки {index + 1}: {str(e)}")
-                
-                # Обновляем текущую обрабатываемую строку
-                task._current_row = index + 1
-                task._processed_rows += 1
-                stats['rows_processed'] += 1
-                
-                if not isinstance(task.sources, dict):
-                    task.sources = {}
-                if '_meta' not in task.sources:
-                    task.sources['_meta'] = {}
-                task.sources['_meta'].update({
-                    'processed_rows': task._processed_rows,
-                    'current_row': task._current_row,
-                    'total_rows': task._total_rows
-                })
-                
-                # Обновляем статус каждые 3 строки
-                if (index + 1) % 3 == 0 or index == total_rows - 1:
-                    task.status = 'in_progress'
-                    update_task_fields(status='in_progress', sources=task.sources)
-                    ws_send()
-                    
-                    gc.collect()
-                    
-                    # Периодическая очистка Chrome каждые 5 строк
-                    if (index + 1) % 5 == 0:
-                        try:
-                            cleanup_chrome_processes()
-                            cleanup_driver_pool()
-                            log("Performed periodic Chrome and driver pool cleanup")
-                        except Exception as e:
-                            log(f"Error during Chrome cleanup: {str(e)}")
-
-                # Чекпоинт каждые batch_size строк
-                if (index + 1) % batch_size == 0:
-                    try:
-                        if results_autopiter:
-                            results_autopiter = dedupe_rows(results_autopiter)
-                            df_autopiter = pd.DataFrame(results_autopiter)
-                            autopiter_file = f'media/results/autopiter_results_{task.id}.xlsx'
-                            df_autopiter.to_excel(autopiter_file, index=False, engine='openpyxl')
-                            task.result_files = task.result_files or {}
-                            task.result_files['autopiter'] = autopiter_file
-                        if results_armtek:
-                            results_armtek = dedupe_rows(results_armtek)
-                            df_armtek = pd.DataFrame(results_armtek)
-                            armtek_file = f'media/results/armtek_results_{task.id}.xlsx'
-                            df_armtek.to_excel(armtek_file, index=False, engine='openpyxl')
-                            task.result_files = task.result_files or {}
-                            task.result_files['armtek'] = armtek_file
-                        if results_emex:
-                            results_emex = dedupe_rows(results_emex)
-                            df_emex = pd.DataFrame(results_emex)
-                            emex_file = f'media/results/emex_results_{task.id}.xlsx'
-                            df_emex.to_excel(emex_file, index=False, engine='openpyxl')
-                            task.result_files = task.result_files or {}
-                            task.result_files['emex'] = emex_file
-                        update_task_fields(result_files=task.result_files)
-                        log("Чекпоинт: промежуточные файлы результатов сохранены")
-                    except Exception as e:
-                        log(f"Ошибка чекпоинта сохранения файлов: {str(e)}")
-                
-            except Exception as e:
-                log(f"Error processing row {index + 1}: {str(e)}")
-                task._processed_rows += 1
-                error_log = f"[{datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Ошибка обработки строки {index + 1}: {str(e)}"
-                print(f"[DEBUG] {error_log}")
-                ensure_not_cancelled()
-                continue
+        
+        for d in results_autopiter:
+            stats['unique_brands']['autopiter'].add(d.get('Бренд № 2', ''))
+        for d in results_emex:
+            stats['unique_brands']['emex'].add(d.get('Бренд № 2', ''))
+        for d in results_armtek:
+            stats['unique_brands']['armtek'].add(d.get('Бренд № 2', ''))
         
         completion_log = f"[{datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Обработка завершена. Обработано строк: {task._processed_rows} из {total_rows}"
         log(completion_log)
