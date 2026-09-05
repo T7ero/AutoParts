@@ -2054,19 +2054,6 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
     try:
         log_debug(f"Armtek Selenium: запуск для артикула {artikul}")
 
-        # 1) HTTP-попытка (быстрый fallback)
-        try:
-            http_brands = parse_armtek_http(artikul, proxy_str)
-            if http_brands:
-                log_debug(f"Armtek: HTTP дал {len(http_brands)} брендов, пропускаем Selenium")
-                return filter_armtek_brands(http_brands)
-        except Exception as e:
-            log_debug(f"Armtek HTTP fallback ошибка: {str(e)}")
-
-        if ARMTEK_SELENIUM_DISABLED:
-            log_debug(f"Armtek Selenium отключён, пропускаем {artikul}")
-            return []
-
         effective_proxy = None if (proxy_str and '@' in proxy_str) else proxy_str
 
         # 2) Всегда создаём новый драйвер (не используем пул)

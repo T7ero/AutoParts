@@ -1091,7 +1091,7 @@ def process_parsing_task(self, task_id):
         emex_use_proxy_enabled = os.getenv('EMEX_USE_PROXY', '0').strip().lower() in ('1', 'true', 'yes')
 
         # ===== ПЕРВЫЙ ПРОХОД: ТОЛЬКО AUTOPITER =====
-        autopiter_workers = 1  # Автопитер лучше держать на одном потоке для стабильности
+        autopiter_workers = 3  # Автопитер лучше держать на одном потоке для стабильности
         log(f"Начинаем обработку всех артикулов через AUTOPITER ({len(all_records)} шт.)")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=autopiter_workers) as executor:
