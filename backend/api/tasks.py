@@ -582,7 +582,9 @@ def process_parsing_task(self, task_id):
             
             # Рассчитываем прогресс
             progress = 0
-            if hasattr(task, '_total_cross_numbers') and getattr(task, '_total_cross_numbers', 0) > 0:
+            if hasattr(task, '_total_steps') and getattr(task, '_total_steps', 0) > 0:
+                progress = min(100, int((getattr(task, '_processed_steps', 0) / task._total_steps) * 100))
+            elif hasattr(task, '_total_cross_numbers') and getattr(task, '_total_cross_numbers', 0) > 0:
                 progress = min(100, int((getattr(task, '_processed_cross_numbers', 0) / task._total_cross_numbers) * 100))
             elif hasattr(task, '_total_rows') and task._total_rows > 0:
                 progress = min(100, int((task._processed_rows / task._total_rows) * 100))
@@ -754,6 +756,14 @@ def process_parsing_task(self, task_id):
             log(f"Ошибка чтения источников из задачи: {e}")
 
         log(f"Выбранные источники: {sorted(selected_sources)}")
+        
+        # ====== НОВОЕ: считаем общее количество шагов для прогресса ======
+        total_cross_numbers = getattr(task, '_total_cross_numbers', 0)
+        total_steps = total_cross_numbers * len(selected_sources)
+        task._total_steps = total_steps
+        task._processed_steps = 0
+        log(f"Всего шагов для прогресса: {total_steps} (артикулов: {total_cross_numbers} × источников: {len(selected_sources)})")
+        
         try:
             raw_total = int(getattr(task, "_total_cross_numbers_raw", 0) or 0)
             dedup_total = int(getattr(task, "_total_cross_numbers", 0) or 0)
@@ -1070,20 +1080,21 @@ def process_parsing_task(self, task_id):
                 log(f"Error processing {source} for {num}: {str(e)}")
                 return []
 
-        def on_article_done(num):
-            """Прогресс по кросс-номерам: +1 после завершения Автопитера."""
+        # ===== УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ОБНОВЛЕНИЯ ПРОГРЕССА =====
+        def update_progress(step_increment=1):
+            """Увеличивает счётчик обработанных шагов и отправляет ws-обновление."""
             with cross_progress_lock:
-                task._processed_cross_numbers = getattr(task, '_processed_cross_numbers', 0) + 1
-                task._current_number = str(num) if num is not None else ''
+                task._processed_steps = getattr(task, '_processed_steps', 0) + step_increment
+                # Обновляем также processed_cross_numbers для обратной совместимости с фронтом
+                task._processed_cross_numbers = getattr(task, '_processed_cross_numbers', 0) + step_increment
+                # Обновляем метаданные
                 if not isinstance(task.sources, dict):
                     task.sources = {}
                 if '_meta' not in task.sources:
                     task.sources['_meta'] = {}
-                task.sources['_meta'].update({
-                    'current_number': task._current_number,
-                    'total_cross_numbers': getattr(task, '_total_cross_numbers', 0),
-                    'processed_cross_numbers': getattr(task, '_processed_cross_numbers', 0),
-                })
+                task.sources['_meta']['processed_steps'] = task._processed_steps
+                task.sources['_meta']['total_steps'] = getattr(task, '_total_steps', 0)
+                task.sources['_meta']['processed_cross_numbers'] = task._processed_cross_numbers
                 ws_send()
 
         autopiter_proxy_enabled = is_autopiter_proxy_enabled()
@@ -1091,8 +1102,9 @@ def process_parsing_task(self, task_id):
         emex_use_proxy_enabled = os.getenv('EMEX_USE_PROXY', '0').strip().lower() in ('1', 'true', 'yes')
 
         # ===== ПЕРВЫЙ ПРОХОД: ТОЛЬКО AUTOPITER =====
-        autopiter_workers = 3  # Автопитер лучше держать на одном потоке для стабильности
-        log(f"Начинаем обработку всех артикулов через AUTOPITER ({len(all_records)} шт.)")
+        # УВЕЛИЧИЛИ С 1 ДО 2 ДЛЯ УСКОРЕНИЯ
+        autopiter_workers = 2
+        log(f"Начинаем обработку всех артикулов через AUTOPITER ({len(all_records)} шт.), потоков: {autopiter_workers}")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=autopiter_workers) as executor:
             future_map = {executor.submit(process_single_record_for_source, 'autopiter', rec): rec for rec in all_records}
@@ -1101,8 +1113,8 @@ def process_parsing_task(self, task_id):
                 try:
                     res_list = future.result()
                     results_autopiter.extend(res_list)
-                    # Обновляем прогресс только на этом этапе
-                    on_article_done(rec[3])
+                    # Обновляем прогресс
+                    update_progress(1)
                 except Exception as e:
                     log(f"Ошибка обработки Autopiter для {rec[3]}: {str(e)}")
                     
@@ -1116,12 +1128,14 @@ def process_parsing_task(self, task_id):
                 rec = future_map[future]
                 try:
                     results_emex.extend(future.result())
+                    update_progress(1)
                 except Exception as e:
                     log(f"Ошибка обработки Emex для {rec[3]}: {str(e)}")
 
         # ===== ТРЕТИЙ ПРОХОД: ТОЛЬКО ARMTEK =====
-        armtek_workers = 1
-        log(f"Начинаем обработку всех артикулов через ARMTEK ({len(all_records)} шт.)")
+        # УВЕЛИЧИЛИ С 1 ДО 2 ДЛЯ УСКОРЕНИЯ
+        armtek_workers = 2
+        log(f"Начинаем обработку всех артикулов через ARMTEK ({len(all_records)} шт.), потоков: {armtek_workers}")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=armtek_workers) as executor:
             future_map = {executor.submit(process_single_record_for_source, 'armtek', rec): rec for rec in all_records}
@@ -1129,6 +1143,7 @@ def process_parsing_task(self, task_id):
                 rec = future_map[future]
                 try:
                     results_armtek.extend(future.result())
+                    update_progress(1)
                 except Exception as e:
                     log(f"Ошибка обработки Armtek для {rec[3]}: {str(e)}")
 

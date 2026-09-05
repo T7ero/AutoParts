@@ -2056,10 +2056,15 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
 
         effective_proxy = None if (proxy_str and '@' in proxy_str) else proxy_str
 
-        # 2) Всегда создаём новый драйвер (не используем пул)
-        temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_{uuid.uuid4().hex[:8]}_")
-        log_debug("Armtek Selenium: создаём новый драйвер")
-        driver = _create_chrome_driver_robust(temp_dir, effective_proxy)
+        # 2) Используем пул драйверов
+        log_debug("Armtek Selenium: получаем драйвер из пула")
+        driver = get_driver_from_pool()
+        if driver is None:
+            # Если пул пуст – создаём новый
+            temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_{uuid.uuid4().hex[:8]}_")
+            log_debug("Armtek Selenium: пул пуст, создаём новый драйвер")
+            driver = _create_chrome_driver_robust(temp_dir, effective_proxy)
+
         if driver is None:
             log_debug("Armtek Selenium: не удалось создать драйвер")
             _note_armtek_selenium_driver_failure()
@@ -2335,20 +2340,10 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
         return None
 
     finally:
-        # Просто закрываем драйвер, игнорируя все ошибки
+        # Возвращаем драйвер в пул
         if driver is not None:
-            try:
-                driver.quit()
-            except Exception:
-                pass
-            # Удаляем из учёта, если есть
-            try:
-                driver_id = id(driver)
-                DRIVER_LAST_USED.pop(driver_id, None)
-                DRIVER_USAGE_COUNT.pop(driver_id, None)
-            except Exception:
-                pass
-        # Очищаем временную директорию
+            return_driver_to_pool(driver)
+        # Очищаем временную директорию, если была создана
         if temp_dir:
             try:
                 shutil.rmtree(temp_dir, ignore_errors=True)
