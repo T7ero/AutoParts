@@ -1142,7 +1142,7 @@ def process_parsing_task(self, task_id):
                             proxy = None
                             log_debug(f"Armtek: попытка {attempt+1} без прокси для {num}")
                         else:
-                            proxy = get_next_proxy()
+                            proxy = None
                             log_debug(f"Armtek: попытка {attempt+1} с прокси для {num}")
 
                         from .autopiter_parser import get_brands_by_artikul_armtek
