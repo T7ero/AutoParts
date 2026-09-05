@@ -1151,7 +1151,25 @@ def process_parsing_task(self, task_id):
             stats['unique_brands']['emex'].add(d.get('Бренд № 2', ''))
         for d in results_armtek:
             stats['unique_brands']['armtek'].add(d.get('Бренд № 2', ''))
+
+        # Обновляем итоговые счетчики строк (эмуляция старого цикла)
+        task._processed_rows = total_rows
+        task._current_row = total_rows
+        task._processed_cross_numbers = getattr(task, '_total_cross_numbers', 0)
         
+        if not isinstance(task.sources, dict):
+            task.sources = {}
+        if '_meta' not in task.sources:
+            task.sources['_meta'] = {}
+        task.sources['_meta'].update({
+            'processed_rows': task._processed_rows,
+            'current_row': task._current_row,
+            'total_rows': task._total_rows,
+            'processed_cross_numbers': task._processed_cross_numbers
+        })
+        update_task_fields(sources=task.sources, status='in_progress')
+        ws_send()
+
         completion_log = f"[{datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Обработка завершена. Обработано строк: {task._processed_rows} из {total_rows}"
         log(completion_log)
         print(f"[DEBUG] {completion_log}")
