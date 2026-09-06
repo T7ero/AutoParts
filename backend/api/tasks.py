@@ -580,14 +580,41 @@ def process_parsing_task(self, task_id):
                 log(f"Пропускаем ws_send: слишком много активных потоков ({active_threads})")
                 return
             
-            # Рассчитываем прогресс
-            progress = 0
-            if hasattr(task, '_total_steps') and getattr(task, '_total_steps', 0) > 0:
-                progress = min(100, int((getattr(task, '_processed_steps', 0) / task._total_steps) * 100))
-            elif hasattr(task, '_total_cross_numbers') and getattr(task, '_total_cross_numbers', 0) > 0:
-                progress = min(100, int((getattr(task, '_processed_cross_numbers', 0) / task._total_cross_numbers) * 100))
-            elif hasattr(task, '_total_rows') and task._total_rows > 0:
-                progress = min(100, int((task._processed_rows / task._total_rows) * 100))
+            # Общий прогресс
+            total_steps = getattr(task, '_total_steps', 0)
+            processed_steps = getattr(task, '_processed_steps', 0)
+            progress = min(100, int((processed_steps / total_steps) * 100)) if total_steps > 0 else 0
+            
+            # Отдельные прогрессы для каждого источника
+            total_autopiter = getattr(task, '_total_autopiter', 1)
+            processed_autopiter = getattr(task, '_processed_autopiter', 0)
+            progress_autopiter = min(100, int((processed_autopiter / total_autopiter) * 100)) if total_autopiter > 0 else 0
+            
+            total_emex = getattr(task, '_total_emex', 1)
+            processed_emex = getattr(task, '_processed_emex', 0)
+            progress_emex = min(100, int((processed_emex / total_emex) * 100)) if total_emex > 0 else 0
+            
+            total_armtek = getattr(task, '_total_armtek', 1)
+            processed_armtek = getattr(task, '_processed_armtek', 0)
+            progress_armtek = min(100, int((processed_armtek / total_armtek) * 100)) if total_armtek > 0 else 0
+            
+            # Определяем текущий активный источник
+            current_source = 'autopiter'
+            if getattr(task, '_processed_autopiter', 0) >= getattr(task, '_total_autopiter', 1):
+                if getattr(task, '_processed_emex', 0) < getattr(task, '_total_emex', 1):
+                    current_source = 'emex'
+                elif getattr(task, '_processed_armtek', 0) < getattr(task, '_total_armtek', 1):
+                    current_source = 'armtek'
+                else:
+                    current_source = 'completed'
+            elif getattr(task, '_processed_autopiter', 0) < getattr(task, '_total_autopiter', 1):
+                current_source = 'autopiter'
+            elif getattr(task, '_processed_emex', 0) < getattr(task, '_total_emex', 1):
+                current_source = 'emex'
+            elif getattr(task, '_processed_armtek', 0) < getattr(task, '_total_armtek', 1):
+                current_source = 'armtek'
+            else:
+                current_source = 'completed'
             
             async_to_sync(channel_layer.group_send)(
                 f'task_{task.id}',
@@ -600,6 +627,16 @@ def process_parsing_task(self, task_id):
                         'result_files': {},
                         'log': '',
                         'progress': progress,
+                        'progress_autopiter': progress_autopiter,
+                        'progress_emex': progress_emex,
+                        'progress_armtek': progress_armtek,
+                        'processed_autopiter': processed_autopiter,
+                        'total_autopiter': total_autopiter,
+                        'processed_emex': processed_emex,
+                        'total_emex': total_emex,
+                        'processed_armtek': processed_armtek,
+                        'total_armtek': total_armtek,
+                        'current_source': current_source,
                         'current_row': getattr(task, '_current_row', 0),
                         'total_rows': getattr(task, '_total_rows', 0),
                         'processed_rows': getattr(task, '_processed_rows', 0),
@@ -757,12 +794,17 @@ def process_parsing_task(self, task_id):
 
         log(f"Выбранные источники: {sorted(selected_sources)}")
         
-        # ====== НОВОЕ: считаем общее количество шагов для прогресса ======
+        # ====== НОВОЕ: отдельные счётчики для источников ======
         total_cross_numbers = getattr(task, '_total_cross_numbers', 0)
-        total_steps = total_cross_numbers * len(selected_sources)
-        task._total_steps = total_steps
+        task._total_autopiter = total_cross_numbers
+        task._total_emex = total_cross_numbers
+        task._total_armtek = total_cross_numbers
+        task._processed_autopiter = 0
+        task._processed_emex = 0
+        task._processed_armtek = 0
+        task._total_steps = total_cross_numbers * len(selected_sources)
         task._processed_steps = 0
-        log(f"Всего шагов для прогресса: {total_steps} (артикулов: {total_cross_numbers} × источников: {len(selected_sources)})")
+        log(f"Всего шагов для прогресса: {task._total_steps} (артикулов: {total_cross_numbers} × источников: {len(selected_sources)})")
         
         try:
             raw_total = int(getattr(task, "_total_cross_numbers_raw", 0) or 0)
@@ -880,102 +922,8 @@ def process_parsing_task(self, task_id):
             selected = 1 if use_single else configured_workers
             return max(1, min(nnums, selected))
 
-        # Armtek adaptive parallelism
-        armtek_adaptive_lock = threading.Lock()
-        armtek_adaptive_state = {
-            'timeout_events': deque(maxlen=20),
-            'force_single_until_row': -1,
-            'is_degraded': False,
-        }
-        try:
-            armtek_adaptive_enabled = os.getenv("ARMTEK_ADAPTIVE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
-        except Exception:
-            armtek_adaptive_enabled = True
-        try:
-            armtek_timeout_window = int(os.getenv("ARMTEK_TIMEOUT_WINDOW", "20"))
-        except Exception:
-            armtek_timeout_window = 20
-        try:
-            armtek_timeout_threshold = float(os.getenv("ARMTEK_TIMEOUT_THRESHOLD", "0.30"))
-        except Exception:
-            armtek_timeout_threshold = 0.30
-        try:
-            armtek_recover_threshold = float(os.getenv("ARMTEK_TIMEOUT_RECOVER_THRESHOLD", "0.12"))
-        except Exception:
-            armtek_recover_threshold = 0.12
-        try:
-            armtek_degrade_min_samples = int(os.getenv("ARMTEK_TIMEOUT_MIN_SAMPLES", "8"))
-        except Exception:
-            armtek_degrade_min_samples = 8
-        try:
-            armtek_degrade_cooldown_rows = int(os.getenv("ARMTEK_DEGRADE_COOLDOWN_ROWS", "8"))
-        except Exception:
-            armtek_degrade_cooldown_rows = 8
-
-        armtek_timeout_window = max(10, min(200, armtek_timeout_window))
-        armtek_timeout_threshold = max(0.05, min(0.95, armtek_timeout_threshold))
-        armtek_recover_threshold = max(0.01, min(0.90, armtek_recover_threshold))
-        armtek_degrade_min_samples = max(5, min(100, armtek_degrade_min_samples))
-        armtek_degrade_cooldown_rows = max(2, min(100, armtek_degrade_cooldown_rows))
-        armtek_adaptive_state['timeout_events'] = deque(maxlen=armtek_timeout_window)
-
-        def _is_timeout_like_armtek_error(exc: Exception) -> bool:
-            text = str(exc).lower()
-            markers = (
-                "timed out",
-                "timeout",
-                "read timed out",
-                "renderer",
-                "tab crashed",
-                "message from renderer",
-                "httpconnectionpool",
-                "connection broken",
-                "max retries exceeded",
-                "script timeout",
-            )
-            return any(m in text for m in markers)
-
-        def _record_armtek_event(is_timeout: bool, row_idx: int):
-            if not armtek_adaptive_enabled:
-                return
-            with armtek_adaptive_lock:
-                events = armtek_adaptive_state['timeout_events']
-                events.append(1 if is_timeout else 0)
-                samples = len(events)
-                if samples < armtek_degrade_min_samples:
-                    return
-                ratio = (sum(events) / samples) if samples else 0.0
-                if (not armtek_adaptive_state['is_degraded']) and ratio >= armtek_timeout_threshold:
-                    armtek_adaptive_state['is_degraded'] = True
-                    armtek_adaptive_state['force_single_until_row'] = row_idx + armtek_degrade_cooldown_rows
-                    log(
-                        f"Armtek adaptive: рост таймаутов ({ratio:.0%}, {samples} событий), "
-                        f"временно снижаем до 1 потока до строки {armtek_adaptive_state['force_single_until_row'] + 1}"
-                    )
-
-        def _resolve_armtek_workers(nnums: int, configured_workers: int, row_idx: int) -> int:
-            if not armtek_adaptive_enabled:
-                return max(1, min(nnums, configured_workers))
-            with armtek_adaptive_lock:
-                is_degraded = armtek_adaptive_state['is_degraded']
-                force_until = armtek_adaptive_state['force_single_until_row']
-                events = armtek_adaptive_state['timeout_events']
-                samples = len(events)
-                ratio = (sum(events) / samples) if samples else 0.0
-
-                if is_degraded and row_idx > force_until:
-                    if samples >= armtek_degrade_min_samples and ratio <= armtek_recover_threshold:
-                        armtek_adaptive_state['is_degraded'] = False
-                        log(
-                            f"Armtek adaptive: таймауты снизились ({ratio:.0%}, {samples} событий), "
-                            "возвращаем 2 потока (или значение ARMTEK_MAX_WORKERS)"
-                        )
-                    else:
-                        armtek_adaptive_state['force_single_until_row'] = row_idx + armtek_degrade_cooldown_rows
-
-                use_single = armtek_adaptive_state['is_degraded'] and row_idx <= armtek_adaptive_state['force_single_until_row']
-            selected = 1 if use_single else configured_workers
-            return max(1, min(nnums, selected))
+        # Armtek adaptive parallelism - ОТКЛЮЧАЕМ для стабильности
+        armtek_adaptive_enabled = False  # Отключаем адаптивный контроль для Armtek
         
         # Собираем ВСЕ артикулы из файла, чтобы обработать их отдельными проходами
         all_records = []  # (brand_from_e, part_number_from_f, name_from_b, num)
@@ -1079,22 +1027,27 @@ def process_parsing_task(self, task_id):
             except Exception as e:
                 log(f"Error processing {source} for {num}: {str(e)}")
                 return []
-            
+
         # ===== УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ОБНОВЛЕНИЯ ПРОГРЕССА =====
-        def update_progress(step_increment=1):
-            """Увеличивает счётчик обработанных шагов и отправляет ws-обновление."""
+        def update_progress(source=None, step_increment=1):
+            """Увеличивает счётчик для указанного источника и общий счётчик."""
             with cross_progress_lock:
+                # Общий счётчик
                 task._processed_steps = getattr(task, '_processed_steps', 0) + step_increment
-                # Обновляем также processed_cross_numbers для обратной совместимости с фронтом
                 task._processed_cross_numbers = getattr(task, '_processed_cross_numbers', 0) + step_increment
-                # Обновляем метаданные
-                if not isinstance(task.sources, dict):
-                    task.sources = {}
-                if '_meta' not in task.sources:
-                    task.sources['_meta'] = {}
-                task.sources['_meta']['processed_steps'] = task._processed_steps
-                task.sources['_meta']['total_steps'] = getattr(task, '_total_steps', 0)
-                task.sources['_meta']['processed_cross_numbers'] = task._processed_cross_numbers
+                
+                # Счётчик источника
+                if source == 'autopiter':
+                    task._processed_autopiter = getattr(task, '_processed_autopiter', 0) + step_increment
+                elif source == 'emex':
+                    task._processed_emex = getattr(task, '_processed_emex', 0) + step_increment
+                elif source == 'armtek':
+                    task._processed_armtek = getattr(task, '_processed_armtek', 0) + step_increment
+                
+                # Обновляем current_number
+                # (этот параметр передаётся отдельно, но мы его не меняем здесь)
+                
+                # Вызываем ws_send для отправки обновления
                 ws_send()
 
         autopiter_proxy_enabled = is_autopiter_proxy_enabled()
@@ -1102,7 +1055,6 @@ def process_parsing_task(self, task_id):
         emex_use_proxy_enabled = os.getenv('EMEX_USE_PROXY', '0').strip().lower() in ('1', 'true', 'yes')
 
         # ===== ПЕРВЫЙ ПРОХОД: ТОЛЬКО AUTOPITER =====
-        # УВЕЛИЧИЛИ С 1 ДО 2 ДЛЯ УСКОРЕНИЯ
         autopiter_workers = 2
         log(f"Начинаем обработку всех артикулов через AUTOPITER ({len(all_records)} шт.), потоков: {autopiter_workers}")
 
@@ -1113,13 +1065,12 @@ def process_parsing_task(self, task_id):
                 try:
                     res_list = future.result()
                     results_autopiter.extend(res_list)
-                    # Обновляем прогресс
-                    update_progress(1)
+                    update_progress(source='autopiter', step_increment=1)
                 except Exception as e:
                     log(f"Ошибка обработки Autopiter для {rec[3]}: {str(e)}")
                     
         # ===== ВТОРОЙ ПРОХОД: ТОЛЬКО EMEX =====
-        emex_parallel = 5  # можно оставить как было
+        emex_parallel = 5
         log(f"Начинаем обработку всех артикулов через EMEX ({len(all_records)} шт.)")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=emex_parallel) as executor:
@@ -1128,12 +1079,12 @@ def process_parsing_task(self, task_id):
                 rec = future_map[future]
                 try:
                     results_emex.extend(future.result())
-                    update_progress(1)
+                    update_progress(source='emex', step_increment=1)
                 except Exception as e:
                     log(f"Ошибка обработки Emex для {rec[3]}: {str(e)}")
 
         # ===== ТРЕТИЙ ПРОХОД: ТОЛЬКО ARMTEK =====
-        # УВЕЛИЧИЛИ С 1 ДО 2 ДЛЯ УСКОРЕНИЯ
+        # Используем 1 поток для стабильности
         armtek_workers = 1
         log(f"Начинаем обработку всех артикулов через ARMTEK ({len(all_records)} шт.), потоков: {armtek_workers}")
 
@@ -1143,7 +1094,7 @@ def process_parsing_task(self, task_id):
                 rec = future_map[future]
                 try:
                     results_armtek.extend(future.result())
-                    update_progress(1)
+                    update_progress(source='armtek', step_increment=1)
                 except Exception as e:
                     log(f"Ошибка обработки Armtek для {rec[3]}: {str(e)}")
 
@@ -1180,7 +1131,13 @@ def process_parsing_task(self, task_id):
             'processed_rows': task._processed_rows,
             'current_row': task._current_row,
             'total_rows': task._total_rows,
-            'processed_cross_numbers': task._processed_cross_numbers
+            'processed_cross_numbers': task._processed_cross_numbers,
+            'processed_autopiter': getattr(task, '_processed_autopiter', 0),
+            'total_autopiter': getattr(task, '_total_autopiter', 0),
+            'processed_emex': getattr(task, '_processed_emex', 0),
+            'total_emex': getattr(task, '_total_emex', 0),
+            'processed_armtek': getattr(task, '_processed_armtek', 0),
+            'total_armtek': getattr(task, '_total_armtek', 0),
         })
         update_task_fields(sources=task.sources, status='in_progress')
         ws_send()

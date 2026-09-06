@@ -330,24 +330,72 @@ function Tasks() {
                       </div>
 
                       {task.progress !== undefined && (
-                        <div className="mt-3">
-                          <div className="flex justify-between text-sm text-gray-600 dark:text-gray-300 mb-1">
-                            <span>Прогресс парсинга</span>
-                            <span>
-                              {task.progress}%
-                              {task.processed_cross_numbers && task.total_cross_numbers ? (
-                                <span className="ml-2 text-xs">
-                                  ({task.processed_cross_numbers} / {task.total_cross_numbers} кросс-номеров)
-                                </span>
-                              ) : null}
-                            </span>
+                        <div className="mt-3 space-y-2">
+                          {/* Общий прогресс */}
+                          <div>
+                            <div className="flex justify-between text-sm text-gray-600 dark:text-gray-300 mb-1">
+                              <span>Общий прогресс</span>
+                              <span>{task.progress}%</span>
+                            </div>
+                            <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2">
+                              <div className="bg-blue-600 dark:bg-blue-400 h-2 rounded-full transition-all duration-300" style={{ width: `${task.progress}%` }}></div>
+                            </div>
                           </div>
-                          <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2">
-                            <div
-                              className="bg-blue-600 dark:bg-blue-400 h-2 rounded-full transition-all duration-300"
-                              style={{ width: `${task.progress}%` }}
-                            ></div>
+                      
+                          {/* Autopiter */}
+                          <div>
+                            <div className="flex justify-between text-sm text-gray-600 dark:text-gray-300 mb-1">
+                              <span>Autopiter</span>
+                              <span>
+                                {task.progress_autopiter || 0}%
+                                {task.processed_autopiter !== undefined && task.total_autopiter ? (
+                                  <span className="ml-2 text-xs">
+                                    ({task.processed_autopiter} / {task.total_autopiter})
+                                  </span>
+                                ) : null}
+                              </span>
+                            </div>
+                            <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2">
+                              <div className="bg-green-600 dark:bg-green-400 h-2 rounded-full transition-all duration-300" style={{ width: `${task.progress_autopiter || 0}%` }}></div>
+                            </div>
                           </div>
+                              
+                          {/* Emex */}
+                          <div>
+                            <div className="flex justify-between text-sm text-gray-600 dark:text-gray-300 mb-1">
+                              <span>Emex</span>
+                              <span>
+                                {task.progress_emex || 0}%
+                                {task.processed_emex !== undefined && task.total_emex ? (
+                                  <span className="ml-2 text-xs">
+                                    ({task.processed_emex} / {task.total_emex})
+                                  </span>
+                                ) : null}
+                              </span>
+                            </div>
+                            <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2">
+                              <div className="bg-yellow-600 dark:bg-yellow-400 h-2 rounded-full transition-all duration-300" style={{ width: `${task.progress_emex || 0}%` }}></div>
+                            </div>
+                          </div>
+                              
+                          {/* Armtek */}
+                          <div>
+                            <div className="flex justify-between text-sm text-gray-600 dark:text-gray-300 mb-1">
+                              <span>Armtek</span>
+                              <span>
+                                {task.progress_armtek || 0}%
+                                {task.processed_armtek !== undefined && task.total_armtek ? (
+                                  <span className="ml-2 text-xs">
+                                    ({task.processed_armtek} / {task.total_armtek})
+                                  </span>
+                                ) : null}
+                              </span>
+                            </div>
+                            <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2">
+                              <div className="bg-red-600 dark:bg-red-400 h-2 rounded-full transition-all duration-300" style={{ width: `${task.progress_armtek || 0}%` }}></div>
+                            </div>
+                          </div>
+                              
                           {task.current_number && (
                             <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                               Текущий кросс-номер: <span className="font-mono">{task.current_number}</span>
