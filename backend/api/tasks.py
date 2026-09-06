@@ -598,20 +598,20 @@ def process_parsing_task(self, task_id):
             processed_armtek = getattr(task, '_processed_armtek', 0)
             progress_armtek = min(100, int((processed_armtek / total_armtek) * 100)) if total_armtek > 0 else 0
             
-            # Определяем текущий активный источник
+            # Определяем текущий активный источник (для отображения)
             current_source = 'autopiter'
-            if getattr(task, '_processed_autopiter', 0) >= getattr(task, '_total_autopiter', 1):
-                if getattr(task, '_processed_emex', 0) < getattr(task, '_total_emex', 1):
+            if processed_autopiter >= total_autopiter:
+                if processed_emex < total_emex:
                     current_source = 'emex'
-                elif getattr(task, '_processed_armtek', 0) < getattr(task, '_total_armtek', 1):
+                elif processed_armtek < total_armtek:
                     current_source = 'armtek'
                 else:
                     current_source = 'completed'
-            elif getattr(task, '_processed_autopiter', 0) < getattr(task, '_total_autopiter', 1):
+            elif processed_autopiter < total_autopiter:
                 current_source = 'autopiter'
-            elif getattr(task, '_processed_emex', 0) < getattr(task, '_total_emex', 1):
+            elif processed_emex < total_emex:
                 current_source = 'emex'
-            elif getattr(task, '_processed_armtek', 0) < getattr(task, '_total_armtek', 1):
+            elif processed_armtek < total_armtek:
                 current_source = 'armtek'
             else:
                 current_source = 'completed'
@@ -1029,8 +1029,10 @@ def process_parsing_task(self, task_id):
                 return []
 
         # ===== УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ОБНОВЛЕНИЯ ПРОГРЕССА =====
+        # Счетчик для периодического сохранения в БД (каждые 5 шагов)
+        _save_counter = 0
         def update_progress(source=None, step_increment=1):
-            """Увеличивает счётчик для указанного источника и общий счётчик."""
+            nonlocal _save_counter
             with cross_progress_lock:
                 # Общий счётчик
                 task._processed_steps = getattr(task, '_processed_steps', 0) + step_increment
@@ -1044,10 +1046,45 @@ def process_parsing_task(self, task_id):
                 elif source == 'armtek':
                     task._processed_armtek = getattr(task, '_processed_armtek', 0) + step_increment
                 
-                # Обновляем current_number
-                # (этот параметр передаётся отдельно, но мы его не меняем здесь)
+                # Обновляем метаданные в sources (это нужно для REST API)
+                if not isinstance(task.sources, dict):
+                    task.sources = {}
+                if '_meta' not in task.sources:
+                    task.sources['_meta'] = {}
+                meta = task.sources['_meta']
+                meta['processed_steps'] = task._processed_steps
+                meta['total_steps'] = getattr(task, '_total_steps', 0)
+                meta['processed_cross_numbers'] = task._processed_cross_numbers
+                meta['processed_autopiter'] = task._processed_autopiter
+                meta['total_autopiter'] = task._total_autopiter
+                meta['processed_emex'] = task._processed_emex
+                meta['total_emex'] = task._total_emex
+                meta['processed_armtek'] = task._processed_armtek
+                meta['total_armtek'] = task._total_armtek
                 
-                # Вызываем ws_send для отправки обновления
+                # Вычисляем проценты и сохраняем в meta
+                if task._total_autopiter > 0:
+                    meta['progress_autopiter'] = min(100, int((task._processed_autopiter / task._total_autopiter) * 100))
+                else:
+                    meta['progress_autopiter'] = 0
+                if task._total_emex > 0:
+                    meta['progress_emex'] = min(100, int((task._processed_emex / task._total_emex) * 100))
+                else:
+                    meta['progress_emex'] = 0
+                if task._total_armtek > 0:
+                    meta['progress_armtek'] = min(100, int((task._processed_armtek / task._total_armtek) * 100))
+                else:
+                    meta['progress_armtek'] = 0
+                
+                # Сохраняем в БД каждые 5 шагов, чтобы не перегружать
+                _save_counter += 1
+                if _save_counter % 5 == 0:
+                    try:
+                        ParsingTask.objects.filter(id=task.id).update(sources=task.sources)
+                    except Exception as e:
+                        log(f"Ошибка сохранения прогресса в БД: {e}")
+                
+                # Отправляем WebSocket
                 ws_send()
 
         autopiter_proxy_enabled = is_autopiter_proxy_enabled()

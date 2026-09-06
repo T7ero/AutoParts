@@ -109,6 +109,7 @@ services:
       - ARMTEK_CLEANUP_INTERVAL=3
       - SELENIUM_TIMEOUT=15
       - PAGE_LOAD_TIMEOUT=20
+      - EMEX_USE_PROXY=0
     restart: always
     deploy:
       resources:
