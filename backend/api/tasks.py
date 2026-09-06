@@ -1094,7 +1094,7 @@ def process_parsing_task(self, task_id):
         # ===== ПЕРВЫЙ ПРОХОД: ТОЛЬКО AUTOPITER =====
         autopiter_workers = 2
         log(f"Начинаем обработку всех артикулов через AUTOPITER ({len(all_records)} шт.), потоков: {autopiter_workers}")
-
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=autopiter_workers) as executor:
             future_map = {executor.submit(process_single_record_for_source, 'autopiter', rec): rec for rec in all_records}
             for future in concurrent.futures.as_completed(future_map):
@@ -1105,17 +1105,25 @@ def process_parsing_task(self, task_id):
                     update_progress(source='autopiter', step_increment=1)
                 except Exception as e:
                     log(f"Ошибка обработки Autopiter для {rec[3]}: {str(e)}")
+        
+        # Очистка после Autopiter
+        log("Очистка Chrome процессов и пула драйверов после Autopiter")
+        cleanup_chrome_processes()
+        cleanup_driver_pool()
+        gc.collect()
+        time.sleep(0.5)
+        
         # После завершения Autopiter обновляем БД
         task.sources['_meta']['progress_autopiter'] = 100
         task.sources['_meta']['processed_autopiter'] = task._total_autopiter
         task.sources['_meta']['total_autopiter'] = task._total_autopiter
         update_task_fields(sources=task.sources)
         ws_send()
-                    
+                        
         # ===== ВТОРОЙ ПРОХОД: ТОЛЬКО EMEX =====
         emex_parallel = 5
         log(f"Начинаем обработку всех артикулов через EMEX ({len(all_records)} шт.)")
-
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=emex_parallel) as executor:
             future_map = {executor.submit(process_single_record_for_source, 'emex', rec): rec for rec in all_records}
             for future in concurrent.futures.as_completed(future_map):
@@ -1125,18 +1133,28 @@ def process_parsing_task(self, task_id):
                     update_progress(source='emex', step_increment=1)
                 except Exception as e:
                     log(f"Ошибка обработки Emex для {rec[3]}: {str(e)}")
+        
+        # Очистка после Emex
+        log("Очистка Chrome процессов и пула драйверов после Emex")
+        cleanup_chrome_processes()
+        cleanup_driver_pool()
+        gc.collect()
+        time.sleep(0.5)
+        
         # После завершения Emex обновляем БД
         task.sources['_meta']['progress_emex'] = 100
         task.sources['_meta']['processed_emex'] = task._total_emex
         task.sources['_meta']['total_emex'] = task._total_emex
         update_task_fields(sources=task.sources)
         ws_send()
-
+        
         # ===== ТРЕТИЙ ПРОХОД: ТОЛЬКО ARMTEK =====
-        # Используем 1 поток для стабильности
         armtek_workers = 1
         log(f"Начинаем обработку всех артикулов через ARMTEK ({len(all_records)} шт.), потоков: {armtek_workers}")
-
+        
+        armtek_counter = 0
+        ARMTEK_CLEANUP_INTERVAL = int(os.getenv("ARMTEK_CLEANUP_INTERVAL", "3"))
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=armtek_workers) as executor:
             future_map = {executor.submit(process_single_record_for_source, 'armtek', rec): rec for rec in all_records}
             for future in concurrent.futures.as_completed(future_map):
@@ -1144,8 +1162,24 @@ def process_parsing_task(self, task_id):
                 try:
                     results_armtek.extend(future.result())
                     update_progress(source='armtek', step_increment=1)
+                    
+                    armtek_counter += 1
+                    if armtek_counter % ARMTEK_CLEANUP_INTERVAL == 0:
+                        log(f"Периодическая очистка Chrome процессов (каждые {ARMTEK_CLEANUP_INTERVAL} артикулов)")
+                        cleanup_chrome_processes()
+                        cleanup_driver_pool()
+                        gc.collect()
+                        
                 except Exception as e:
                     log(f"Ошибка обработки Armtek для {rec[3]}: {str(e)}")
+        
+        # Очистка после Armtek
+        log("Очистка Chrome процессов и пула драйверов после Armtek")
+        cleanup_chrome_processes()
+        cleanup_driver_pool()
+        gc.collect()
+        time.sleep(0.5)
+        
         # После завершения Armtek обновляем БД
         task.sources['_meta']['progress_armtek'] = 100
         task.sources['_meta']['processed_armtek'] = task._total_armtek

@@ -267,20 +267,29 @@ def _autopiter_page_blocked(page_source: str) -> bool:
 def looks_like_analytics_garbage_token(text: str) -> bool:
     """Отсекает случайные JS/analytics-токены вроде LDwBSShMoYhCzEpEE."""
     s = (text or '').strip()
-    if len(s) < 10 or ' ' in s:
+    if len(s) < 8 or ' ' in s:
         return False
     if not re.fullmatch(r'[A-Za-z0-9_-]+', s):
         return False
     letters = sum(1 for c in s if c.isalpha())
-    if letters < 8:
+    if letters < 6:
         return False
     has_upper = any(c.isupper() for c in s)
     has_lower = any(c.islower() for c in s)
     has_digit = any(c.isdigit() for c in s)
     vowels = sum(1 for c in s.lower() if c in 'aeiouаеёиоуыэюя')
-    if has_upper and has_lower and has_digit and len(s) >= 14:
+    
+    # Если есть заглавные, строчные и цифры, и длиннее 10 — вероятно токен
+    if has_upper and has_lower and has_digit and len(s) >= 12:
         return True
-    if letters >= 10 and vowels <= 1:
+    # Если гласных почти нет и много заглавных — вероятно хеш/класс
+    if letters >= 8 and vowels <= 1:
+        return True
+    # Если строка состоит только из заглавных и цифр и длиннее 8
+    if re.fullmatch(r'[A-Z0-9]{8,}', s):
+        return True
+    # Если есть подряд идущие заглавные буквы (3+), но нет строчных — CSS-класс
+    if re.search(r'[A-Z]{3,}', s) and not re.search(r'[a-z]', s) and len(s) > 5:
         return True
     return False
 
@@ -552,25 +561,10 @@ def return_driver_to_pool(driver: webdriver.Chrome):
     
     try:
         # Проверяем, жив ли драйвер
-        ce = getattr(driver, "command_executor", None)
-        old_http_timeout = None
-        health_ok = False
         try:
-            if ce is not None and hasattr(ce, "get_timeout"):
-                old_http_timeout = ce.get_timeout()
-                ce.set_timeout(_selenium_pool_health_check_timeout_seconds())
             _ = driver.title
-            health_ok = True
         except Exception:
-            health_ok = False
-        finally:
-            if ce is not None and hasattr(ce, "set_timeout"):
-                try:
-                    ce.set_timeout(old_http_timeout)
-                except Exception:
-                    pass
-
-        if not health_ok:
+            # Драйвер мёртв, закрываем и удаляем
             try:
                 driver.quit()
             except Exception:
@@ -622,7 +616,7 @@ def return_driver_to_pool(driver: webdriver.Chrome):
         log_debug(f"Ошибка возврата драйвера в пул: {str(e)}")
         try:
             driver.quit()
-        except:
+        except Exception:
             pass
         DRIVER_LAST_USED.pop(id(driver), None)
         DRIVER_USAGE_COUNT.pop(id(driver), None)
@@ -1652,73 +1646,91 @@ def split_combined_brands(brands: List[str]) -> List[str]:
     return sorted(list(result))
 
 def get_brands_by_artikul_armtek(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] = None, logger=None) -> List[str]:
-	"""Получает бренды с Armtek по артикулу (Selenium + HTTP fallback)."""
-	try:
-		log_debug(f"Armtek: начало обработки артикула {artikul}")
-		proxy_str = _normalize_proxy_arg(proxy)
+    """Получает бренды с Armtek по артикулу (Selenium + HTTP fallback)."""
+    try:
+        log_debug(f"Armtek: начало обработки артикула {artikul}")
+        proxy_str = _normalize_proxy_arg(proxy)
 
-		if not ARMTEK_SELENIUM_DISABLED:
-			# 1) Selenium без прокси — одна попытка (+ повтор только если Chrome жив, но брендов нет)
-			driver_failed = False
-			for selenium_attempt in range(2):
-				brands_sel = parse_armtek_selenium(artikul, None)
-				if brands_sel is None:
-					driver_failed = True
-					_note_armtek_selenium_driver_failure()
-					log_debug(f"Armtek: Chrome недоступен для {artikul}, очистка процессов")
-					cleanup_chrome_processes()
-					time.sleep(3 + selenium_attempt * 2)
-					break
-				if brands_sel:
-					return filter_armtek_brands(split_combined_brands(brands_sel))
-				if selenium_attempt == 0:
-					log_debug(f"Armtek: повтор Selenium для {artikul} после пустого результата")
-					cleanup_driver_pool()
-					time.sleep(0.5)
+        # Сброс счётчика ошибок для каждого нового артикула, если была успешная работа
+        # (но не сбрасываем глобально, а только если падение было давно)
+        
+        # Проверяем, не отключён ли Selenium из-за предыдущих ошибок
+        if not ARMTEK_SELENIUM_DISABLED:
+            # 1) Selenium без прокси — одна попытка
+            driver_failed = False
+            for selenium_attempt in range(2):
+                try:
+                    brands_sel = parse_armtek_selenium(artikul, None, logger)
+                    if brands_sel is None:
+                        driver_failed = True
+                        _note_armtek_selenium_driver_failure()
+                        log_debug(f"Armtek: Chrome недоступен для {artikul}, очистка процессов")
+                        cleanup_chrome_processes()
+                        time.sleep(3 + selenium_attempt * 2)
+                        break
+                    if brands_sel:
+                        return filter_armtek_brands(split_combined_brands(brands_sel))
+                    if selenium_attempt == 0:
+                        log_debug(f"Armtek: повтор Selenium для {artikul} после пустого результата")
+                        time.sleep(0.5)
+                except Exception as e:
+                    log_debug(f"Armtek Selenium попытка {selenium_attempt + 1} ошибка: {e}")
+                    if selenium_attempt == 0:
+                        # При первой ошибке пробуем ещё раз
+                        time.sleep(1)
+                        continue
+                    else:
+                        driver_failed = True
+                        _note_armtek_selenium_driver_failure()
+                        cleanup_chrome_processes()
+                        break
 
-			# 2) Selenium с прокси — только если Chrome жив
-			if not driver_failed and not ARMTEK_SELENIUM_DISABLED:
-				if not proxy_str:
-					proxy_dict = get_next_proxy()
-					proxy_str = _normalize_proxy_arg(proxy_dict)
-					if proxy_str:
-						log_debug(f"Armtek: автоматически получен прокси: {proxy_str}")
-				if proxy_str:
-					brands_sel = parse_armtek_selenium(artikul, proxy_str)
-					if brands_sel is None:
-						_note_armtek_selenium_driver_failure()
-						cleanup_chrome_processes()
-					elif brands_sel:
-						return filter_armtek_brands(split_combined_brands(brands_sel))
+            # 2) Selenium с прокси — только если Chrome жив
+            if not driver_failed and not ARMTEK_SELENIUM_DISABLED:
+                if not proxy_str:
+                    proxy_dict = get_next_proxy()
+                    proxy_str = _normalize_proxy_arg(proxy_dict)
+                    if proxy_str:
+                        log_debug(f"Armtek: автоматически получен прокси: {proxy_str}")
+                if proxy_str:
+                    try:
+                        brands_sel = parse_armtek_selenium(artikul, proxy_str, logger)
+                        if brands_sel is None:
+                            _note_armtek_selenium_driver_failure()
+                            cleanup_chrome_processes()
+                        elif brands_sel:
+                            return filter_armtek_brands(split_combined_brands(brands_sel))
+                    except Exception as e:
+                        log_debug(f"Armtek Selenium с прокси ошибка: {e}")
 
-		# 3) HTTP / API fallback — когда Selenium не поднял Chrome или страница пустая
-		for fallback_name, fallback_fn in (
-			("HTTP", lambda: parse_armtek_http(artikul, proxy_str)),
-			("API", lambda: parse_armtek_api_fallback(artikul, [proxy_str] if proxy_str else None)),
-		):
-			try:
-				fallback_brands = fallback_fn()
-				if fallback_brands:
-					filtered = filter_armtek_brands(split_combined_brands(fallback_brands))
-					if filtered:
-						log_debug(
-							f"Armtek {fallback_name} fallback: найдено {len(filtered)} брендов для {artikul}"
-						)
-						return filtered
-			except Exception as e:
-				log_debug(f"Armtek {fallback_name} fallback ошибка для {artikul}: {e}")
+        # 3) HTTP / API fallback — когда Selenium не поднял Chrome или страница пустая
+        for fallback_name, fallback_fn in (
+            ("HTTP", lambda: parse_armtek_http(artikul, proxy_str)),
+            ("API", lambda: parse_armtek_api_fallback(artikul, [proxy_str] if proxy_str else None)),
+        ):
+            try:
+                fallback_brands = fallback_fn()
+                if fallback_brands:
+                    filtered = filter_armtek_brands(split_combined_brands(fallback_brands))
+                    if filtered:
+                        log_debug(
+                            f"Armtek {fallback_name} fallback: найдено {len(filtered)} брендов для {artikul}"
+                        )
+                        return filtered
+            except Exception as e:
+                log_debug(f"Armtek {fallback_name} fallback ошибка для {artikul}: {e}")
 
-		msg = f"Armtek: бренды не найдены для {artikul}"
-		log_debug(msg)
-		if logger:
-			try:
-				logger(msg)
-			except Exception:
-				pass
-		return []
-	except Exception as e:
-		log_debug(f"Ошибка Armtek для {artikul}: {str(e)}")
-		return []
+        msg = f"Armtek: бренды не найдены для {artikul}"
+        log_debug(msg)
+        if logger:
+            try:
+                logger(msg)
+            except Exception:
+                pass
+        return []
+    except Exception as e:
+        log_debug(f"Ошибка Armtek для {artikul}: {str(e)}")
+        return []
 
 def parse_armtek_api(artikul: str, proxies: Optional[Dict] = None) -> List[str]:
     """Попытка получить данные через API Armtek"""
@@ -1911,143 +1923,193 @@ def _get_armtek_ui_garbage() -> frozenset:
 
 
 def _armtek_brand_text_is_valid(text: str) -> bool:
-	"""Проверка, что строка похожа на бренд, а не на UI/артикул."""
-	brand = (text or '').strip()
-	if not brand or len(brand) < 2 or len(brand) > 50:
-		return False
-	low = brand.lower()
-	if low in _get_armtek_ui_garbage():
-		return False
-	if brand.isdigit():
-		return False
-	if re.fullmatch(r'[\d\s\-./]+', brand):
-		return False
-	digits = sum(1 for c in brand if c.isdigit())
-	if digits >= 3 and digits / max(len(brand), 1) > 0.55:
-		return False
-	if brand[0].isdigit() and len(brand) > 4:
-		return False
-	return True
+    """Проверка, что строка похожа на бренд, а не на UI/артикул/мусор."""
+    brand = (text or '').strip()
+    if not brand or len(brand) < 2 or len(brand) > 50:
+        return False
+    low = brand.lower()
+    if low in _get_armtek_ui_garbage():
+        return False
+    if brand.isdigit():
+        return False
+    if re.fullmatch(r'[\d\s\-./]+', brand):
+        return False
+    digits = sum(1 for c in brand if c.isdigit())
+    if digits >= 3 and digits / max(len(brand), 1) > 0.55:
+        return False
+    if brand[0].isdigit() and len(brand) > 4:
+        return False
+    
+    # НОВЫЕ ПРОВЕРКИ ДЛЯ ОТСЕИВАНИЯ МУСОРА:
+    
+    # 1. Строка похожа на аналитический токен
+    if looks_like_analytics_garbage_token(brand):
+        return False
+    
+    # 2. Строка состоит только из заглавных латинских букв и цифр длиннее 8 без гласных
+    if re.match(r'^[A-Z0-9]{8,}$', brand):
+        vowel_count = sum(1 for c in brand if c in 'AEIOUY')
+        if vowel_count <= 1:
+            return False
+    
+    # 3. Строка содержит подряд более 3 заглавных букв, если это не аббревиатура (≤ 5 символов)
+    if len(brand) > 5 and re.search(r'[A-Z]{4,}', brand) and not re.search(r'[a-z]', brand):
+        return False
+    
+    # 4. Строка начинается со спецсимвола или подчёркивания
+    if re.match(r'^[_\-\.]', brand):
+        return False
+    
+    # 5. Строка содержит CSS-подобные паттерны (например, ng-*, _ng-*)
+    if re.match(r'^_?ng[-_][a-z]', brand, re.IGNORECASE):
+        return False
+    
+    # 6. Строка содержит слишком много спецсимволов
+    special_chars = sum(1 for c in brand if c in '_-./')
+    if special_chars > len(brand) * 0.3 and len(brand) > 10:
+        return False
+    
+    # 7. Строка является распространённым CSS-классом
+    css_common = {'font__body2', 'font_body2', 'font__caption1', 'brand--selecting', 'brand--selectable'}
+    if low in css_common:
+        return False
+    
+    return True
 
 
 def _armtek_parse_results_sections(driver) -> Dict[str, object]:
-	"""Состояние секций Armtek: только заголовки внутри .results-list__items."""
-	default: Dict[str, object] = {
-		"has_target": False,
-		"has_replacements": False,
-		"only_replacements": False,
-		"driver_crashed": False,
-		"brands": [],
-	}
-	try:
-		raw = driver.execute_script(
-			"""
-			const brandSelector = arguments[0];
-			const garbageList = arguments[1] || [];
-			const root = document.querySelector('.results-list__items');
-			if (!root) {
-				return {hasTarget: false, hasReplacements: false, onlyReplacements: false, brands: []};
-			}
-			const garbage = new Set(garbageList.map(s => String(s).toLowerCase()));
-			function isBrandText(text) {
-				if (!text) return false;
-				const t = text.trim();
-				if (t.length < 2 || t.length > 50) return false;
-				const low = t.toLowerCase();
-				if (garbage.has(low)) return false;
-				if (/^\\d+$/.test(t)) return false;
-				if (/^[\\d\\s\\-./]+$/.test(t)) return false;
-				const digits = (t.match(/\\d/g) || []).length;
-				if (digits >= 3 && digits / t.length > 0.55) return false;
-				if (/^\\d/.test(t) && t.length > 4) return false;
-				return true;
-			}
-			function isBetween(el, start, end) {
-				if (start && !(start.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
-				if (end && !(end.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING)) return false;
-				return true;
-			}
-			function collectBrands(container, start, end) {
-				const brands = [];
-				const cardSelectors = [
-					'app-article-card-tile',
-					'project-ui-article-card',
-					'project-ui-article-card-with-suggestions',
-				];
-				for (const cardSel of cardSelectors) {
-					for (const card of container.querySelectorAll(cardSel)) {
-						if (start !== null || end !== null) {
-							if (!isBetween(card, start, end)) continue;
-						}
-						for (const span of card.querySelectorAll(brandSelector)) {
-							const text = (span.textContent || '').trim();
-							if (isBrandText(text)) brands.push(text);
-						}
-					}
-				}
-				for (const span of container.querySelectorAll(
-					'div.item.item-mobile span.brand--selecting, div.item.item-mobile span.brand--selectable'
-				)) {
-					if (start !== null || end !== null) {
-						if (!isBetween(span, start, end)) continue;
-					}
-					const text = (span.textContent || '').trim();
-					if (isBrandText(text)) brands.push(text);
-				}
-				return brands;
-			}
-			const headers = [...root.querySelectorAll('div.results-list__divider p.font__headline6')];
-			let targetHeader = null;
-			let replHeader = null;
-			for (const h of headers) {
-				const t = (h.textContent || '').trim().toLowerCase();
-				if (t.includes('искомый товар')) targetHeader = h;
-				if (t.includes('возможные замены')) replHeader = h;
-			}
-			const hasTarget = !!targetHeader;
-			const hasReplacements = !!replHeader;
-			if (!hasTarget) {
-				const brands = collectBrands(root, null, null);
-				return {
-					hasTarget: false,
-					hasReplacements,
-					onlyReplacements: hasReplacements && brands.length === 0,
-					brands: [...new Set(brands)],
-				};
-			}
-			const brands = collectBrands(root, targetHeader, replHeader);
-			return {
-				hasTarget: true,
-				hasReplacements,
-				onlyReplacements: false,
-				brands: [...new Set(brands)],
-			};
-			""",
-			_ARMTEK_BRAND_SPAN_SELECTOR,
-			list(_get_armtek_ui_garbage()),
-		)
-		if not isinstance(raw, dict):
-			return default
-		return {
-			"has_target": bool(raw.get("hasTarget")),
-			"has_replacements": bool(raw.get("hasReplacements")),
-			"only_replacements": bool(raw.get("onlyReplacements")),
-			"brands": list(raw.get("brands") or []),
-		}
-	except Exception as e:
-		log_debug(f"Armtek Selenium: ошибка чтения секций результатов: {e}")
-		if _is_selenium_fatal_error(e):
-			return {**default, "driver_crashed": True}
-		return default
+    """Состояние секций Armtek: только заголовки внутри .results-list__items."""
+    default: Dict[str, object] = {
+        "has_target": False,
+        "has_replacements": False,
+        "only_replacements": False,
+        "driver_crashed": False,
+        "brands": [],
+    }
+    try:
+        # Устанавливаем короткий таймаут для выполнения JS
+        old_timeout = None
+        try:
+            old_timeout = driver.timeouts.get_script_timeout()
+            driver.set_script_timeout(10)  # 10 секунд на выполнение JS
+        except Exception:
+            pass
+            
+        raw = driver.execute_script(
+            """
+            const brandSelector = arguments[0];
+            const garbageList = arguments[1] || [];
+            const root = document.querySelector('.results-list__items');
+            if (!root) {
+                return {hasTarget: false, hasReplacements: false, onlyReplacements: false, brands: []};
+            }
+            const garbage = new Set(garbageList.map(s => String(s).toLowerCase()));
+            function isBrandText(text) {
+                if (!text) return false;
+                const t = text.trim();
+                if (t.length < 2 || t.length > 50) return false;
+                const low = t.toLowerCase();
+                if (garbage.has(low)) return false;
+                if (/^\\d+$/.test(t)) return false;
+                if (/^[\\d\\s\\-./]+$/.test(t)) return false;
+                const digits = (t.match(/\\d/g) || []).length;
+                if (digits >= 3 && digits / t.length > 0.55) return false;
+                if (/^\\d/.test(t) && t.length > 4) return false;
+                return true;
+            }
+            function isBetween(el, start, end) {
+                if (start && !(start.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
+                if (end && !(end.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING)) return false;
+                return true;
+            }
+            function collectBrands(container, start, end) {
+                const brands = [];
+                const cardSelectors = [
+                    'app-article-card-tile',
+                    'project-ui-article-card',
+                    'project-ui-article-card-with-suggestions',
+                ];
+                for (const cardSel of cardSelectors) {
+                    for (const card of container.querySelectorAll(cardSel)) {
+                        if (start !== null || end !== null) {
+                            if (!isBetween(card, start, end)) continue;
+                        }
+                        for (const span of card.querySelectorAll(brandSelector)) {
+                            const text = (span.textContent || '').trim();
+                            if (isBrandText(text)) brands.push(text);
+                        }
+                    }
+                }
+                for (const span of container.querySelectorAll(
+                    'div.item.item-mobile span.brand--selecting, div.item.item-mobile span.brand--selectable'
+                )) {
+                    if (start !== null || end !== null) {
+                        if (!isBetween(span, start, end)) continue;
+                    }
+                    const text = (span.textContent || '').trim();
+                    if (isBrandText(text)) brands.push(text);
+                }
+                return brands;
+            }
+            const headers = [...root.querySelectorAll('div.results-list__divider p.font__headline6')];
+            let targetHeader = null;
+            let replHeader = null;
+            for (const h of headers) {
+                const t = (h.textContent || '').trim().toLowerCase();
+                if (t.includes('искомый товар')) targetHeader = h;
+                if (t.includes('возможные замены')) replHeader = h;
+            }
+            const hasTarget = !!targetHeader;
+            const hasReplacements = !!replHeader;
+            if (!hasTarget) {
+                const brands = collectBrands(root, null, null);
+                return {
+                    hasTarget: false,
+                    hasReplacements,
+                    onlyReplacements: hasReplacements && brands.length === 0,
+                    brands: [...new Set(brands)],
+                };
+            }
+            const brands = collectBrands(root, targetHeader, replHeader);
+            return {
+                hasTarget: true,
+                hasReplacements,
+                onlyReplacements: false,
+                brands: [...new Set(brands)],
+            };
+            """,
+            _ARMTEK_BRAND_SPAN_SELECTOR,
+            list(_get_armtek_ui_garbage()),
+        )
+        
+        # Восстанавливаем таймаут
+        try:
+            if old_timeout is not None:
+                driver.set_script_timeout(old_timeout)
+        except Exception:
+            pass
+            
+        if not isinstance(raw, dict):
+            return default
+        return {
+            "has_target": bool(raw.get("hasTarget")),
+            "has_replacements": bool(raw.get("hasReplacements")),
+            "only_replacements": bool(raw.get("onlyReplacements")),
+            "brands": list(raw.get("brands") or []),
+        }
+    except Exception as e:
+        log_debug(f"Armtek Selenium: ошибка чтения секций результатов: {e}")
+        # Не считаем это критической ошибкой драйвера
+        return {**default, "driver_crashed": False}
 
 
 def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str]]] = None, logger=None) -> Optional[List[str]]:
-    """Selenium-парсинг Armtek (всегда новый драйвер). None — не удалось запустить Chrome; [] — бренды не найдены."""
+    """Selenium-парсинг Armtek. None — не удалось запустить Chrome; [] — бренды не найдены."""
     global ARMTEK_SELENIUM_FAILURES, ARMTEK_SELENIUM_DISABLED
     
     brands: Set[str] = set()
     driver = None
-    driver_broken = False
+    driver_from_pool = False
     proxy_str = _normalize_proxy_arg(proxy)
     temp_dir = None
     
@@ -2056,14 +2118,18 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
 
         effective_proxy = None if (proxy_str and '@' in proxy_str) else proxy_str
 
-        # 2) Используем пул драйверов
+        # Получаем драйвер из пула
         log_debug("Armtek Selenium: получаем драйвер из пула")
         driver = get_driver_from_pool()
-        if driver is None:
+        if driver is not None:
+            driver_from_pool = True
+            log_debug("Armtek Selenium: драйвер получен из пула")
+        else:
             # Если пул пуст – создаём новый
             temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_{uuid.uuid4().hex[:8]}_")
             log_debug("Armtek Selenium: пул пуст, создаём новый драйвер")
             driver = _create_chrome_driver_robust(temp_dir, effective_proxy)
+            driver_from_pool = False
 
         if driver is None:
             log_debug("Armtek Selenium: не удалось создать драйвер")
@@ -2073,32 +2139,29 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
         url = f"https://armtek.ru/search?text={artikul}"
         log_debug(f"Armtek Selenium: загружаем URL {url}")
 
-        # 3) Загрузка страницы с retry
+        # Загрузка страницы с retry
+        page_loaded = False
         for page_attempt in range(DRIVER_TIMEOUT_RETRIES):
             try:
                 driver.get(url)
                 log_debug(f"Armtek Selenium: страница загружена, попытка {page_attempt + 1}")
+                page_loaded = True
                 break
             except Exception as e:
                 error_msg = str(e)
                 log_debug(f"Попытка {page_attempt + 1} загрузки страницы: {error_msg}")
                 lower_msg = error_msg.lower()
-                if (
-                    "tab crashed" in lower_msg
-                    or "chrome not reachable" in lower_msg
-                    or "connection refused" in lower_msg
-                    or "timed out receiving message from renderer" in lower_msg
-                    or "script timeout" in lower_msg
-                    or "httpconnectionpool" in lower_msg
-                    or "read timed out" in lower_msg
-                ):
-                    log_debug("Критическая ошибка Chrome, пересоздаём драйвер")
-                    driver_broken = True
-                    try:
-                        driver.quit()
-                    except Exception:
-                        pass
-                    # Создаём новый драйвер
+                if "tab crashed" in lower_msg or "chrome not reachable" in lower_msg:
+                    log_debug("Критическая ошибка Chrome, пытаемся восстановить")
+                    # Если драйвер из пула и упал, помечаем как битый
+                    if driver_from_pool:
+                        try:
+                            driver.quit()
+                        except Exception:
+                            pass
+                        driver = None
+                        driver_from_pool = False
+                    # Пробуем создать новый драйвер
                     if temp_dir:
                         try:
                             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -2110,16 +2173,24 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
                         log_debug("Не удалось пересоздать драйвер")
                         return None
                     log_debug("Создан новый драйвер после критической ошибки")
-                    driver_broken = False
-                    driver.get(url)
-                    break
+                    try:
+                        driver.get(url)
+                        page_loaded = True
+                        break
+                    except Exception:
+                        if page_attempt < DRIVER_TIMEOUT_RETRIES - 1:
+                            time.sleep(2)
+                        continue
                 if page_attempt < DRIVER_TIMEOUT_RETRIES - 1:
                     time.sleep(2)
                 else:
                     log_debug("Не удалось загрузить страницу после всех попыток")
                     return []
 
-        # 4) Ожидание загрузки результатов (код остаётся без изменений)
+        if not page_loaded:
+            return []
+
+        # Ожидание загрузки результатов
         wait = WebDriverWait(driver, SELENIUM_TIMEOUT)
         selectors_to_wait = [
             (By.CSS_SELECTOR, '.results'),
@@ -2135,45 +2206,23 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
             (By.CSS_SELECTOR, '[class*="result"]'),
             (By.CSS_SELECTOR, '[class*="item"]'),
         ]
-        page_loaded = False
+        page_ready = False
         max_attempts = min(5, len(selectors_to_wait))
         for i, (by, sel) in enumerate(selectors_to_wait[:max_attempts]):
             try:
                 wait.until(EC.visibility_of_any_elements_located((by, sel)))
                 log_debug(f"Armtek Selenium: найден элемент {sel}")
-                page_loaded = True
+                page_ready = True
                 break
             except Exception as e:
                 log_debug(f"Armtek Selenium: элемент {sel} не найден: {str(e)}")
                 continue
 
-        if not page_loaded:
+        if not page_ready:
             log_debug("Armtek Selenium: страница не загрузилась или нет результатов")
-            try:
-                html_content = driver.page_source
-                debug_file = f"/tmp/armtek_debug_{artikul}.html"
-                with open(debug_file, 'w', encoding='utf-8') as f:
-                    f.write(html_content)
-                log_debug(f"Armtek Selenium: HTML сохранен в {debug_file}")
-            except Exception as e:
-                log_debug(f"Armtek Selenium: не удалось сохранить HTML: {str(e)}")
-            try:
-                WebDriverWait(driver, 2).until(lambda d: d.execute_script("return document.readyState") == "complete")
-                log_debug("Armtek Selenium: страница загружена, но нет ожидаемых элементов")
-            except Exception:
-                log_debug("Armtek Selenium: страница не загрузилась полностью")
-                return []
+            return []
 
-        # 5) Быстрая прокрутка
-        try:
-            driver.execute_script('window.scrollTo(0, document.body.scrollHeight/2);')
-            time.sleep(0.05)
-            driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
-            time.sleep(0.05)
-        except Exception:
-            pass
-
-        # 6) Проверка "ничего не найдено"
+        # Проверка "ничего не найдено"
         try:
             nf = driver.find_elements(By.CSS_SELECTOR, 'div.not-found__title p.font__headline5, p.font__headline5')
             if not nf:
@@ -2190,38 +2239,33 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
         except Exception:
             pass
 
-        # 7) Секции «Искомый товар» / «Возможные замены»
+        # Быстрая прокрутка
+        try:
+            driver.execute_script('window.scrollTo(0, document.body.scrollHeight/2);')
+            time.sleep(0.05)
+            driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+            time.sleep(0.05)
+        except Exception:
+            pass
+
+        # Чтение секций с мягким таймаутом
         try:
             _armtek_wait_for_results(driver, max(12.0, float(SELENIUM_TIMEOUT) + 4.0))
         except Exception:
             pass
 
-        section_state = _armtek_parse_results_sections(driver)
-        if section_state.get("driver_crashed"):
-            log_debug(f"Armtek Selenium: Chrome упал при чтении секций для {artikul}, пересоздаём драйвер")
-            driver_broken = True
-            try:
-                driver.quit()
-            except Exception:
-                pass
-                # Создаём новый
-            if temp_dir:
-                try:
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                except Exception:
-                    pass
-            temp_dir = tempfile.mkdtemp(prefix=f"chrome_armtek_{uuid.uuid4().hex[:8]}_")
-            driver = _create_chrome_driver_robust(temp_dir, effective_proxy)
-            if driver is None:
-                return None
-            driver_broken = False
-            driver.get(url)
-            _armtek_wait_for_results(driver, max(8.0, float(SELENIUM_TIMEOUT) + 4.0))
+        # Пытаемся прочитать секции, но с защитой от зависания
+        section_state = {}
+        try:
+            # Устанавливаем короткий таймаут для execute_script
+            driver.set_script_timeout(10)
             section_state = _armtek_parse_results_sections(driver)
-
-        if not section_state.get("brands") and section_state.get("has_target"):
-            time.sleep(0.4)
-            section_state = _armtek_parse_results_sections(driver)
+            # Восстанавливаем таймаут
+            driver.set_script_timeout(max(20, PAGE_LOAD_TIMEOUT))
+        except Exception as e:
+            log_debug(f"Armtek Selenium: ошибка чтения секций: {e}")
+            # Если ошибка похожа на таймаут, не пересоздаём драйвер, а просто пытаемся собрать бренды напрямую
+            section_state = {"has_target": False, "has_replacements": False, "only_replacements": False, "brands": []}
 
         if section_state.get("only_replacements"):
             msg = f"Armtek Selenium: для {artikul} есть только 'Возможные замены' — пропускаем"
@@ -2233,7 +2277,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
                     pass
             return []
 
-        # 8) Сбор брендов из секции "Искомый товар"
+        # Сбор брендов из секции "Искомый товар"
         for brand_text in section_state.get("brands") or []:
             text = str(brand_text).strip()
             if _armtek_brand_text_is_valid(text):
@@ -2245,12 +2289,7 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
             ARMTEK_SELENIUM_FAILURES = 0
             return filtered_early
 
-        has_target_section = bool(section_state.get("has_target"))
-        if has_target_section:
-            log_debug(f"Armtek Selenium: секция 'Искомый товар' есть, но валидные бренды не найдены")
-            return []
-
-        # 9) Fallback: поиск по точным селекторам
+        # Если в секции не нашли, пробуем точные селекторы
         exact_selectors = [
             'app-article-card-tile span.font__caption1.brand--selectable',
             'app-article-card-tile span.font__body2.brand--selecting',
@@ -2258,102 +2297,93 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
             'project-ui-article-card-with-suggestions span.font__body2.brand--selecting',
             '.pin-brand-name span.font__caption1.brand--selectable',
         ]
-        log_debug(f"Armtek Selenium: поиск брендов по {len(exact_selectors)} селекторам")
+        
         for selector in exact_selectors:
             try:
                 elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                log_debug(f"Armtek Selenium: найдено {len(elements)} элементов по '{selector}'")
                 for el in elements:
                     text = el.text.strip()
                     if text and _armtek_brand_text_is_valid(text):
                         brands.add(text)
-                        log_debug(f"Armtek Selenium: найден бренд '{text}'")
                 if len(brands) >= 3:
                     break
-            except Exception as e:
-                log_debug(f"Armtek Selenium: ошибка селектора {selector}: {str(e)}")
-                if _is_selenium_fatal_error(e):
-                    driver_broken = True
-                    break
-
-        # 10) Упрощённый поиск и HTML-эвристика (оставляем как было)
-        if not brands and not driver_broken:
-            log_debug("Armtek Selenium: точные селекторы не дали результатов, пробуем упрощённый поиск")
-            simple_selectors = [
-                'app-article-card-tile span.font__caption1.brand--selectable',
-                'project-ui-article-card span.font__body2.brand--selecting',
-            ]
-            for selector in simple_selectors:
-                try:
-                    elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                    for el in elements:
-                        text = el.text.strip()
-                        if text and _armtek_brand_text_is_valid(text):
-                            if text.isalpha() or (len(text) <= 15 and any(c.isalpha() for c in text)):
-                                brands.add(text)
-                    if brands:
-                        break
-                except Exception:
-                    pass
-
-        if not brands:
-            log_debug("Armtek Selenium: пробуем XPath и HTML-эвристику")
-            try:
-                xpath_elems = driver.find_elements(
-                    By.XPATH,
-                    "//app-article-card-tile//span[contains(@class,'brand--selectable')]"
-                    " | //project-ui-article-card//span[contains(@class,'brand--selecting')]"
-                    " | //project-ui-article-card-with-suggestions//span[contains(@class,'brand--selecting')]",
-                )
-                for el in xpath_elems:
-                    text = (el.text or '').strip()
-                    if _armtek_brand_text_is_valid(text):
-                        brands.add(text)
             except Exception:
-                pass
-
-            if not brands:
-                try:
-                    page_source = driver.page_source
-                    html_brands = parse_armtek_page_text(page_source, artikul)
-                    if html_brands:
-                        brands.update(html_brands)
-                        log_debug(f"Armtek Selenium: найдено {len(html_brands)} брендов из HTML")
-                except Exception:
-                    pass
+                continue
 
         if brands:
-            ARMTEK_SELENIUM_FAILURES = 0
+            filtered_result = filter_armtek_brands(list(brands))
+            if filtered_result:
+                log_debug(f"Armtek Selenium: итого найдено {len(filtered_result)} брендов по селекторам")
+                ARMTEK_SELENIUM_FAILURES = 0
+                return filtered_result
 
-        filtered_result = filter_armtek_brands(list(brands))
-        if filtered_result:
-            log_debug(f"Armtek Selenium: итого найдено {len(filtered_result)} брендов")
-        else:
-            log_debug(f"Armtek Selenium: бренды не найдены")
-        return filtered_result
+        # ПОСЛЕДНЯЯ ПОПЫТКА: ограниченная HTML-эвристика ТОЛЬКО из секции результатов
+        log_debug("Armtek Selenium: точные селекторы не дали результатов, пробуем ограниченную HTML-эвристику")
+        try:
+            # Ищем только в секции результатов, а не во всей странице
+            results_section = driver.find_elements(By.CSS_SELECTOR, '.results-list__items, .search-results, .results')
+            if results_section:
+                section_html = results_section[0].get_attribute('innerHTML')
+                html_brands = parse_armtek_page_text(section_html, artikul)
+                
+                # Жёсткая фильтрация
+                for brand in html_brands:
+                    if _armtek_brand_text_is_valid(brand) and not looks_like_analytics_garbage_token(brand):
+                        # Дополнительная проверка на мусорные строки
+                        if re.match(r'^[A-Z0-9]{10,}$', brand):
+                            continue
+                        if brand.lower() in ['armtek', 'поиск', 'каталог', 'корзина', 'войти', 'регистрация']:
+                            continue
+                        brands.add(brand)
+                
+                if brands:
+                    filtered_result = filter_armtek_brands(list(brands))
+                    if filtered_result:
+                        log_debug(f"Armtek Selenium: найдено {len(filtered_result)} брендов из секции результатов")
+                        ARMTEK_SELENIUM_FAILURES = 0
+                        return filtered_result
+            else:
+                log_debug("Секция результатов не найдена, эвристика не применяется")
+        except Exception as e:
+            log_debug(f"Armtek Selenium: ошибка при HTML-эвристике: {e}")
+
+        log_debug(f"Armtek Selenium: бренды не найдены для {artikul}")
+        return []
 
     except Exception as e:
         log_debug(f"Ошибка в parse_armtek_selenium для {artikul}: {str(e)}")
         if _is_selenium_fatal_error(e) or _is_chrome_resource_error(e):
-            driver_broken = True
             _note_armtek_selenium_driver_failure()
-        return None
+        return []
 
     finally:
-        # Просто закрываем драйвер, игнорируя все ошибки
+        # Закрываем драйвер или возвращаем в пул
         if driver is not None:
             try:
-                driver.quit()
+                if driver_from_pool:
+                    # Возвращаем в пул, если драйвер жив
+                    try:
+                        _ = driver.title
+                        return_driver_to_pool(driver)
+                    except Exception:
+                        # Если драйвер мёртв, просто закрываем
+                        try:
+                            driver.quit()
+                        except Exception:
+                            pass
+                else:
+                    # Закрываем драйвер, созданный специально для этого запроса
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
             except Exception:
-                pass
-            # Удаляем из учёта, если есть
-            try:
-                driver_id = id(driver)
-                DRIVER_LAST_USED.pop(driver_id, None)
-                DRIVER_USAGE_COUNT.pop(driver_id, None)
-            except Exception:
-                pass
-        # Очищаем временную директорию
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+
+        # Очищаем временную директорию, если она была создана
         if temp_dir:
             try:
                 shutil.rmtree(temp_dir, ignore_errors=True)
@@ -2519,7 +2549,18 @@ def parse_armtek_page_text(page_text: str, artikul: str) -> set:
     from .brand_config import get_armtek_ui_garbage, get_armtek_extra_garbage
     brands = set()
     garbage_words = get_armtek_ui_garbage() | get_armtek_extra_garbage()
-    # Паттерны для поиска брендов в HTML атрибутах
+    
+    # ===== ДОБАВИТЬ: дополнительные стоп-слова =====
+    extra_stop_words = {
+        'armtek', 'armtek.ru', 'поиск', 'каталог', 'корзина', 'войти', 'регистрация',
+        'результаты', 'показать', 'фильтр', 'сортировать', 'назад', 'далее',
+        'страница', 'всего', 'товаров', 'найдено', 'ничего не найдено',
+        'загрузка', 'пожалуйста', 'подождите', 'ошибка', 'произошла', 'попробуйте',
+        'снова', 'позже', 'извините', 'сервис', 'временно', 'недоступен',
+    }
+    garbage_words = garbage_words | extra_stop_words
+    
+    # Паттерны для поиска брендов в HTML атрибутах (без изменений)
     brand_patterns = [
         r'data-brand="([^"]+)"',
         r'brand["\s]*[:=]\s*["\']([^"\']+)["\']',
@@ -2534,15 +2575,30 @@ def parse_armtek_page_text(page_text: str, artikul: str) -> set:
         for match in re.findall(pattern, page_text, re.IGNORECASE):
             if match and len(match) > 1 and len(match) < 50:
                 brand = match.strip()
-                if brand.lower() not in garbage_words:
-                    brands.add(brand)
+                brand_lower = brand.lower()
+                if brand_lower not in garbage_words and brand not in garbage_words:
+                    # Дополнительная проверка: не должно быть похоже на URL или системное сообщение
+                    if not re.search(r'[а-яА-Я]{5,}', brand) or re.match(r'^[a-zа-я]{1,3}\d{3,}[a-zа-я]?$', brand, re.IGNORECASE):
+                        # если короткая строка с цифрами или просто цифры
+                        if any(c.isdigit() for c in brand) and len(brand) < 6:
+                            continue
+                        brands.add(brand)
     
     # Дополнительная эвристика: слова-бренды (латиница/кириллица) с улучшенной фильтрацией
     for word in re.findall(r'\b[А-ЯЁA-Z][А-ЯЁA-Zа-яёa-z0-9-]{1,19}\b', page_text):
+        word_lower = word.lower()
         if (len(word) > 1 and len(word) < 50 and 
             not word.isdigit() and 
-            word.lower() not in garbage_words and
-            not any(char.isdigit() for char in word[:2])):  # Исключаем артикулы
+            word_lower not in garbage_words and
+            word not in garbage_words and
+            not any(char.isdigit() for char in word[:2]) and  # Исключаем артикулы
+            # Не должно содержать только заглавные буквы и цифры (похоже на артикул/код)
+            not re.match(r'^[A-Z0-9]+$', word) and
+            # Не должно быть просто одним словом, повторяющимся внутри бренда
+            len(word) > 2):
+            # Если слово состоит только из заглавных латинских букв и длиннее 5 символов – пропускаем
+            if re.match(r'^[A-Z]{6,}$', word):
+                continue
             brands.add(word)
     
     return brands

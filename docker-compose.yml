@@ -107,8 +107,8 @@ services:
       - PYTHONUNBUFFERED=1
       - CHROME_MAX_PROCESSES=10
       - ARMTEK_CLEANUP_INTERVAL=3
-      - SELENIUM_TIMEOUT=15
-      - PAGE_LOAD_TIMEOUT=20
+      - SELENIUM_TIMEOUT=30
+      - PAGE_LOAD_TIMEOUT=40
       - EMEX_USE_PROXY=1
     restart: always
     deploy:
