@@ -14,46 +14,43 @@ class CrossReferenceSerializer(serializers.ModelSerializer):
 class ParsingTaskSerializer(serializers.ModelSerializer):
     file_name = serializers.SerializerMethodField()
     progress = serializers.SerializerMethodField()
+    progress_autopiter = serializers.SerializerMethodField()
+    progress_emex = serializers.SerializerMethodField()
+    progress_armtek = serializers.SerializerMethodField()
+    processed_autopiter = serializers.SerializerMethodField()
+    total_autopiter = serializers.SerializerMethodField()
+    processed_emex = serializers.SerializerMethodField()
+    total_emex = serializers.SerializerMethodField()
+    processed_armtek = serializers.SerializerMethodField()
+    total_armtek = serializers.SerializerMethodField()
     current_row = serializers.SerializerMethodField()
     total_rows = serializers.SerializerMethodField()
     processed_rows = serializers.SerializerMethodField()
     current_number = serializers.SerializerMethodField()
     total_cross_numbers = serializers.SerializerMethodField()
     processed_cross_numbers = serializers.SerializerMethodField()
+
     
     class Meta:
         model = ParsingTask
         fields = [
-            'id',
-            'user',
-            'file',
-            'file_name',
-            'status',
-            'result_file',
-            'result_files',
-            'created_at',
-            'error_message',
-            'progress',
-            'current_row',
-            'total_rows',
-            'processed_rows',
-            'current_number',
-            'total_cross_numbers',
-            'processed_cross_numbers',
+            'id', 'user', 'file', 'file_name', 'status', 'result_file', 'result_files',
+            'created_at', 'error_message',
+            'progress', 'progress_autopiter', 'progress_emex', 'progress_armtek',
+            'processed_autopiter', 'total_autopiter',
+            'processed_emex', 'total_emex',
+            'processed_armtek', 'total_armtek',
+            'current_row', 'total_rows', 'processed_rows',
+            'current_number', 'total_cross_numbers', 'processed_cross_numbers',
         ]
         read_only_fields = [
-            'user',
-            'status',
-            'result_file',
-            'result_files',
-            'error_message',
-            'progress',
-            'current_row',
-            'total_rows',
-            'processed_rows',
-            'current_number',
-            'total_cross_numbers',
-            'processed_cross_numbers',
+            'user', 'status', 'result_file', 'result_files', 'error_message',
+            'progress', 'progress_autopiter', 'progress_emex', 'progress_armtek',
+            'processed_autopiter', 'total_autopiter',
+            'processed_emex', 'total_emex',
+            'processed_armtek', 'total_armtek',
+            'current_row', 'total_rows', 'processed_rows',
+            'current_number', 'total_cross_numbers', 'processed_cross_numbers',
         ]
     
     def get_file_name(self, obj):
@@ -73,8 +70,10 @@ class ParsingTaskSerializer(serializers.ModelSerializer):
         return {}
 
     def get_progress(self, obj):
-        """Прогресс в процентах (в первую очередь по кросс-номерам)."""
         meta = self._get_meta(obj)
+        # Сначала пробуем взять готовый прогресс из _meta
+        if 'progress' in meta:
+            return meta.get('progress', 0)
         total_cross = meta.get('total_cross_numbers') or 0
         processed_cross = meta.get('processed_cross_numbers') or 0
         if total_cross > 0:
@@ -88,6 +87,49 @@ class ParsingTaskSerializer(serializers.ModelSerializer):
         if obj.status == 'pending':
             return 0
         return 0
+
+    def get_progress_autopiter(self, obj):
+        meta = self._get_meta(obj)
+        if 'progress_autopiter' in meta:
+            return meta.get('progress_autopiter', 0)
+        total = meta.get('total_autopiter') or 0
+        processed = meta.get('processed_autopiter') or 0
+        return min(100, int((processed / total) * 100)) if total > 0 else 0
+
+    def get_progress_emex(self, obj):
+        meta = self._get_meta(obj)
+        if 'progress_emex' in meta:
+            return meta.get('progress_emex', 0)
+        total = meta.get('total_emex') or 0
+        processed = meta.get('processed_emex') or 0
+        return min(100, int((processed / total) * 100)) if total > 0 else 0
+
+    def get_progress_armtek(self, obj):
+        meta = self._get_meta(obj)
+        if 'progress_armtek' in meta:
+            return meta.get('progress_armtek', 0)
+        total = meta.get('total_armtek') or 0
+        processed = meta.get('processed_armtek') or 0
+        return min(100, int((processed / total) * 100)) if total > 0 else 0
+
+    def get_processed_autopiter(self, obj):
+        return self._get_meta(obj).get('processed_autopiter', 0)
+
+    def get_total_autopiter(self, obj):
+        return self._get_meta(obj).get('total_autopiter', 0)
+
+    def get_processed_emex(self, obj):
+        return self._get_meta(obj).get('processed_emex', 0)
+
+    def get_total_emex(self, obj):
+        return self._get_meta(obj).get('total_emex', 0)
+
+    def get_processed_armtek(self, obj):
+        return self._get_meta(obj).get('processed_armtek', 0)
+
+    def get_total_armtek(self, obj):
+        return self._get_meta(obj).get('total_armtek', 0)
+
 
     def get_current_row(self, obj):
         meta = self._get_meta(obj)
