@@ -465,7 +465,10 @@ def _is_chrome_resource_error(exc: Exception) -> bool:
 
 
 def _normalize_proxy_arg(proxy: Optional[Union[str, Dict[str, str]]]) -> Optional[str]:
-    """Приводит прокси к строке ip:port или login:pass@ip:port для Selenium/HTTP."""
+    """Приводит прокси к строке ip:port или login:pass@ip:port для Selenium/HTTP.
+    Если порт не указан, генерируется случайный (но Selenium не поддерживает авторизацию,
+    поэтому для Selenium мы возвращаем None, если есть логин/пароль).
+    """
     if not proxy:
         return None
     if isinstance(proxy, dict):
@@ -478,9 +481,23 @@ def _normalize_proxy_arg(proxy: Optional[Union[str, Dict[str, str]]]) -> Optiona
     if isinstance(proxy, str):
         value = proxy.strip()
         if value.startswith('http://'):
-            return value[7:]
+            value = value[7:]
         if value.startswith('https://'):
-            return value[8:]
+            value = value[8:]
+        # Если есть @, то это прокси с авторизацией, Selenium не поддерживает его через CLI,
+        # но мы можем попробовать распарсить и добавить случайный порт, если его нет
+        if '@' in value:
+            # Проверяем, есть ли порт после @
+            host_part = value.split('@')[1]
+            if ':' not in host_part:
+                # Добавляем случайный порт (но Selenium с авторизацией всё равно не работает)
+                # Поэтому просто вернём как есть, но предупредим
+                random_port = random.randint(10000, 10999)
+                value = f"{value}:{random_port}"
+            # Selenium не поддерживает авторизацию в --proxy-server, поэтому вернём None
+            # (или можно вернуть строку с авторизацией, но она не будет работать)
+            # Лучше вернуть None, чтобы использовать без прокси
+            return None
         return value or None
     return None
 
@@ -681,7 +698,7 @@ def _looks_like_host_port(part: str) -> bool:
     return '.' in host
 
 
-def parse_proxy_line(proxy_str: str) -> Optional[Dict[str, str]]:
+def parse_proxy_line(proxy_str: str, randomize_port: bool = True) -> Optional[Dict[str, str]]:
     """Парсит строку прокси в dict для requests.
 
     Поддерживаемые форматы:
@@ -689,6 +706,7 @@ def parse_proxy_line(proxy_str: str) -> Optional[Dict[str, str]]:
     - login:password@ip:port
     - login:password@domain
     - ip:port
+    Если randomize_port=True и порт не указан, генерируется случайный порт из 10000-10999.
     """
     proxy_str = (proxy_str or '').strip()
     if not proxy_str or proxy_str.startswith('#'):
@@ -705,8 +723,11 @@ def parse_proxy_line(proxy_str: str) -> Optional[Dict[str, str]]:
                     return {'http': url, 'https': url}
             except ValueError:
                 pass
-        # Если порта нет, генерируем случайный
-        random_port = random.randint(10000, 10999)
+        # Если порта нет, генерируем случайный порт (если randomize_port=True)
+        if randomize_port:
+            random_port = random.randint(10000, 10999)
+        else:
+            random_port = 10000  # fallback
         url = f'http://{proxy_str}:{random_port}'
         return {'http': url, 'https': url}
 
@@ -724,7 +745,10 @@ def parse_proxy_line(proxy_str: str) -> Optional[Dict[str, str]]:
     
     # login:password@host (без порта) - генерируем случайный порт
     login, password = left.split(':', 1)
-    random_port = random.randint(10000, 10999)
+    if randomize_port:
+        random_port = random.randint(10000, 10999)
+    else:
+        random_port = 10000
     url = f'http://{quote(login, safe="")}:{quote(password, safe="")}@{right}:{random_port}'
     return {'http': url, 'https': url}
 
@@ -742,7 +766,8 @@ def _session_set_proxy(session, proxy: Optional[Union[str, Dict[str, str]]]) -> 
         proxy_value = proxy_value[7:]
     elif proxy_value.startswith('https://'):
         proxy_value = proxy_value[8:]
-    proxy_dict = parse_proxy_line(proxy_value)
+    # Используем parse_proxy_line с генерацией порта, если нет
+    proxy_dict = parse_proxy_line(proxy_value, randomize_port=True)
     if not proxy_dict:
         proxy_dict = {
             'http': f'http://{proxy_value}',
@@ -856,12 +881,13 @@ def _configure_chrome_proxy(chrome_options: Options, proxy: Optional[str]) -> bo
 
 
 def _proxy_url_to_host_port(proxy_url: str) -> str:
-    """host:port из http://login:pass@host:port для логов."""
+    """Возвращает host:port из http://login:pass@host:port для логов."""
     value = proxy_url
     if value.startswith('http://'):
         value = value[7:]
     if '@' in value:
         value = value.split('@', 1)[1]
+    # Если порта нет, добавляем [случайный] - но в логах он уже должен быть
     return value
 
 
@@ -885,19 +911,26 @@ def get_next_proxy() -> Optional[Dict[str, str]]:
         proxy_str = PROXY_LIST[PROXY_INDEX % len(PROXY_LIST)]
         PROXY_INDEX += 1
         
-        if proxy_str in BAD_PROXIES:
+        # Извлекаем хост (без порта) для проверки в BAD_PROXIES
+        host_part = proxy_str
+        if '@' in host_part:
+            host_part = host_part.split('@')[1]
+        # Удаляем порт, если есть
+        if ':' in host_part:
+            host_part = host_part.rsplit(':', 1)[0]
+        
+        if host_part in BAD_PROXIES:
             continue
         
         try:
-            # Парсим прокси и возвращаем словарь
-            proxy_dict = parse_proxy_line(proxy_str)
+            # Парсим с генерацией случайного порта (если порт не указан)
+            proxy_dict = parse_proxy_line(proxy_str, randomize_port=True)
             if proxy_dict:
-                log_debug(f"Используется прокси: {_proxy_url_to_host_port(proxy_dict['http'])}")
                 return proxy_dict
         except Exception as e:
             log_debug(f"Ошибка парсинга прокси: {e}")
-            BAD_PROXIES.add(proxy_str)
-            BAD_PROXIES_TIMESTAMP[proxy_str] = time.time()
+            BAD_PROXIES.add(host_part)
+            BAD_PROXIES_TIMESTAMP[host_part] = time.time()
             continue
     
     # Если все прокси плохие - сбрасываем и пробуем сначала
@@ -924,7 +957,7 @@ def _proxy_is_bad(proxy_line: str, proxy_dict: Optional[Dict[str, str]] = None) 
 
 
 def mark_proxy_bad(proxy_repr: str) -> None:
-    """Помечает прокси как проблемный с временной меткой (по host:port!)"""
+    """Помечает прокси как проблемный с временной меткой (по host без порта!)"""
     global BAD_PROXIES, BAD_PROXIES_TIMESTAMP
     
     try:
@@ -938,13 +971,16 @@ def mark_proxy_bad(proxy_repr: str) -> None:
     if not proxy_repr:
         return
         
-    # ВАЖНО: Отрезаем логин и пароль
+    # Отрезаем логин и пароль
     if '@' in proxy_repr:
-        proxy_repr = proxy_repr.split('@')[-1] # берем host:port
+        proxy_repr = proxy_repr.split('@')[-1]  # берем host:port или host
+    # Отрезаем порт, если есть
+    if ':' in proxy_repr:
+        proxy_repr = proxy_repr.rsplit(':', 1)[0]  # оставляем только host
         
     BAD_PROXIES.add(proxy_repr)
     BAD_PROXIES_TIMESTAMP[proxy_repr] = time.time()
-    log_debug(f"Прокси помечен как проблемный: {proxy_repr}")
+    log_debug(f"Прокси хост {proxy_repr} помечен как проблемный")
 
 def get_proxy_string() -> Optional[str]:
     """Возвращает строку прокси для использования в парсерах"""
