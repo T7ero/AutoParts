@@ -1068,6 +1068,12 @@ def process_parsing_task(self, task_id):
                     update_progress(source='autopiter', step_increment=1)
                 except Exception as e:
                     log(f"Ошибка обработки Autopiter для {rec[3]}: {str(e)}")
+        # После завершения Autopiter обновляем БД
+        task.sources['_meta']['progress_autopiter'] = 100
+        task.sources['_meta']['processed_autopiter'] = task._total_autopiter
+        task.sources['_meta']['total_autopiter'] = task._total_autopiter
+        update_task_fields(sources=task.sources)
+        ws_send()
                     
         # ===== ВТОРОЙ ПРОХОД: ТОЛЬКО EMEX =====
         emex_parallel = 5
@@ -1082,6 +1088,12 @@ def process_parsing_task(self, task_id):
                     update_progress(source='emex', step_increment=1)
                 except Exception as e:
                     log(f"Ошибка обработки Emex для {rec[3]}: {str(e)}")
+        # После завершения Emex обновляем БД
+        task.sources['_meta']['progress_emex'] = 100
+        task.sources['_meta']['processed_emex'] = task._total_emex
+        task.sources['_meta']['total_emex'] = task._total_emex
+        update_task_fields(sources=task.sources)
+        ws_send()
 
         # ===== ТРЕТИЙ ПРОХОД: ТОЛЬКО ARMTEK =====
         # Используем 1 поток для стабильности
@@ -1097,6 +1109,12 @@ def process_parsing_task(self, task_id):
                     update_progress(source='armtek', step_increment=1)
                 except Exception as e:
                     log(f"Ошибка обработки Armtek для {rec[3]}: {str(e)}")
+        # После завершения Armtek обновляем БД
+        task.sources['_meta']['progress_armtek'] = 100
+        task.sources['_meta']['processed_armtek'] = task._total_armtek
+        task.sources['_meta']['total_armtek'] = task._total_armtek
+        update_task_fields(sources=task.sources)
+        ws_send()
 
         # Собираем статистику вручную (эмулируем старый цикл)
         stats = {
