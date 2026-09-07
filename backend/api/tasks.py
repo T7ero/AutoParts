@@ -22,6 +22,7 @@ from .autopiter_parser import (
     split_combined_brands,
     reset_armtek_selenium_state,
     PROXY_LIST,
+    soft_cleanup_drivers,
 )
 import re
 import unicodedata
@@ -1108,8 +1109,7 @@ def process_parsing_task(self, task_id):
                         log(f"Ошибка обработки Autopiter для {rec[3]}: {str(e)}")
 
             # Очистка после Autopiter
-            log("Очистка Chrome процессов и пула драйверов после Autopiter")
-            cleanup_chrome_processes()
+            log("Очистка пула драйверов после Autopiter")
             cleanup_driver_pool()
             gc.collect()
             time.sleep(0.5)
@@ -1146,7 +1146,8 @@ def process_parsing_task(self, task_id):
 
             # Очистка после Emex
             log("Очистка Chrome процессов и пула драйверов после Emex")
-            cleanup_chrome_processes()
+            log("Мягкая очистка пула драйверов")
+            soft_cleanup_drivers()
             cleanup_driver_pool()
             gc.collect()
             time.sleep(0.5)
@@ -1170,10 +1171,10 @@ def process_parsing_task(self, task_id):
         if 'armtek' in selected_sources:
             armtek_workers = 1
             log(f"Начинаем обработку всех артикулов через ARMTEK ({len(all_records)} шт.), потоков: {armtek_workers}")
-        
+
             armtek_counter = 0
             ARMTEK_CLEANUP_INTERVAL = int(os.getenv("ARMTEK_CLEANUP_INTERVAL", "3"))
-        
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=armtek_workers) as executor:
                 future_map = {executor.submit(process_single_record_for_source, 'armtek', rec): rec for rec in all_records}
                 for future in concurrent.futures.as_completed(future_map):
@@ -1181,24 +1182,23 @@ def process_parsing_task(self, task_id):
                     try:
                         results_armtek.extend(future.result())
                         update_progress(source='armtek', step_increment=1)
-                        
+
                         armtek_counter += 1
                         if armtek_counter % ARMTEK_CLEANUP_INTERVAL == 0:
                             log(f"Периодическая очистка Chrome процессов (каждые {ARMTEK_CLEANUP_INTERVAL} артикулов)")
-                            cleanup_chrome_processes()
-                            cleanup_driver_pool()
+                            soft_cleanup_drivers()
                             gc.collect()
-                            
+
                     except Exception as e:
                         log(f"Ошибка обработки Armtek для {rec[3]}: {str(e)}")
-        
+
             # Очистка после Armtek
             log("Очистка Chrome процессов и пула драйверов после Armtek")
-            cleanup_chrome_processes()
+            soft_cleanup_drivers()
             cleanup_driver_pool()
             gc.collect()
             time.sleep(0.5)
-        
+
             # После завершения Armtek обновляем БД
             task.sources['_meta']['progress_armtek'] = 100
             task.sources['_meta']['processed_armtek'] = task._total_armtek
@@ -1373,7 +1373,7 @@ def process_parsing_task(self, task_id):
         ws_send()
         
         # Очистка Chrome процессов и пула драйверов
-        cleanup_chrome_processes()
+        soft_cleanup_drivers()
         cleanup_driver_pool()
         
         # Финальная очистка и подтверждение завершения
@@ -1389,7 +1389,7 @@ def process_parsing_task(self, task_id):
         
     except TaskCancelledException:
         log(f"Task {task_id} отменена пользователем")
-        cleanup_chrome_processes()
+        soft_cleanup_drivers()
         cleanup_driver_pool()
         return {
             'status': 'cancelled',
@@ -1404,7 +1404,7 @@ def process_parsing_task(self, task_id):
         except TaskCancelledException:
             pass
         ws_send()
-        cleanup_chrome_processes()
+        soft_cleanup_drivers()
         cleanup_driver_pool()
         raise 
     finally:

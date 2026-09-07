@@ -57,7 +57,7 @@ SELENIUM_TIMEOUT = 20 # Оптимизированное время для ус�
 PAGE_LOAD_TIMEOUT = 30  # Увеличиваем для стабильности
 
 # Настройки для пула драйверов
-DRIVER_POOL_SIZE = 2
+DRIVER_POOL_SIZE = 3
 DRIVER_CREATION_RETRIES = 4  # Увеличиваем с 2 до 4
 DRIVER_TIMEOUT_RETRIES = 3  # Увеличиваем количество попыток
 
@@ -81,7 +81,7 @@ BAD_PROXIES_TIMESTAMP = {}  # словарь для отслеживания в�
 
 # ===== ДОБАВИТЬ НОВЫЕ ПЕРЕМЕННЫЕ =====
 CHROME_MAX_PROCESSES = int(os.getenv("CHROME_MAX_PROCESSES", "10"))
-ARMTEK_CLEANUP_INTERVAL = int(os.getenv("ARMTEK_CLEANUP_INTERVAL", "3"))
+ARMTEK_CLEANUP_INTERVAL = 15
 
 _AUTOPITER_REQUEST_LOCK = threading.Lock()
 
@@ -443,7 +443,7 @@ DRIVER_POOL_LOCK = threading.Lock()
 DRIVER_LAST_USED: Dict[int, float] = {}
 
 DRIVER_USAGE_COUNT: Dict[int, int] = {}
-MAX_USAGES_PER_DRIVER = 10  # сколько артикулов обрабатывает один драйвер
+MAX_USAGES_PER_DRIVER = 20  # сколько артикулов обрабатывает один драйвер
 
 def log_debug(message):
     print(f"[DEBUG] {message}")
@@ -570,32 +570,30 @@ def get_driver_from_pool() -> Optional[webdriver.Chrome]:
     return None
 
 def return_driver_to_pool(driver: webdriver.Chrome):
-    """Возвращает драйвер в пул или закрывает его"""
     global DRIVER_POOL, DRIVER_POOL_LOCK, DRIVER_LAST_USED, DRIVER_USAGE_COUNT
     
     if driver is None:
         return
     
     try:
-        # Проверяем, жив ли драйвер
+        # Проверка живости драйвера (короткий таймаут)
         try:
             _ = driver.title
         except Exception:
-            # Драйвер мёртв, закрываем и удаляем
+            # Драйвер мёртв – просто закрываем и удаляем
             try:
                 driver.quit()
             except Exception:
                 pass
-            DRIVER_LAST_USED.pop(id(driver), None)
-            DRIVER_USAGE_COUNT.pop(id(driver), None)
+            driver_id = id(driver)
+            DRIVER_LAST_USED.pop(driver_id, None)
+            DRIVER_USAGE_COUNT.pop(driver_id, None)
             return
 
         driver_id = id(driver)
-        
-        # Проверяем счетчик использований
         usage_count = DRIVER_USAGE_COUNT.get(driver_id, 0) + 1
         if usage_count >= MAX_USAGES_PER_DRIVER:
-            log_debug(f"Драйвер {driver_id} достиг лимита использований ({usage_count}), пересоздаём")
+            log_debug(f"Драйвер {driver_id} достиг лимита использований ({usage_count}), закрываем")
             try:
                 driver.quit()
             except Exception:
@@ -603,13 +601,13 @@ def return_driver_to_pool(driver: webdriver.Chrome):
             DRIVER_LAST_USED.pop(driver_id, None)
             DRIVER_USAGE_COUNT.pop(driver_id, None)
             return
-        
+
         DRIVER_USAGE_COUNT[driver_id] = usage_count
-        
-        # Проверяем, не слишком ли старый драйвер
+
+        # Проверка возраста (если старше 5 минут – закрываем)
         if driver_id in DRIVER_LAST_USED:
             age = time.time() - DRIVER_LAST_USED[driver_id]
-            if age > 300:  # 5 минут
+            if age > 300:
                 try:
                     driver.quit()
                 except Exception:
@@ -617,12 +615,13 @@ def return_driver_to_pool(driver: webdriver.Chrome):
                 DRIVER_LAST_USED.pop(driver_id, None)
                 DRIVER_USAGE_COUNT.pop(driver_id, None)
                 return
-        
+
         with DRIVER_POOL_LOCK:
             if len(DRIVER_POOL) < DRIVER_POOL_SIZE:
                 DRIVER_POOL.append(driver)
                 DRIVER_LAST_USED[driver_id] = time.time()
             else:
+                # Пул полон – закрываем
                 try:
                     driver.quit()
                 except Exception:
@@ -1005,34 +1004,54 @@ def is_autopiter_proxy_enabled() -> bool:
         return proxy_count > 0
     return proxy_count > 0
 
-def cleanup_chrome_processes():
-    """Принудительно очищает процессы Chrome и временные директории"""
+def cleanup_chrome_processes(force: bool = False):
+    """Принудительно очищает процессы Chrome.
+    
+    Args:
+        force: если True, убивает все Chrome процессы (агрессивно)
+               если False, только логирует (не убивает)
+    """
+    if not force:
+        log_debug("cleanup_chrome_processes: мягкий режим, пропускаем")
+        return
+    
     try:
-        # ВСЕГДА убиваем процессы, не проверяя количество
         for process_name in ['chrome', 'chromedriver', 'chromium']:
             try:
                 subprocess.run(['pkill', '-9', '-f', process_name], 
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
             except:
                 pass
-        
-        # Очищаем временные директории
-        import glob
-        for pattern in ['/tmp/chrome_*', '/tmp/chromium_*', '/tmp/.com.google.Chrome*', '/tmp/.org.chromium.Chromium*']:
-            try:
-                for path in glob.glob(pattern):
-                    try:
-                        subprocess.run(['rm', '-rf', path], 
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
-                    except:
-                        pass
-            except:
-                pass
-        
         time.sleep(0.5)
-        
     except Exception as e:
         log_debug(f"Ошибка очистки Chrome процессов: {str(e)}")
+
+def soft_cleanup_drivers():
+    """Мягкая очистка драйверов: закрывает только те, которые долго не использовались"""
+    global DRIVER_POOL, DRIVER_POOL_LOCK, DRIVER_LAST_USED, DRIVER_USAGE_COUNT
+    
+    with DRIVER_POOL_LOCK:
+        now = time.time()
+        to_remove = []
+        for driver in DRIVER_POOL:
+            driver_id = id(driver)
+            last_used = DRIVER_LAST_USED.get(driver_id, 0)
+            if now - last_used > 300:  # 5 минут
+                to_remove.append(driver)
+        
+        for driver in to_remove:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            driver_id = id(driver)
+            DRIVER_LAST_USED.pop(driver_id, None)
+            DRIVER_USAGE_COUNT.pop(driver_id, None)
+            if driver in DRIVER_POOL:
+                DRIVER_POOL.remove(driver)
+        
+        if to_remove:
+            log_debug(f"Мягкая очистка: закрыто {len(to_remove)} неактивных драйверов")
 
 def is_site_available(url: str, proxies: Optional[Dict] = None) -> bool:
     """Проверяет доступность сайта"""
@@ -2393,27 +2412,40 @@ def parse_armtek_selenium(artikul: str, proxy: Optional[Union[str, Dict[str, str
         return []
 
     finally:
-        # Закрываем драйвер или возвращаем в пул
+        # ===== КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: правильно управляем драйвером =====
         if driver is not None:
             try:
                 if driver_from_pool:
-                    # Возвращаем в пул, если драйвер жив
+                    # Драйвер взят из пула — пытаемся вернуть его обратно
+                    # Проверяем, жив ли драйвер
                     try:
+                        # Быстрая проверка живости
                         _ = driver.title
+                        # Живой — возвращаем в пул
                         return_driver_to_pool(driver)
+                        log_debug(f"Armtek Selenium: драйвер возвращён в пул для {artikul}")
                     except Exception:
-                        # Если драйвер мёртв, просто закрываем
+                        # Драйвер мёртв — закрываем и удаляем из учёта
+                        log_debug(f"Armtek Selenium: драйвер мёртв, закрываем для {artikul}")
                         try:
                             driver.quit()
                         except Exception:
                             pass
+                        try:
+                            driver_id = id(driver)
+                            DRIVER_LAST_USED.pop(driver_id, None)
+                            DRIVER_USAGE_COUNT.pop(driver_id, None)
+                        except Exception:
+                            pass
                 else:
-                    # Закрываем драйвер, созданный специально для этого запроса
+                    # Драйвер создан специально для этого запроса — закрываем
                     try:
                         driver.quit()
+                        log_debug(f"Armtek Selenium: драйвер закрыт для {artikul}")
                     except Exception:
                         pass
-            except Exception:
+            except Exception as e:
+                log_debug(f"Armtek Selenium: ошибка при управлении драйвером для {artikul}: {e}")
                 try:
                     driver.quit()
                 except Exception:
